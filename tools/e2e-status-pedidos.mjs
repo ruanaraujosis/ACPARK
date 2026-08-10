@@ -188,17 +188,20 @@ try {
   check("resposta informa a quantidade liberada", Number(paraRetirada.json.quantidade_liberada) === 10, JSON.stringify(paraRetirada.json));
   check("liberado_em e pronto_retirada_em preenchidos", linhas.every((l) => l.liberado_em && l.pronto_retirada_em));
 
-  // Voltar o card precisa desfazer a liberação
+  // Voltar o card para Em Andamento preserva a quantidade liberada (o almoxarifado não pode
+  // perder uma edição já feita só por voltar de etapa), mas ainda limpa as datas da etapa abandonada
   const voltaAndamento = await moverNoKanban(kanban, "Aguardando Retirada", "Em Andamento");
   check("Kanban Aguardando Retirada -> Em Andamento (HTTP 200)", voltaAndamento.status === 200, JSON.stringify(voltaAndamento.json));
   linhas = await linhasDoPedido(kanban);
-  check("voltar zera a quantidade liberada", linhas.every((l) => Number(l.quantidade_liberada) === 0), JSON.stringify(linhas.map((l) => l.quantidade_liberada)));
+  check("voltar preserva a quantidade liberada", linhas.every((l) => Number(l.quantidade_liberada) === 10), JSON.stringify(linhas.map((l) => l.quantidade_liberada)));
   check("voltar limpa liberado_em/pronto_retirada_em", linhas.every((l) => !l.liberado_em && !l.pronto_retirada_em));
 
   const voltaPendente = await moverNoKanban(kanban, "Em Andamento", "Pendente");
   check("Kanban Em Andamento -> Pendente (HTTP 200)", voltaPendente.status === 200, JSON.stringify(voltaPendente.json));
   linhas = await linhasDoPedido(kanban);
   check("voltar para Pendente limpa em_andamento_em", linhas.every((l) => !l.em_andamento_em));
+  // Diferente de Em Andamento, voltar até Pendente ainda zera a liberação — nada foi decidido
+  check("voltar para Pendente zera a quantidade liberada", linhas.every((l) => Number(l.quantidade_liberada) === 0), JSON.stringify(linhas.map((l) => l.quantidade_liberada)));
 
   // Segue o ciclo até o fim pelo quadro
   await moverNoKanban(kanban, "Pendente", "Em Andamento");
@@ -229,6 +232,8 @@ try {
   check("reabertura limpa a assinatura", linhas.every((l) => !l.assinado));
   check("reabertura limpa liberado_em", linhas.every((l) => !l.liberado_em && !l.pronto_retirada_em));
   check("reabertura preserva a quantidade solicitada", linhas.every((l) => Number(l.quantidade_solicitada) === 10));
+  // Este pedido tinha liberado os 10 via Kanban antes de finalizar; reabrir não pode zerar isso
+  check("reabertura preserva a quantidade liberada", linhas.every((l) => Number(l.quantidade_liberada) === 10), JSON.stringify(linhas.map((l) => l.quantidade_liberada)));
   saldoAtual = await saldos(pdvId);
   check("estoque central estornado", saldoAtual.central === saldoInicial.central, `esperado ${saldoInicial.central}, atual ${saldoAtual.central}`);
   check("estoque do PDV estornado", saldoAtual.pdv === saldoInicial.pdv, `esperado ${saldoInicial.pdv}, atual ${saldoAtual.pdv}`);
@@ -256,13 +261,31 @@ try {
   linhas = await linhasDoPedido(painel);
   check("quantidade acima do solicitado foi gravada (12)", linhas.every((l) => Number(l.quantidade_liberada) === 12), JSON.stringify(linhas.map((l) => l.quantidade_liberada)));
 
-  // Volta para Em Andamento para seguir com o cenário de liberação parcial
+  // Reenviar "Aguardando Retirada" para um item que já está lá (pedido com itens em status
+  // misto, reenviando o painel inteiro) não pode travar com "Movimentação não permitida" —
+  // e a edição feita no reenvio deve ser aplicada, não ignorada
+  const reenvioMesmoStatus = await call("/api/admin/order-flow", "POST", {
+    user: admin,
+    body: {
+      codigo_pedido: painel,
+      status: "Aguardando Retirada",
+      release_mode: "entered-only",
+      items: linhas.map((l) => ({ id: l.id, version: l.version, quantidade_liberada: 9 }))
+    }
+  });
+  check("reenviar o mesmo status (self-transition) é aceito (HTTP 200)", reenvioMesmoStatus.status === 200, `HTTP ${reenvioMesmoStatus.status} ${JSON.stringify(reenvioMesmoStatus.json)}`);
+  linhas = await linhasDoPedido(painel);
+  check("edição no reenvio foi aplicada (9), não ignorada", linhas.every((l) => Number(l.quantidade_liberada) === 9), JSON.stringify(linhas.map((l) => l.quantidade_liberada)));
+
+  // Volta para Em Andamento para seguir com o cenário de liberação parcial. A liberação de 9
+  // (do reenvio acima) precisa ser preservada — voltar de etapa não pode descartar a edição
+  // que o almoxarifado já tinha feito.
   await call("/api/admin/order-flow", "POST", {
     user: admin,
     body: { codigo_pedido: painel, status: "Em Andamento", current_status: "Aguardando Retirada", items: linhas.map((l) => ({ id: l.id, version: l.version })) }
   });
   linhas = await linhasDoPedido(painel);
-  check("volta de etapa zerou a liberação acima do solicitado", linhas.every((l) => Number(l.quantidade_liberada) === 0), JSON.stringify(linhas.map((l) => l.quantidade_liberada)));
+  check("volta de etapa preserva a liberação acima do solicitado", linhas.every((l) => Number(l.quantidade_liberada) === 9), JSON.stringify(linhas.map((l) => l.quantidade_liberada)));
 
   const parcial = await call("/api/admin/order-flow", "POST", {
     user: admin,

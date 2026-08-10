@@ -161,10 +161,11 @@ test("admin order status route preserves saved quantities and products", () => {
   assert.doesNotMatch(routeSource, /quantidade_solicitada\s*=/);
   assert.doesNotMatch(routeSource, /sku_produto\s*=/);
   // A quantidade já liberada pelo painel é preservada (limitada ao solicitado); só é preenchida
-  // quando o card chega em Aguardando Retirada sem nenhuma liberação, e zerada ao voltar de etapa
+  // quando o card chega em Aguardando Retirada sem nenhuma liberação. Voltar para Em Andamento
+  // preserva a liberação (não zera); só voltar até Pendente zera, pois nada foi decidido ali.
   assert.match(routeSource, /WHEN COALESCE\(quantidade_liberada, 0\) > 0 THEN LEAST\(quantidade_liberada, quantidade_solicitada\)/);
   assert.match(routeSource, /ELSE quantidade_solicitada/);
-  assert.equal((routeSource.match(/quantidade_liberada = 0/g) || []).length, 2);
+  assert.equal((routeSource.match(/quantidade_liberada = 0/g) || []).length, 1);
 });
 
 test("pdv order quantity is not capped by maximum stock", () => {

@@ -18,14 +18,17 @@ test("mover o card para Aguardando Retirada libera a quantidade solicitada", () 
   assert.match(kanbanBlock, /quantidade_liberada: totalLiberado/);
 });
 
-test("voltar o card de etapa desfaz a liberação e limpa as datas", () => {
+test("voltar o card para Em Andamento preserva a liberação e limpa as datas", () => {
+  // Voltar de Aguardando Retirada não pode descartar uma quantidade liberada já editada
+  // pelo almoxarifado — só as datas da etapa abandonada são limpas
   const paraAndamento = kanbanBlock.match(/nextStatus === "Em Andamento"\s*\?\s*`([^`]*)`/);
   assert.ok(paraAndamento, "regra de volta para Em Andamento deve existir");
-  assert.match(paraAndamento[1], /quantidade_liberada = 0/);
+  assert.doesNotMatch(paraAndamento[1], /quantidade_liberada = 0/);
   assert.match(paraAndamento[1], /liberado_em = NULL/);
   assert.match(paraAndamento[1], /pronto_retirada_em = NULL/);
   assert.match(paraAndamento[1], /release_mode = NULL/);
 
+  // Já voltar até Pendente ainda zera a liberação — nesse ponto nada foi decidido
   const paraPendente = kanbanBlock.match(/:\s*`, em_andamento_em = NULL([^`]*)`/);
   assert.ok(paraPendente, "regra de volta para Pendente deve existir");
   assert.match(paraPendente[1], /quantidade_liberada = 0/);

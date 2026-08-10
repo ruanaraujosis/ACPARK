@@ -372,9 +372,11 @@ export async function handlePedidosRoutes(req, res, context) {
       // Ajusta datas e quantidade liberada conforme o status de destino. Arrastar o card para
       // Aguardando Retirada equivale a liberar tudo o que foi solicitado (sem isso o pedido
       // chegava na coluna com quantidade zerada e a retirada ficava impossível de confirmar).
-      // Voltar o card desfaz a liberação, limpando quantidade e datas da etapa abandonada.
+      // Voltar o card para Em Andamento preserva a quantidade liberada (o almoxarifado pode ter
+      // editado esse valor manualmente; voltar de etapa não deve descartar essa edição), só limpa
+      // as datas da etapa abandonada.
       const timeField = nextStatus === "Em Andamento"
-        ? `, em_andamento_em = ${brasiliaNow}, quantidade_liberada = 0, liberado_em = NULL, pronto_retirada_em = NULL, release_mode = NULL`
+        ? `, em_andamento_em = ${brasiliaNow}, liberado_em = NULL, pronto_retirada_em = NULL, release_mode = NULL`
         : nextStatus === "Aguardando Retirada"
           ? `, liberado_em = ${brasiliaNow}, pronto_retirada_em = ${brasiliaNow},
              quantidade_liberada = CASE
@@ -926,7 +928,7 @@ export async function handlePedidosRoutes(req, res, context) {
             `UPDATE pedidos
              SET status = 'Em Andamento',
                  quantidade_solicitada = $2,
-                 quantidade_liberada = 0,
+                 quantidade_liberada = $4,
                  em_andamento_em = CURRENT_TIMESTAMP,
                  liberado_em = NULL,
                  pronto_retirada_em = NULL,
@@ -943,7 +945,9 @@ export async function handlePedidosRoutes(req, res, context) {
              version = COALESCE(version, 1) + 1,
              updated_at = CURRENT_TIMESTAMP
          WHERE id = $1`,
-            [group.keepId, requestedQty, user.name || "Almoxarifado"]
+            // Preserva a quantidade já liberada (ex: ao voltar de Aguardando Retirada) em vez de
+            // zerar — o almoxarifado não deve perder a edição que já tinha feito
+            [group.keepId, requestedQty, user.name || "Almoxarifado", group.releasedTotal]
           );
           const duplicateIds = group.ids.filter((id) => id !== group.keepId);
           if (duplicateIds.length) {
@@ -993,7 +997,10 @@ export async function handlePedidosRoutes(req, res, context) {
           "Liberação Parcial": ["Pendente", "Em Andamento", "Aguardando Retirada"],
           Finalizado: ["Em Andamento"]
         };
-        if (!allowedTransitions[currentStatus]?.includes(nextStatus)) {
+        // Item já no status de destino é um no-op (ex: pedido com itens em status misto, onde
+        // parte já está em Aguardando Retirada e o restante ainda em Em Andamento — reenviar o
+        // pedido inteiro não pode travar por causa dos itens que já chegaram lá)
+        if (currentStatus !== nextStatus && !allowedTransitions[currentStatus]?.includes(nextStatus)) {
           const error = new Error("Movimentação de status não permitida. Envie o pedido para Em andamento antes de editar.");
           error.statusCode = 400;
           throw error;
@@ -1027,15 +1034,17 @@ export async function handlePedidosRoutes(req, res, context) {
         const requestedQty = asInt(current.quantidade_solicitada);
         let qty = asInt(current.quantidade_liberada);
         // "entered-only" libera exatamente o valor digitado; caso contrário, libera o total solicitado
-        // quando nada foi digitado explicitamente
-        if (["Em Andamento", "Liberação Parcial"].includes(currentStatus) && nextStatus === "Aguardando Retirada") {
+        // quando nada foi digitado explicitamente. Cobre também o item que já estava em Aguardando
+        // Retirada (self-transition): sem isso, reenviar o pedido ignorava a edição feita na tela
+        // para os itens que já tinham chegado lá antes (pedido com itens em status misto).
+        if (nextStatus === "Aguardando Retirada") {
           const requestedReleaseQty = asInt(item.quantidade_liberada);
           qty = releaseMode === "entered-only"
             ? requestedReleaseQty
             : requestedReleaseQty > 0 ? requestedReleaseQty : requestedQty;
-        } else if (nextStatus === "Em Andamento") {
-          qty = 0;
         } else if (nextStatus === "Pendente") {
+          // Só até Pendente zera: nesse ponto nada foi decidido ainda. Voltar para Em Andamento
+          // preserva o valor atual de "qty" (já lido de current.quantidade_liberada acima).
           qty = 0;
         }
         if (qty < 0) {
