@@ -6,7 +6,7 @@ Para o deploy na Vercel (se ainda quiser usar como alternativa), veja [DEPLOY.md
 
 ## 1. Banco de dados: PostgreSQL local
 
-1. Instale o PostgreSQL no Windows (instalador oficial em postgresql.org/download/windows). Use a mesma versão major do banco atual no Supabase (confira em Supabase → Database) ou uma versão mais nova.
+1. Instale o PostgreSQL no Windows (instalador oficial em postgresql.org/download/windows). Qualquer versão recente (16+) serve.
 2. Durante a instalação, marque o componente "Command Line Tools" (instala `psql`, `pg_dump`, `pg_restore`) e anote a senha do superusuário.
 3. Adicione a pasta `bin` do PostgreSQL ao PATH do Windows (ex: `C:\Program Files\PostgreSQL\16\bin`).
 4. Crie um usuário e banco dedicados ao sistema:
@@ -19,16 +19,19 @@ Para o deploy na Vercel (se ainda quiser usar como alternativa), veja [DEPLOY.md
    DATABASE_URL=postgres://myestoque_app:sua-senha-local-forte@localhost:5432/myestoque
    ```
 
-### Migrar os dados reais do Supabase
+### Restaurar o banco a partir de um dump
 
-Mantenha o Supabase intacto (só leitura) durante a migração — é o plano B se algo der errado.
+Se precisar recriar o banco local do zero (perda/corrupção), restaure sempre a partir de um dump
+real (`pg_dump`/`pg_restore` completo) — nunca confie só em `server/schema.sql`, que não cobre
+tabelas/colunas criadas em tempo de execução pelas funções `ensureXxxTable()` das rotas.
 
 ```
-pg_dump "<connection-string-direta-do-supabase>?sslmode=require" -Fc -v -f myestoque_backup.dump
-pg_restore -d "postgres://myestoque_app:sua-senha-local-forte@localhost:5432/myestoque" --no-owner --no-privileges -v myestoque_backup.dump
+pg_restore -d "postgres://myestoque_app:sua-senha-local-forte@localhost:5432/myestoque" --no-owner --no-privileges -v seu_backup.dump
 ```
 
-Guarde o arquivo `.dump` fora da pasta do projeto (não é código-fonte). Depois do restore, confira se a contagem de linhas das tabelas principais (`pdvs`, `produtos`, `pedidos`, `devolucoes_avaria`) bate com o que havia no Supabase antes de considerar a migração concluída. Mantenha o projeto Supabase ativo por pelo menos 30 dias como plano B frio, sem apagar nada.
+Depois do restore, rode `REASSIGN`/`ALTER TABLE ... OWNER TO myestoque_app` em todas as tabelas —
+dumps vindos de outro ambiente costumam trazer políticas de RLS herdadas que deixam as tabelas
+inacessíveis para o usuário da aplicação até isso ser corrigido.
 
 ## 2. Fotos de avaria: storage local
 
@@ -38,12 +41,7 @@ Guarde o arquivo `.dump` fora da pasta do projeto (não é código-fonte). Depoi
    STORAGE_LOCAL_ROOT=.storage
    STORAGE_ALLOW_LOCAL_IN_PRODUCTION=true
    ```
-2. Antes de trocar o driver, copie as fotos existentes do Supabase Storage para o disco local (mantendo as credenciais do Supabase ainda no `.env` durante essa etapa):
-   ```
-   node tools/migrate-storage-to-local.js --apply
-   ```
-   Rode primeiro sem `--apply` para conferir quantos arquivos seriam copiados antes de aplicar de verdade. O script não altera nenhuma linha do banco — só copia os arquivos.
-3. A pasta `.storage/` é a única cópia das fotos a partir daqui — inclua-a numa rotina de backup própria (cópia periódica para outro disco/NAS), já que o Supabase Storage não guarda mais isso depois da virada.
+2. A pasta `.storage/` é a única cópia das fotos — inclua-a numa rotina de backup própria (cópia periódica para outro disco/NAS).
 
 ## 3. Variáveis de ambiente da LAN
 

@@ -42,7 +42,7 @@ Roda todos os `tests/*.test.js`. Deve dar 24/24 (sem falhas pré-existentes conh
 
 ## Refazer a migração do banco local do zero
 
-Só necessário se o banco local `myestoque` for corrompido/perdido e precisar recriar a partir de um backup (`.dump`) ou de uma nova extração do Supabase. Ver seção "Migrar os dados reais do Supabase" em [DEPLOY_LOCAL.md](../../DEPLOY_LOCAL.md) — **importante**: restaurar sempre schema+dados a partir de um dump real (`pg_dump`/`pg_restore` completo), nunca só `server/schema.sql`, porque esse arquivo está desatualizado em relação a tabelas/colunas criadas em tempo de execução pelo próprio código (`ensureXxxTable()` nos arquivos de rotas). Depois de restaurar, sempre rodar `REASSIGN`/`ALTER TABLE ... OWNER TO myestoque_app` em todas as tabelas, senão as tabelas com RLS herdada do Supabase ficam inacessíveis para o usuário da aplicação.
+Só necessário se o banco local `myestoque` for corrompido/perdido e precisar recriar a partir de um backup (`.dump`). Ver seção "Restaurar o banco a partir de um dump" em [DEPLOY_LOCAL.md](../../../docs/DEPLOY_LOCAL.md) — **importante**: restaurar sempre schema+dados a partir de um dump real (`pg_dump`/`pg_restore` completo), nunca só `server/schema.sql`, porque esse arquivo está desatualizado em relação a tabelas/colunas criadas em tempo de execução pelo próprio código (`ensureXxxTable()` nos arquivos de rotas). Depois de restaurar, sempre rodar `REASSIGN`/`ALTER TABLE ... OWNER TO myestoque_app` em todas as tabelas, senão políticas de RLS herdadas do banco de origem podem deixar as tabelas inacessíveis para o usuário da aplicação.
 
 ## Credenciais
 

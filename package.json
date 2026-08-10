@@ -8,7 +8,6 @@
   },
   "scripts": {
     "dev": "node server/index.js",
-    "seed": "node server/seed.js",
     "build": "node -e \"console.log('No build required')\"",
     "test": "node tests/server-routes.test.js",
     "test:sequential": "node tools/run-tests-sequential.js",

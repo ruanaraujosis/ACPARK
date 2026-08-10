@@ -4,14 +4,14 @@
 
 Configure estas variaveis no painel da Vercel em **Project Settings > Environment Variables**:
 
-- `DATABASE_URL`: conexao PostgreSQL/Supabase em formato URL.
+- `DATABASE_URL`: conexao PostgreSQL em formato URL.
 - `JWT_SECRET`: segredo longo para assinar sessoes de login.
 - `NODE_ENV`: `production`.
 - `SCHEMA_SYNC`: opcional, `true` se voce quiser que o schema rode automaticamente fora da Vercel.
 
 Exemplo de `JWT_SECRET`: use uma frase/chave longa e exclusiva, sem compartilhar.
 
-Para a `DATABASE_URL`, prefira a URL de **pooler** do Supabase na Vercel. Em ambiente serverless, ela evita excesso de conexoes e tende a ser mais estavel que a conexao direta do banco.
+Para a `DATABASE_URL`, prefira a URL de **pooler** do seu provedor de Postgres, se ele oferecer uma. Em ambiente serverless, ela evita excesso de conexoes e tende a ser mais estavel que a conexao direta do banco.
 Na Vercel, o schema nao roda automaticamente por padrao. Se o banco ja estiver criado, deixe assim. Se quiser ligar a sincronizacao automatica fora da Vercel, use `SCHEMA_SYNC=true`.
 
 ## Publicacao
