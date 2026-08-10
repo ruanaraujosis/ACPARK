@@ -5,7 +5,9 @@ import fs from "node:fs";
 import path from "node:path";
 import pg from "pg";
 
-const PRODUCTION_PROJECT_REF = "iwlnjdyfloeplyokgfyx";
+// Vem de env (nunca hardcoded) para não publicar o ref do projeto de produção no repositório;
+// sem essa variável configurada, o .includes("") abaixo sempre bate e o script fica bloqueado
+const PRODUCTION_PROJECT_REF = process.env.SUPABASE_PRODUCTION_PROJECT_REF || "";
 // Lista branca de migrations de hardening permitidas por este script
 const allowedMigrations = [
   "20260729_001_security_inventory.sql",

@@ -23,7 +23,7 @@ Configure no ambiente de producao com Supabase Storage:
 
 ```env
 STORAGE_DRIVER=supabase
-SUPABASE_URL=https://iwlnjdyfloeplyokgfyx.supabase.co
+SUPABASE_URL=https://seu-projeto.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=configure-apenas-no-servidor
 STORAGE_BUCKET=avarias-fotos
 UPLOAD_MAX_IMAGE_MB=8

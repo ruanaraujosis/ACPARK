@@ -313,7 +313,7 @@ npm run homologation:apply -- 20260729_001_security_inventory.sql
 npm run test:sequential
 ```
 
-Repetir a sequencia para cada migracao, sempre parando em caso de erro. O script bloqueia automaticamente o projeto de producao conhecido `iwlnjdyfloeplyokgfyx`.
+Repetir a sequencia para cada migracao, sempre parando em caso de erro. O script bloqueia automaticamente o projeto de producao configurado em `SUPABASE_PRODUCTION_PROJECT_REF` (ver `.env.example`).
 
 ## Testes por perfil
 
