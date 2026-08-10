@@ -40,6 +40,15 @@ test("cupom de pedido não sobra em folha em branco (irmãos escondidos com disp
   assert.match(stylesSource, /body\.printing-receipt:not\(\.printing-withdrawal-receipt\) > \*:not\(\.receipt-print-target\) \{\s*\n\s*display: none !important;/);
 });
 
+test("cupom imprime solicitado quando Pendente e liberado em Em Andamento/Aguardando Retirada/Finalizado", () => {
+  const printOrderBlock = appSource.slice(appSource.indexOf("async function printOrder"), appSource.indexOf("// Extrai os itens de retirada a partir do card do pedido"));
+  // Pendente ainda não teve nada decidido pelo almoxarifado: só o solicitado existe
+  assert.match(printOrderBlock, /const printReleasedQty = orderStatus === "Em Andamento" \|\| orderStatus === "Aguardando Retirada" \|\| orderStatus === "Finalizado";/);
+  // Em Andamento: o campo "Liberar" ao vivo (ainda não salvo) tem prioridade sobre o valor do servidor
+  assert.match(printOrderBlock, /row\.querySelector\("\.liberada"\)\?\.value,\s*\n\s*row\.dataset\.released,\s*\n\s*cells\[cells\.length - 1\]\?\.textContent\?\.trim\(\)/);
+  assert.match(printOrderBlock, /printReleasedQty \? releasedQty : requestedQty/);
+});
+
 test("history print keeps A4 sheet format (@page global, sem override para 80mm)", () => {
   assert.match(stylesSource, /@page \{\s*\n\s*size: A4 portrait;\s*\n\s*margin: 12mm;/);
   assert.match(stylesSource, /body\.printing-history \.print-history-area \{[\s\S]*?width: 186mm/);

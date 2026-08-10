@@ -8034,6 +8034,10 @@ function schedulePrintCleanup(cleanup) {
 async function printOrder(card, options = {}) {
   if (!card) return;
   const orderCode = card.dataset.order || "";
+  const orderStatus = card.dataset.orderStatus || "";
+  // Pendente ainda não tem liberação decidida (imprime o solicitado); a partir de Em Andamento
+  // o cupom passa a mostrar o que o almoxarifado está de fato liberando/enviando/entregue
+  const printReleasedQty = orderStatus === "Em Andamento" || orderStatus === "Aguardando Retirada" || orderStatus === "Finalizado";
   const headerText = card.querySelector(".order-accordion-head strong")?.textContent?.trim() || "";
   const pdv = headerText.replace(/^Pedido\s+/i, "").replace(orderCode, "").replace(/^\s*-\s*/, "").trim();
   const smallText = card.querySelector(".order-accordion-head small")?.textContent?.trim() || "";
@@ -8046,11 +8050,19 @@ async function printOrder(card, options = {}) {
       || cells[0]?.textContent?.trim()
       || cells[1]?.textContent?.trim()
       || "";
-    const requested = row.dataset.requested
+    const requestedQty = row.dataset.requested
       || row.querySelector("[data-requested-value]")?.textContent?.trim()
       || (cells.length >= 6 ? cells[5]?.textContent?.trim() : cells[2]?.textContent?.trim())
       || "0";
-    return { product, requested };
+    // Prioriza o valor ao vivo do campo "Liberar" (caso o usuário tenha acabado de digitar e ainda
+    // não salvo), depois o atributo do servidor, depois a célula da tabela somente-leitura
+    const releasedCandidates = [
+      row.querySelector(".liberada")?.value,
+      row.dataset.released,
+      cells[cells.length - 1]?.textContent?.trim()
+    ];
+    const releasedQty = releasedCandidates.find((value) => value !== undefined && value !== null && String(value).trim() !== "") ?? "0";
+    return { product, requested: printReleasedQty ? releasedQty : requestedQty };
   }).filter((item) => item.product && item.product !== "Nenhum registro encontrado.");
 
   // Sem isso o cupom herdava o @page A4 global e imprimia como folha cheia, não como recibo estreito
