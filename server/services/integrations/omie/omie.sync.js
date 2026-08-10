@@ -10,6 +10,7 @@ export const SYNC_OMIE_MOVEMENTS = "SYNC_OMIE_MOVEMENTS";
 export const RECONCILE_OMIE_STOCK = "RECONCILE_OMIE_STOCK";
 export const SYNC_OMIE_FULL = "SYNC_OMIE_FULL";
 
+// Traduz um escopo de sincronizacao em texto livre (PT/EN) para o tipo de job interno
 export function normalizeSyncScope(scope) {
   const value = String(scope || "").trim().toLowerCase();
   if (["produtos", "products"].includes(value)) return SYNC_OMIE_PRODUCTS;
@@ -21,6 +22,7 @@ export function normalizeSyncScope(scope) {
   return SYNC_OMIE_FULL;
 }
 
+// Enfileira um job de integracao, evitando duplicar um job equivalente ja pendente/em processamento
 export async function enqueueIntegrationJob(client, {
   integrationId,
   jobType,
@@ -30,6 +32,7 @@ export async function enqueueIntegrationJob(client, {
 }) {
   const normalizedType = normalizeSyncScope(jobType);
   const rank = priorityRank(priority);
+  // Evita duplicar job identico ainda nao concluido
   const existing = await client.query(
     `SELECT *
      FROM integration_jobs
@@ -52,6 +55,7 @@ export async function enqueueIntegrationJob(client, {
       [integrationId, normalizedType, JSON.stringify(payload), priority, rank, scheduledFor]
     );
   } catch (error) {
+    // Compatibilidade: banco sem a coluna scheduled_for ainda migrada, insere sem ela
     if (!String(error.message || "").includes("scheduled_for")) throw error;
     result = await client.query(
       `INSERT INTO integration_jobs (integration_id, job_type, payload, priority, priority_rank, status)
@@ -63,6 +67,7 @@ export async function enqueueIntegrationJob(client, {
   return result.rows[0];
 }
 
+// Enfileira uma atualizacao pontual e prioritaria de saldo para um unico produto
 export async function enqueueStockRefresh(client, { integrationId, productExternalId, productSku }) {
   return enqueueIntegrationJob(client, {
     integrationId,
@@ -72,6 +77,8 @@ export async function enqueueStockRefresh(client, { integrationId, productExtern
   });
 }
 
+// Pega o proximo job elegivel da fila (por prioridade) e o processa; usa SKIP LOCKED para
+// permitir multiplos workers concorrentes sem disputar o mesmo job
 export async function processNextIntegrationJob(client) {
   const result = await client.query(
     `SELECT *
@@ -98,6 +105,7 @@ export async function processNextIntegrationJob(client) {
   }
 }
 
+// Mesmo fluxo de processNextIntegrationJob, mas para reprocessar um job especifico por id
 export async function processIntegrationJobById(client, id) {
   const result = await client.query(
     `SELECT *
@@ -125,6 +133,7 @@ export async function processIntegrationJobById(client, id) {
   }
 }
 
+// Executa o job de acordo com o tipo; produtos re-enfileira automaticamente a proxima pagina
 async function processIntegrationJob(client, job) {
   const loaded = await loadIntegrationWithSecrets(client, job.integration_id);
   const payload = job.payload || {};
@@ -132,6 +141,7 @@ async function processIntegrationJob(client, job) {
   if (job.job_type === SYNC_OMIE_PRODUCTS || job.job_type === SYNC_OMIE_FULL) {
     const result = await syncOmieProducts(client, { loaded, payload });
     if (result.next_page) {
+      // Ainda ha paginas restantes: agenda a continuacao como novo job
       await enqueueIntegrationJob(client, {
         integrationId: job.integration_id,
         jobType: SYNC_OMIE_PRODUCTS,
@@ -154,6 +164,7 @@ async function processIntegrationJob(client, job) {
   };
 }
 
+// Carrega a integracao e descriptografa suas credenciais para uso na chamada OMIE
 async function loadIntegrationWithSecrets(client, integrationId) {
   const integrationResult = await client.query("SELECT * FROM integrations WHERE id = $1 LIMIT 1", [integrationId]);
   const integration = integrationResult.rows[0];
@@ -174,6 +185,7 @@ async function loadIntegrationWithSecrets(client, integrationId) {
   return { integration, secrets };
 }
 
+// Marca o job como em processamento, incrementando tentativas quando a coluna existir
 async function markIntegrationJobProcessing(client, id) {
   if (await hasColumn(client, "integration_jobs", "started_at")) {
     await client.query(
@@ -190,6 +202,7 @@ async function markIntegrationJobProcessing(client, id) {
   await client.query("UPDATE integration_jobs SET status = 'PROCESSANDO' WHERE id = $1", [id]);
 }
 
+// Job com warning fica CONCLUIDO_COM_ALERTAS em vez de CONCLUIDO, para chamar atencao na UI
 function getCompletedJobStatus(result = {}) {
   return result?.warning ? "CONCLUIDO_COM_ALERTAS" : "CONCLUIDO";
 }
@@ -211,6 +224,8 @@ async function markIntegrationJobCompleted(client, id, result = null, status = "
   await client.query("UPDATE integration_jobs SET status = $2 WHERE id = $1", [id, status]);
 }
 
+// Registra a falha do job e propaga o erro para a integracao; classifica erro de credencial
+// separadamente de erro temporario para orientar a estrategia de retentativa
 async function markIntegrationJobFailed(client, id, error) {
   const message = safeErrorMessage(error);
   const credentialError = /credenciais|authenticate|autentic/i.test(message);
@@ -240,10 +255,12 @@ async function getIntegrationJobById(client, id) {
   return result.rows[0] || null;
 }
 
+// Extrai uma mensagem de erro segura e limitada em tamanho para armazenar no banco
 function safeErrorMessage(error) {
   return String(error?.message || error || "Falha ao processar job OMIE.").slice(0, 1000);
 }
 
+// Atualiza o horario do ultimo sucesso de sincronizacao por escopo, se a tabela/coluna existir
 async function markSyncStateSuccess(client, integrationId, scope) {
   const table = await client.query("SELECT to_regclass('integration_sync_state') AS exists");
   if (!table.rows[0]?.exists) return;
@@ -266,6 +283,7 @@ async function markSyncStateSuccess(client, integrationId, scope) {
   );
 }
 
+// Marca a integracao como conectada e limpa o ultimo erro apos um job bem-sucedido
 async function markIntegrationSuccess(client, integrationId) {
   await client.query(
     `UPDATE integrations
@@ -278,6 +296,7 @@ async function markIntegrationSuccess(client, integrationId) {
   ).catch(() => {});
 }
 
+// Verifica se uma coluna existe no schema (usado para compatibilidade entre versoes do banco)
 async function hasColumn(client, tableName, columnName) {
   const result = await client.query(
     `SELECT 1
@@ -294,6 +313,8 @@ async function hasColumn(client, tableName, columnName) {
 // Leitura OMIE usa janela com sobreposicao de INTERVAL '2 minutes' para evitar lacunas.
 export const OMIE_MOVEMENT_OVERLAP = "INTERVAL '2 minutes'";
 
+// Classifica o "calor" de um produto pela recencia da ultima consulta, para priorizar
+// atualizacoes de saldo em produtos consultados com mais frequencia
 export function classifyProductTemperature(lastRequestedAt) {
   if (!lastRequestedAt) return "FRIO";
   const ageMs = Date.now() - new Date(lastRequestedAt).getTime();

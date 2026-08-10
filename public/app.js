@@ -6,6 +6,7 @@ import { startAutoRefresh, stopAutoRefresh } from "./js/ui/auto-refresh.js";
 import { toast } from "./js/ui/notifications.js";
 import { moneyDate, monthLabel, monthsAgo, pendingReleaseQty, today, weekAgo } from "./js/utils/formatters.js";
 import { parseProductsFile, spreadsheetText } from "./js/utils/spreadsheets.js";
+import { uuid } from "./js/utils/uuid.js";
 import {
   activateOrderAlertAudio,
   bindOrderAlertSettings,
@@ -18,10 +19,12 @@ let damageDraftItems = [];
 let renderDamageDraftItems;
 let viewDamageReturn;
 
+// Gera uma chave única para evitar requisições duplicadas (idempotência)
 function createIdempotencyKey() {
-  return crypto.randomUUID();
+  return uuid();
 }
 
+// Monta as opções de fetch incluindo o header de idempotência
 function idempotentRequestOptions(body, idempotencyKey = createIdempotencyKey()) {
   return {
     method: "POST",
@@ -30,16 +33,40 @@ function idempotentRequestOptions(body, idempotencyKey = createIdempotencyKey())
   };
 }
 
+// Recupera ou cria a chave de idempotência associada a um botão
 function buttonIdempotencyKey(button) {
   if (!button) return createIdempotencyKey();
   button.dataset.idempotencyKey ||= createIdempotencyKey();
   return button.dataset.idempotencyKey;
 }
 
+// Remove a chave de idempotência armazenada no botão
 function clearButtonIdempotencyKey(button) {
   if (button) delete button.dataset.idempotencyKey;
 }
 
+// Formata o resultado de um job de integração para exibição
+function formatIntegrationJobResult(result) {
+  if (!result) return "-";
+  const data = typeof result === "string"
+    ? (() => {
+      try {
+        return JSON.parse(result);
+      } catch {
+        return null;
+      }
+    })()
+    : result;
+  if (!data || typeof data !== "object") return "-";
+  const parts = [];
+  if (Number.isFinite(Number(data.received))) parts.push(`${Number(data.received)} recebidos`);
+  if (Number.isFinite(Number(data.created))) parts.push(`${Number(data.created)} criados`);
+  if (Number.isFinite(Number(data.updated))) parts.push(`${Number(data.updated)} atualizados`);
+  if (Number.isFinite(Number(data.pages))) parts.push(`${Number(data.pages)} página(s)`);
+  return parts.length ? parts.join(" | ") : "-";
+}
+
+// Monta o layout base (shell) da aplicação com menu e conteúdo
 function shell(content, actions = "") {
   const role = state.user?.role;
   const displayName = role === "admin" ? "Almoxarifado" : state.user?.name;
@@ -150,6 +177,7 @@ function shell(content, actions = "") {
   document.querySelector("#order-alert-activate")?.addEventListener("click", activateOrderAlertAudio);
 }
 
+// Carrega os dados iniciais da aplicação (bootstrap)
 async function loadBootstrap() {
   const data = await request("/api/bootstrap");
   state.user = data.user;
@@ -160,13 +188,30 @@ async function loadBootstrap() {
 }
 
 
-const orderStatuses = ["Pendente", "Em Andamento", "Aguardando Retirada", "Finalizado"];
+const releaseKanbanStatuses = ["Pendente", "Em Andamento", "Aguardando Retirada"];
+const orderStatuses = [...releaseKanbanStatuses, "Finalizado"];
+const orderStatusCodes = {
+  Pendente: "PENDENTE",
+  "Em Andamento": "EM_ANDAMENTO",
+  "Aguardando Retirada": "AGUARDANDO_RETIRADA",
+  Finalizado: "FINALIZADO"
+};
+const orderStatusFromCode = {
+  PENDENTE: "Pendente",
+  EM_ANDAMENTO: "Em Andamento",
+  AGUARDANDO_RETIRADA: "Aguardando Retirada",
+  FINALIZADO: "Finalizado"
+};
 const orderStatusLabels = {
   Pendente: "Pendentes",
   "Em Andamento": "Em andamento",
   "Aguardando Retirada": "Aguardando Retirada",
   Finalizado: "Finalizado"
 };
+const releaseKanbanOperations = new Map();
+const releaseKanbanKnownVersions = new Map();
+const releaseKanbanRecentStatuses = new Map();
+let releaseKanbanOperationSeq = 0;
 
 const damageStatuses = [
   "Aguardando Produto",
@@ -188,10 +233,12 @@ const damageMotivos = [
   "Outro motivo"
 ];
 
+// Gera a chave de agrupamento de um pedido
 function orderGroupKey(row) {
   return `${row.codigo_pedido || row.id || ""}::${row.status || ""}`;
 }
 
+// Obtém o timestamp mais recente de mudança de status do pedido
 function orderStatusTimestamp(row = {}) {
   const status = row.status || "";
   const value = status === "Em Andamento"
@@ -205,6 +252,7 @@ function orderStatusTimestamp(row = {}) {
   return Number.isFinite(timestamp) ? timestamp : 0;
 }
 
+// Ordena grupos de pedidos do mais recente para o mais antigo
 function sortOrderGroupsNewest(groups = []) {
   return [...groups].sort((left, right) => {
     const diff = orderStatusTimestamp(right[0]) - orderStatusTimestamp(left[0]);
@@ -213,20 +261,24 @@ function sortOrderGroupsNewest(groups = []) {
   });
 }
 
+// Filtra os itens do pedido a exibir conforme o status
 function orderDisplayItemsForStatus(group = []) {
   return group;
 }
 
+// Filtra grupos de pedidos pelo status informado
 function orderGroupsForStatus(grouped = [], status) {
   return sortOrderGroupsNewest(grouped
     .filter((group) => group[0]?.status === status)
     .filter((group) => orderDisplayItemsForStatus(group).length > 0));
 }
 
+// Retorna os itens já liberados de um grupo de pedido
 function orderReleasedItems(group = []) {
   return group.filter((item) => Number(item.quantidade_liberada || 0) > 0);
 }
 
+// Calcula o valor de estoque central de um item
 function centralStockValue(item = {}) {
   const value = item.estoque_central ?? item.saldo ?? item.qtd_total ?? 0;
   return Number.isFinite(Number(value)) ? Number(value) : 0;
@@ -242,6 +294,7 @@ function centralStockValue(item = {}) {
 
 
 
+// Importa produtos em lotes para evitar sobrecarga da API
 async function importProductsInBatches(items) {
   const batchSize = 250;
   let imported = 0;
@@ -259,10 +312,12 @@ async function importProductsInBatches(items) {
   return imported;
 }
 
+// Monta as opções de categoria para os selects
 function categoryOptions() {
   return [...new Set(state.categories.map((category) => String(category || "").trim()).filter(Boolean))].sort();
 }
 
+// Conecta aos eventos (SSE) de integração em tempo real
 function connectIntegrationEvents() {
   if (!window.EventSource || state.integrationEventsConnected) return;
   state.integrationEventsConnected = true;
@@ -291,6 +346,7 @@ function connectIntegrationEvents() {
   };
 }
 
+// Roteador principal: renderiza a view solicitada
 async function route(view) {
   try {
     stopAutoRefresh();
@@ -321,8 +377,7 @@ async function route(view) {
           const to = document.querySelector("#release-to")?.value || today();
           const pdvId = document.querySelector("#release-pdv-filter")?.value || "";
           const q = document.querySelector("#release-code-filter")?.value || "";
-          const status = document.querySelector(".release-tabs .config-tab.is-active")?.dataset.releaseStatus || "Pendente";
-          await viewRelease({ from, to, pdvId, q, status, auto: true });
+          await viewRelease({ from, to, pdvId, q, auto: true });
         }
       });
     }
@@ -335,8 +390,7 @@ async function route(view) {
           const to = document.querySelector("#release-to")?.value || today();
           const pdvId = document.querySelector("#release-pdv-filter")?.value || "";
           const q = document.querySelector("#release-code-filter")?.value || "";
-          const status = document.querySelector(".release-tabs .config-tab.is-active")?.dataset.releaseStatus || "Pendente";
-          await viewRelease({ from, to, pdvId, q, status, auto: true });
+          await viewRelease({ from, to, pdvId, q, auto: true });
         }
       });
     } else {
@@ -352,6 +406,7 @@ async function route(view) {
   }
 }
 
+// View de criação/edição de pedidos (PDV)
 async function viewOrder(options = {}) {
   const data = await request("/api/pdv/products", { silentLoading: Boolean(options.auto) });
   const draftPayload = options.skipDraftRestore
@@ -658,7 +713,7 @@ async function viewOrder(options = {}) {
       toast("Informe o solicitante do pedido.", "error");
       return;
     }
-    state.orderIdempotencyKey ||= crypto.randomUUID();
+    state.orderIdempotencyKey ||= uuid();
     const previousText = button.textContent;
     button.disabled = true;
     button.textContent = "Enviando pedido...";
@@ -696,6 +751,7 @@ async function viewOrder(options = {}) {
   }, 10000);
 }
 
+// View "Meus Pedidos": lista pedidos do usuário logado
 async function viewMine(filters = {}) {
   const from = filters.from || weekAgo();
   const to = filters.to || today();
@@ -787,6 +843,7 @@ async function viewMine(filters = {}) {
   }, 7000);
 }
 
+// Atualiza os contadores por status na view Meus Pedidos
 function updateMineCounters(byStatus) {
   Object.entries(byStatus).forEach(([status, groups]) => {
     const el = document.querySelector(`[data-mine-status="${CSS.escape(status)}"] span`);
@@ -794,6 +851,7 @@ function updateMineCounters(byStatus) {
   });
 }
 
+// Verifica se um campo do formulário foi alterado
 function fieldChanged(field) {
   if (!field || field.disabled || (!field.name && field.type !== "file")) return false;
   if (field.type === "file") return Boolean(field.files?.length);
@@ -804,6 +862,7 @@ function fieldChanged(field) {
   return field.value !== field.defaultValue;
 }
 
+// Verifica se o card de pedido tem alterações não salvas
 function orderCardHasUnsavedWork(card) {
   if (!card) return false;
   if (card.classList?.contains("is-open")) return true;
@@ -813,6 +872,7 @@ function orderCardHasUnsavedWork(card) {
   return [...card.querySelectorAll("input, textarea, select")].some(fieldChanged);
 }
 
+// Sincroniza a lista de pedidos exibida sem perder edições em andamento
 function syncMineOrderList(visibleGroups, activeStatus) {
   const list = document.querySelector("#mine-orders-list");
   if (!list) return;
@@ -867,6 +927,7 @@ function syncMineOrderList(visibleGroups, activeStatus) {
   }
 }
 
+// Monta o HTML do card de pedido no PDV
 function pdvOrderCard(group) {
   const first = group[0];
   const visibleItems = orderDisplayItemsForStatus(group);
@@ -920,12 +981,14 @@ function pdvOrderCard(group) {
   </article>`;
 }
 
+// View de estoque do próprio PDV
 async function viewMyStock(options = {}) {
   const data = await request("/api/pdv/products", { silentLoading: Boolean(options.auto) });
   shell(`<section class="card"><h3 class="text-xl font-black">Meu estoque</h3><div id="my-stock-content">${myStockContent(data.products)}</div></section>`);
   startAutoRefresh("my-stock", syncMyStockContent, 10000);
 }
 
+// Monta o conteúdo HTML da lista de estoque do PDV
 function myStockContent(products = []) {
   const stockedProducts = products.filter((product) => Number(product.quantidade || 0) > 0);
   return stockedProducts.length
@@ -933,6 +996,7 @@ function myStockContent(products = []) {
     : `<p class="mt-3 text-sm text-slate-500">Nenhum produto com quantidade em estoque.</p>`;
 }
 
+// Recarrega e sincroniza o conteúdo do estoque do PDV
 async function syncMyStockContent() {
   const target = document.querySelector("#my-stock-content");
   if (!target) return;
@@ -940,6 +1004,7 @@ async function syncMyStockContent() {
   target.innerHTML = myStockContent(data.products || []);
 }
 
+// Converte a lista de fotos de avaria em texto
 function damagePhotosText(value) {
   try {
     const parsed = Array.isArray(value) ? value : JSON.parse(value || "[]");
@@ -949,6 +1014,7 @@ function damagePhotosText(value) {
   }
 }
 
+// Normaliza o valor de fotos de avaria em array
 function damagePhotosArray(value) {
   try {
     const parsed = Array.isArray(value) ? value : JSON.parse(value || "[]");
@@ -960,12 +1026,14 @@ function damagePhotosArray(value) {
   }
 }
 
+// Obtém as fotos de avaria associadas a um item
 function damagePhotosForItem(damageItem, parentItem, totalItems = 0) {
   const itemPhotos = damagePhotosArray(damageItem?.fotos);
   if (itemPhotos.length) return itemPhotos;
   return totalItems <= 1 ? damagePhotosArray(parentItem?.fotos) : [];
 }
 
+// Monta o selo (badge) indicando item verificado
 function verifiedBadge(item) {
   if (!item.verificado) return "";
   const details = [
@@ -976,6 +1044,7 @@ function verifiedBadge(item) {
   return `<span class="verified-badge" title="${esc(details || "Devolução passou por verificação.")}">Editado</span>`;
 }
 
+// Monta o selo indicando que o pedido foi editado
 function orderEditedBadge(item) {
   if (!item?.pedido_reaberto_finalizado) return "";
   const details = [
@@ -985,6 +1054,7 @@ function orderEditedBadge(item) {
   return `<span class="verified-badge order-edited-badge" title="${esc(details || "Pedido finalizado foi reaberto para edição.")}">Editado</span>`;
 }
 
+// Formata uma data para o formato aceito por input datetime-local
 function localDateTimeInput(value = null) {
   const date = value ? new Date(value) : new Date();
   if (Number.isNaN(date.getTime())) return "";
@@ -992,6 +1062,7 @@ function localDateTimeInput(value = null) {
   return offsetDate.toISOString().slice(0, 16);
 }
 
+// Exibe um modal de confirmação genérico do sistema
 function confirmSystem({
   title = "Confirmar ação",
   message = "Deseja continuar?",
@@ -1036,6 +1107,68 @@ function confirmSystem({
   });
 }
 
+// Exibe o modal de confirmação para exclusão de pedido
+function confirmOrderDeleteSystem(orderCode = "") {
+  return new Promise((resolve) => {
+    const code = String(orderCode || "").trim();
+    document.querySelector(".system-confirm-modal")?.remove();
+    const modal = document.createElement("div");
+    modal.className = "system-confirm-modal";
+    modal.innerHTML = `
+      <div class="system-confirm-dialog" role="dialog" aria-modal="true" aria-label="Excluir pedido">
+        <div class="system-confirm-head">
+          <div>
+            <p class="eyebrow">Confirmação</p>
+            <h3>Excluir pedido</h3>
+          </div>
+          <button class="icon-action system-confirm-cancel" type="button" aria-label="Fechar">&times;</button>
+        </div>
+        <p>Esta ação excluirá definitivamente o pedido <strong>${esc(code)}</strong>, somente se ele ainda não tiver movimentação, assinatura ou retirada.</p>
+        <p class="system-confirm-note">Digite o código do pedido e informe uma justificativa para confirmar.</p>
+        <label class="system-confirm-field">Código do pedido
+          <input class="system-confirm-input" name="confirmation_code" autocomplete="off" placeholder="${esc(code)}" />
+        </label>
+        <label class="system-confirm-field">Justificativa
+          <textarea class="system-confirm-input" name="justificativa" rows="3" placeholder="Informe o motivo da exclusão"></textarea>
+        </label>
+        <div class="order-card-actions">
+          <button class="btn secondary system-confirm-cancel" type="button">Cancelar</button>
+          <button class="btn danger system-confirm-delete" type="button" disabled>Excluir pedido</button>
+        </div>
+      </div>`;
+    const codeInput = modal.querySelector("[name='confirmation_code']");
+    const reasonInput = modal.querySelector("[name='justificativa']");
+    const confirmBtn = modal.querySelector(".system-confirm-delete");
+    const close = () => {
+      modal.remove();
+      resolve({ confirmed: false, justification: "" });
+    };
+    const update = () => {
+      const typedCode = String(codeInput.value || "").trim();
+      const reason = String(reasonInput.value || "").trim();
+      confirmBtn.disabled = typedCode !== code || reason.length < 3;
+    };
+    codeInput.addEventListener("input", update);
+    reasonInput.addEventListener("input", update);
+    modal.querySelectorAll(".system-confirm-cancel").forEach((button) => button.addEventListener("click", close));
+    modal.addEventListener("click", (event) => {
+      if (event.target === modal) close();
+    });
+    modal.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") close();
+    });
+    confirmBtn.addEventListener("click", () => {
+      if (confirmBtn.disabled) return;
+      const justification = String(reasonInput.value || "").trim();
+      modal.remove();
+      resolve({ confirmed: true, justification });
+    });
+    document.body.appendChild(modal);
+    codeInput.focus();
+  });
+}
+
+// Monta as abas de status da tela de avarias
 function damageStatusTabs(activeStatus, byStatus, attr = "damage-status") {
   return damageStatuses.map((status) => `
     <button class="config-tab ${status === activeStatus ? "is-active" : ""}" type="button" data-${attr}="${esc(status)}" role="tab" aria-selected="${status === activeStatus ? "true" : "false"}">
@@ -1043,6 +1176,7 @@ function damageStatusTabs(activeStatus, byStatus, attr = "damage-status") {
     </button>`).join("");
 }
 
+// Monta a tabela de devoluções de avaria
 function damageReturnTable(devolucoes = []) {
   if (!devolucoes.length) {
     return `<div class="damage-followup-empty">Nenhuma devolução encontrada para o filtro aplicado.</div>`;
@@ -1105,6 +1239,7 @@ function damageReturnTable(devolucoes = []) {
   }).join("")}</div>`;
 }
 
+// Normaliza o valor de itens de avaria em array
 function damageItemsArray(value) {
   if (Array.isArray(value)) return value;
   try {
@@ -1115,6 +1250,7 @@ function damageItemsArray(value) {
   }
 }
 
+// Monta o HTML de pré-visualização das fotos de avaria
 function damagePhotoPreviewHtml(photos = [], names = []) {
   return photos.length
     ? photos.map((_, index) => `
@@ -1126,6 +1262,7 @@ function damagePhotoPreviewHtml(photos = [], names = []) {
     : `<span>Nenhuma foto anexada.</span>`;
 }
 
+// Faz o parse do payload de foto recebido
 function parsePhotoPayload(value) {
   try {
     const parsed = JSON.parse(value || "[]");
@@ -1135,6 +1272,7 @@ function parsePhotoPayload(value) {
   }
 }
 
+// Normaliza o rótulo de status de avaria para exibição
 function normalizeDamageStatusLabel(status) {
   if (["Cancelado", "Cancelada"].includes(status)) return "Cancelado";
   if (["Pendente", "Enviada ao almoxarifado", "Enviar para o Almoxarifado", "Aguardando recebimento físico", "Aguardando entrega física", "Aguardando Entrega Física"].includes(status)) return "Aguardando Produto";
@@ -1146,6 +1284,7 @@ function normalizeDamageStatusLabel(status) {
   return status || "-";
 }
 
+// Determina o status visível de um item
 function itemVisibleStatus(item) {
   if (Number(item.quantidade_recusada || 0) > 0 && item.retirada_confirmada) return "Retirado";
   if (item.status_item === "Aguardando retirada pelo ponto") return "Aguardando retirada pelo ponto";
@@ -1155,6 +1294,7 @@ function itemVisibleStatus(item) {
   return normalizeDamageStatusLabel(item.status_item);
 }
 
+// Determina o status de avaria visível no PDV
 function pdvDamageVisibleStatus(item) {
   const visibleStatus = normalizeDamageStatusLabel(item.status);
   const items = damageItemsArray(item.itens);
@@ -1166,6 +1306,7 @@ function pdvDamageVisibleStatus(item) {
   return visibleStatus;
 }
 
+// Lista os próximos status possíveis para uma avaria
 function damageNextStatuses(status) {
   const current = normalizeDamageStatusLabel(status);
   if (current === "Finalizado" || current === "Recusado") return ["Verificação"];
@@ -1173,6 +1314,7 @@ function damageNextStatuses(status) {
   return [];
 }
 
+// Calcula o estado de devolução recusada do item
 function damageRefusedReturnState(item) {
   const items = damageItemsArray(item.itens);
   const displayItems = items.length ? items : [item];
@@ -1181,14 +1323,17 @@ function damageRefusedReturnState(item) {
   return refusedItems.every((damageItem) => Boolean(damageItem.retirada_confirmada)) ? "devolvido" : "aguardando";
 }
 
+// Verifica se a transição de status exige aprovação do admin
 function damageStatusNeedsAdmin(currentStatus, nextStatus) {
   return ["Finalizado", "Recusado", "Verificação"].includes(currentStatus) || nextStatus === "Verificação";
 }
 
+// Verifica se a transição de status exige justificativa
 function damageStatusNeedsReason(currentStatus, nextStatus) {
   return nextStatus === "Recusado" || nextStatus === "Verificação" || currentStatus === "Verificação";
 }
 
+// Abre o modal de alteração de status da avaria
 function openDamageStatusModal({ id, status, code, refresh }) {
   const currentStatus = normalizeDamageStatusLabel(status);
   const nextStatuses = damageNextStatuses(currentStatus);
@@ -1281,6 +1426,7 @@ function openDamageStatusModal({ id, status, code, refresh }) {
   });
 }
 
+// Abre o visualizador de assinatura da avaria
 function openDamageSignatureViewer({ image, code, responsible, date, pdv, user }) {
   const modal = document.createElement("div");
   modal.className = "photo-viewer";
@@ -1362,6 +1508,7 @@ renderDamageDraftItems = function renderDamageDraftItemsNew() {
   }));
 }
 
+// Liga os eventos dos botões de cancelamento de avaria
 function bindDamageCancelButtons() {
   document.querySelectorAll(".cancel-damage").forEach((button) => {
     if (button.dataset.bound === "true") return;
@@ -1378,6 +1525,7 @@ function bindDamageCancelButtons() {
   });
 };
 
+// Abre o modal de cancelamento da devolução de avaria
 function openDamageCancelModal(id) {
   const modal = document.createElement("div");
   modal.className = "damage-status-modal";
@@ -1557,8 +1705,8 @@ viewDamageReturn = async function viewDamageReturnNew(filters = {}) {
   let activeDamageSuggestionIndex = -1;
   let selectedDamageProduct = null;
   let currentDamagePhotos = [];
-  const legacyDamageUploadDraftId = `damage-legacy-${state.user?.pdvId || state.user?.name || "pdv"}-${Date.now()}-${crypto.randomUUID()}`;
-  let legacyDamageItemTempId = crypto.randomUUID();
+  const legacyDamageUploadDraftId = `damage-legacy-${state.user?.pdvId || state.user?.name || "pdv"}-${Date.now()}-${uuid()}`;
+  let legacyDamageItemTempId = uuid();
   const normalizeDamageQuantity = (value) => Number(String(value || "").replace(",", "."));
   const normalizeDamageDateValue = (value) => {
     const raw = String(value || "").trim();
@@ -1912,7 +2060,7 @@ viewDamageReturn = async function viewDamageReturnNew(filters = {}) {
     damageForm.querySelector('[name="data_validade"]').value = "";
     damageForm.querySelector('[name="observacao"]').value = "";
     syncCurrentDamagePhotos([]);
-    legacyDamageItemTempId = crypto.randomUUID();
+    legacyDamageItemTempId = uuid();
     document.querySelector("#damage-edit-index").value = "";
     document.querySelector("#add-damage-item").textContent = "+ Adicionar produto";
     const photoInput = document.querySelector("#damage-photos");
@@ -2295,8 +2443,8 @@ viewDamageReturn = async function viewDamageReturnNew(filters = {}) {
   const observationField = form.querySelector('[name="observacao"]');
   const observationCount = document.querySelector("#damage-observation-count");
   const draftKey = `acpark:damage-return-draft:${state.user?.id || state.user?.name || "pdv"}`;
-  const uploadDraftId = `damage-${state.user?.pdvId || state.user?.name || "pdv"}-${Date.now()}-${crypto.randomUUID()}`;
-  let currentItemTempId = crypto.randomUUID();
+  const uploadDraftId = `damage-${state.user?.pdvId || state.user?.name || "pdv"}-${Date.now()}-${uuid()}`;
+  let currentItemTempId = uuid();
   let selectedProduct = null;
   let currentPhotos = [];
   let activeSuggestion = -1;
@@ -2618,7 +2766,7 @@ viewDamageReturn = async function viewDamageReturnNew(filters = {}) {
       valid: Object.keys(errors).length === 0,
       errors,
       item: {
-        itemId: crypto.randomUUID(),
+        itemId: uuid(),
         produto_id: product?.id || "",
         produtoId: product?.id || "",
         sku: product?.sku || "",
@@ -2678,7 +2826,7 @@ viewDamageReturn = async function viewDamageReturnNew(filters = {}) {
     fields.data_validade.value = "";
     observationField.value = "";
     syncPhotos([]);
-    currentItemTempId = crypto.randomUUID();
+    currentItemTempId = uuid();
     document.querySelector("#damage-edit-index").value = "";
     addButton.textContent = "+ Adicionar produto à devolução";
     clearErrors();
@@ -2986,6 +3134,7 @@ viewDamageReturn = async function viewDamageReturnNew(filters = {}) {
   }, 10000, { ignoreEditing: true });
 };
 
+// Monta o card administrativo de avaria
 function damageAdminCard(item) {
   const items = damageItemsArray(item.itens);
   const displayItems = items.length ? items : [item];
@@ -3153,6 +3302,7 @@ function damageAdminCard(item) {
   </article>`;
 }
 
+// Monta o HTML de impressão do relatório de avarias
 function buildDamagePrintHtml(devolucoes = [], options = {}) {
   const title = options.title || "Relatório de Devoluções de Avarias";
   const generatedAt = moneyDate(new Date().toISOString());
@@ -3314,6 +3464,7 @@ function buildDamagePrintHtml(devolucoes = [], options = {}) {
     </html>`;
 }
 
+// Dispara a impressão do relatório de avarias
 function printDamageReport(devolucoes = [], options = {}) {
   const printWindow = window.open("", "_blank", "width=1024,height=768");
   if (!printWindow) {
@@ -3353,6 +3504,7 @@ function printDamageReport(devolucoes = [], options = {}) {
   setTimeout(safeStartPrint, 2500);
 }
 
+// View administrativa de avarias
 async function viewDamagesAdmin(filters = {}) {
   const isDamageHistory = Boolean(filters.historyOnly);
   const activeStatus = isDamageHistory
@@ -3731,10 +3883,12 @@ async function viewDamagesAdmin(filters = {}) {
   }
 }
 
+// View de histórico de avarias
 async function viewDamageHistory(filters = {}) {
   await viewDamagesAdmin({ ...filters, historyOnly: true });
 }
 
+// Liga o visualizador de fotos de avaria aos elementos da tela
 function bindDamagePhotoViewer(root = document) {
   root.querySelectorAll(".damage-thumb").forEach((button) => {
     if (button.dataset.bound === "true") return;
@@ -3747,6 +3901,7 @@ function bindDamagePhotoViewer(root = document) {
   });
 }
 
+// Abre o visualizador de fotos de avaria em tela cheia
 function openDamagePhotoViewer(photos, initialIndex, product) {
   photos = (photos || []).map((photo) => typeof photo === "string" ? photo : (photo?.url || photo?.thumbnail_url || photo?.data || "")).filter(Boolean);
   if (!photos.length) return;
@@ -3804,6 +3959,7 @@ function openDamagePhotoViewer(photos, initialIndex, product) {
   document.body.appendChild(modal);
 }
 
+// Liga os eventos de assinatura de avaria
 function bindDamageSignatures(root = document) {
   root.querySelectorAll(".signature-pad").forEach((canvas) => {
     if (canvas.dataset.bound === "true") return;
@@ -3902,6 +4058,7 @@ function bindDamageSignatures(root = document) {
   });
 }
 
+// Abre o modal de assinatura de retirada de avaria
 function openDamageWithdrawSignature({ damageId, itemId, product, requested, refused, unit, responsible, items = [], refresh }) {
   const rows = items.length ? items : [{ product, requested, refused, unit }];
   const modal = document.createElement("div");
@@ -4036,6 +4193,7 @@ function openDamageWithdrawSignature({ damageId, itemId, product, requested, ref
   });
 }
 
+// View de integrações com o OMIE
 async function viewOmieIntegrations(filters = {}) {
   const status = filters.status || "";
   const type = filters.type || "";
@@ -4151,13 +4309,14 @@ async function viewOmieIntegrations(filters = {}) {
       </form>
     </section>
     <section class="card">
-      ${table(["Status", "Job", "Integração", "Tentativas", "Página", "Último erro", "Concluído em", "Ações"], jobs.map((job) => `
+      ${table(["Status", "Job", "Integração", "Tentativas", "Página", "Resultado", "Último erro", "Concluído em", "Ações"], jobs.map((job) => `
         <tr>
           <td>${statusPill(job.status)}</td>
           <td>${esc(job.job_type || "-")}</td>
           <td>${esc(job.integration_name || job.integration_id || "-")}</td>
           <td>${esc(job.attempts || 0)}</td>
           <td>${esc(job.current_page || 1)}</td>
+          <td>${formatIntegrationJobResult(job.result)}</td>
           <td>${esc(job.last_error || "-")}</td>
           <td>${job.completed_at ? moneyDate(job.completed_at) : "-"}</td>
           <td>${job.status !== "CONCLUIDO" ? `<button class="btn secondary reprocess-omie-job" type="button" data-id="${job.id}">Processar</button>` : "-"}</td>
@@ -4354,6 +4513,7 @@ async function viewOmieIntegrations(filters = {}) {
   }));
 }
 
+// View do painel (dashboard) com indicadores gerais
 async function viewDashboard(filters = {}) {
   const from = filters.from || monthsAgo(6);
   const to = filters.to || today();
@@ -4460,6 +4620,7 @@ async function viewDashboard(filters = {}) {
   }));
 }
 
+// View de produtos (versão antiga)
 async function viewProducts() {
   const data = await request("/api/admin/products");
   const categories = categoryOptions();
@@ -4662,6 +4823,7 @@ async function viewProducts() {
   });
 }
 
+// View de produtos (estoque central) com filtros e planilha
 async function viewProductsV2(options = {}) {
   const productFilterStorageKey = "acpark_central_product_filter";
   const readCentralProductFilter = () => {
@@ -4699,6 +4861,12 @@ async function viewProductsV2(options = {}) {
     return values.map((category) => String(category || "").trim()).filter(Boolean);
   }))].sort((a, b) => a.localeCompare(b, "pt-BR"));
   const productOrder = new Map(data.products.map((product, index) => [String(product.sku), index]));
+  const sheetCategoryOptions = [...new Set(data.products.flatMap((product) => {
+    const values = Array.isArray(product.categorias) && product.categorias.length
+      ? product.categorias
+      : String(product.categoria || "").split(",");
+    return values.map((category) => String(category || "").trim()).filter(Boolean);
+  }))].sort((a, b) => a.localeCompare(b, "pt-BR"));
   const productRow = (p, actions = "") => {
     const categories = Array.isArray(p.categorias) && p.categorias.length ? p.categorias : String(p.categoria || "").split(",");
     const categoryText = categories.map((category) => String(category || "").trim()).filter(Boolean).join(", ") || "-";
@@ -4773,6 +4941,7 @@ async function viewProductsV2(options = {}) {
             </div>
           </div>
           <div class="filter-actions">
+            <button class="btn" id="search-product-filter" type="button">Buscar</button>
             <button class="btn secondary" id="clear-product-filter" type="button">Limpar filtros</button>
           </div>
         </section>
@@ -4849,9 +5018,44 @@ async function viewProductsV2(options = {}) {
       </section>
     </section>`, `
       <div class="sheet-actions">
-        <button class="btn secondary" id="sheet-actions-toggle">Planilha</button>
-        <div class="sheet-actions-menu hidden" id="sheet-actions-menu">
-          <button class="btn secondary" id="export-products">Exportar Google Sheets</button>
+        <button class="btn secondary" id="sheet-actions-toggle" type="button" aria-expanded="false" aria-controls="sheet-actions-menu">Planilha</button>
+        <div class="sheet-manager-backdrop hidden" id="sheet-manager-backdrop" aria-hidden="true"></div>
+        <div class="sheet-actions-menu sheet-manager-menu hidden" id="sheet-actions-menu" role="dialog" aria-modal="true" aria-labelledby="sheet-manager-title">
+          <div class="sheet-manager-head">
+            <div>
+              <p class="eyebrow">Planilhas</p>
+              <strong id="sheet-manager-title">Gerenciar dados</strong>
+            </div>
+            <button class="icon-action" id="close-sheet-actions" type="button" aria-label="Fechar planilhas">&times;</button>
+          </div>
+          <label>Pesquisar
+            <input id="sheet-product-search" type="search" placeholder="SKU, produto ou categoria" />
+          </label>
+          <div class="sheet-manager-grid">
+            <label>Status
+              <select id="sheet-product-status">
+                <option value="">Todos</option>
+                <option value="ativo">Ativos</option>
+                <option value="inativo">Inativos</option>
+              </select>
+            </label>
+            <label>Origem
+              <select id="sheet-product-origin">
+                <option value="">Todas</option>
+                <option value="manual">Manual</option>
+                <option value="omie">OMIE</option>
+              </select>
+            </label>
+          </div>
+          <label>Categoria
+            <select id="sheet-product-category">
+              <option value="">Todas as categorias</option>
+              ${sheetCategoryOptions.map((category) => `<option value="${esc(category.toLowerCase())}">${esc(category)}</option>`).join("")}
+            </select>
+          </label>
+          <div class="sheet-manager-summary" id="sheet-manager-summary">${data.products.length} produto(s) disponíveis</div>
+          <button class="btn secondary" id="export-products-filtered" type="button">Exportar filtrados</button>
+          <button class="btn secondary" id="export-products-all" type="button">Exportar todos</button>
           <label class="btn secondary import-sheet-control">
             Importar planilha
             <input id="import-products" type="file" accept=".xlsx,.xls,.csv,.tsv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv,text/tab-separated-values" hidden />
@@ -4888,13 +5092,37 @@ async function viewProductsV2(options = {}) {
     sessionStorage.setItem(productFilterStorageKey, JSON.stringify(payload));
   };
 
+  const centralProductFilterPanel = document.querySelector("#central-product-filter");
+  const centralProductSearch = document.querySelector("#central-product-search");
+  const centralProductStatus = document.querySelector("#central-product-status");
+  const centralProductStockSort = document.querySelector("#central-product-stock-sort");
+  const centralCategorySearch = document.querySelector("#central-category-search");
+  const centralProductSearchButton = document.querySelector("#search-product-filter");
+  const centralCategoryRows = [...document.querySelectorAll("[data-category-option]")];
+  const centralProductRowsByPanel = new Map([...document.querySelectorAll(".product-panel")].map((panel) => [
+    panel.dataset.productPanel,
+    [...panel.querySelectorAll(".central-product-row")]
+  ]));
+  const centralPanelSortState = new Map();
+  let centralFilterFrame = 0;
+  let centralFilterVersion = 0;
+  const setCentralFilterBusy = (busy) => {
+    centralProductFilterPanel?.classList.toggle("is-filtering", busy);
+  };
   const applyCentralProductFilter = () => {
+    const version = ++centralFilterVersion;
+    if (centralFilterFrame) cancelAnimationFrame(centralFilterFrame);
+    setCentralFilterBusy(true);
+    centralFilterFrame = requestAnimationFrame(() => {
+      if (version !== centralFilterVersion) return;
+      const start = performance.now();
     const term = String(document.querySelector("#central-product-search")?.value || "").trim().toLowerCase();
     const status = String(document.querySelector("#central-product-status")?.value || "").trim().toLowerCase();
     const stockSort = String(document.querySelector("#central-product-stock-sort")?.value || "");
     const selectedCategories = [...document.querySelectorAll(".central-category-check:checked")].map((checkbox) => checkbox.value);
     const activePanel = document.querySelector(".product-panel.is-active");
-    const rows = [...(activePanel?.querySelectorAll(".central-product-row") || [])];
+      const activePanelKey = activePanel?.dataset.productPanel || "";
+      const rows = centralProductRowsByPanel.get(activePanelKey) || [];
     rows.forEach((row) => {
       const matchesTerm = !term || row.dataset.productSearch.includes(term);
       const rowCategories = String(row.dataset.productCategories || "").split("|").filter(Boolean);
@@ -4902,16 +5130,33 @@ async function viewProductsV2(options = {}) {
       const matchesStatus = !status || row.dataset.productStatus === status;
       row.classList.toggle("hidden", !(matchesTerm && matchesCategory && matchesStatus));
     });
-    const tbody = activePanel?.querySelector("tbody");
-    rows
-      .sort((a, b) => {
+      const sortSignature = `${activePanelKey}:${stockSort}`;
+      const tbody = activePanel?.querySelector("tbody");
+      if (tbody && centralPanelSortState.get(activePanelKey) !== sortSignature) {
+        rows
+          .slice()
+          .sort((a, b) => {
         if (!stockSort) return Number(a.dataset.productOrder || 0) - Number(b.dataset.productOrder || 0);
         const stockA = Number(a.dataset.productStock || 0);
         const stockB = Number(b.dataset.productStock || 0);
         return stockSort === "asc" ? stockA - stockB : stockB - stockA;
       })
-      .forEach((row) => tbody?.appendChild(row));
+          .forEach((row) => tbody.appendChild(row));
+        centralPanelSortState.set(activePanelKey, sortSignature);
+      }
     saveCentralProductFilter();
+      centralFilterFrame = 0;
+      requestAnimationFrame(() => setCentralFilterBusy(false));
+      if (window.__ACPACK_DEBUG_FILTERS__) {
+        console.debug("Filtro Estoque Central", {
+          tempoAteExecutarMs: Math.round(start),
+          tempoRenderizacaoMs: Math.round((performance.now() - start) * 10) / 10,
+          linhas: rows.length,
+          apiMs: 0,
+          bancoMs: 0
+        });
+      }
+    });
   };
   const updateCentralCategoryFilterLabel = () => {
     const selected = [...document.querySelectorAll(".central-category-check:checked")];
@@ -4931,21 +5176,34 @@ async function viewProductsV2(options = {}) {
     document.querySelector("#central-category-filter-menu")?.classList.add("hidden");
     document.querySelector("#central-category-filter-toggle")?.setAttribute("aria-expanded", "false");
   };
-  document.querySelector("#central-product-search")?.addEventListener("input", applyCentralProductFilter);
-  document.querySelector("#central-product-status")?.addEventListener("change", applyCentralProductFilter);
-  document.querySelector("#central-product-stock-sort")?.addEventListener("change", applyCentralProductFilter);
+  const executeCentralProductSearch = () => {
+    if (centralProductSearchButton?.disabled) return;
+    centralProductSearchButton.disabled = true;
+    centralProductSearchButton.textContent = "Buscando...";
+    applyCentralProductFilter();
+    setTimeout(() => {
+      centralProductSearchButton.disabled = false;
+      centralProductSearchButton.textContent = "Buscar";
+    }, 250);
+  };
+  centralProductSearch?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      executeCentralProductSearch();
+    }
+  });
+  centralProductSearchButton?.addEventListener("click", executeCentralProductSearch);
   document.querySelector("#central-category-filter-toggle")?.addEventListener("click", () => {
     const menu = document.querySelector("#central-category-filter-menu");
     const isHidden = menu?.classList.contains("hidden");
     menu?.classList.toggle("hidden", !isHidden);
     document.querySelector("#central-category-filter-toggle")?.setAttribute("aria-expanded", isHidden ? "true" : "false");
   });
-  document.querySelector("#central-category-search")?.addEventListener("input", (event) => {
+  centralCategorySearch?.addEventListener("input", (event) => {
     const term = String(event.target.value || "").trim().toLowerCase();
-    document.querySelectorAll("[data-category-option]").forEach((option) => {
+    centralCategoryRows.forEach((option) => {
       option.classList.toggle("hidden", term && !option.dataset.categoryOption.includes(term));
     });
-    saveCentralProductFilter();
   });
   document.querySelector("#central-category-select-all")?.addEventListener("change", (event) => {
     document.querySelectorAll(".central-category-check").forEach((checkbox) => {
@@ -4954,15 +5212,12 @@ async function viewProductsV2(options = {}) {
       }
     });
     updateCentralCategoryFilterLabel();
-    saveCentralProductFilter();
   });
   document.querySelectorAll(".central-category-check").forEach((checkbox) => checkbox.addEventListener("change", () => {
     updateCentralCategoryFilterLabel();
-    saveCentralProductFilter();
   }));
   document.querySelector("#apply-category-filter")?.addEventListener("click", () => {
     updateCentralCategoryFilterLabel();
-    applyCentralProductFilter();
     closeCentralCategoryFilter();
   });
   document.querySelector("#cancel-category-filter")?.addEventListener("click", closeCentralCategoryFilter);
@@ -4978,20 +5233,80 @@ async function viewProductsV2(options = {}) {
     updateCentralCategoryFilterLabel();
     closeCentralCategoryFilter();
     sessionStorage.removeItem(productFilterStorageKey);
-    applyCentralProductFilter();
   });
   updateCentralCategoryFilterLabel();
   applyCentralProductFilter();
 
   const sheetActionsMenu = document.querySelector("#sheet-actions-menu");
-  const closeSheetActions = () => sheetActionsMenu.classList.add("hidden");
-  document.querySelector("#sheet-actions-toggle").addEventListener("click", () => sheetActionsMenu.classList.toggle("hidden"));
-  document.querySelector("#export-products").addEventListener("click", () => {
+  const sheetActionsToggle = document.querySelector("#sheet-actions-toggle");
+  const sheetActionsBackdrop = document.querySelector("#sheet-manager-backdrop");
+  const closeSheetActions = () => {
+    sheetActionsMenu?.classList.add("hidden");
+    sheetActionsBackdrop?.classList.add("hidden");
+    sheetActionsToggle?.setAttribute("aria-expanded", "false");
+    document.body.classList.remove("sheet-manager-open");
+  };
+  const openSheetActions = () => {
+    sheetActionsMenu?.classList.remove("hidden");
+    sheetActionsBackdrop?.classList.remove("hidden");
+    sheetActionsToggle?.setAttribute("aria-expanded", "true");
+    document.body.classList.add("sheet-manager-open");
+    updateSheetSummary();
+    setTimeout(() => document.querySelector("#sheet-product-search")?.focus(), 0);
+  };
+  const sheetSearchInput = document.querySelector("#sheet-product-search");
+  const sheetStatusInput = document.querySelector("#sheet-product-status");
+  const sheetOriginInput = document.querySelector("#sheet-product-origin");
+  const sheetCategoryInput = document.querySelector("#sheet-product-category");
+  const sheetSummary = document.querySelector("#sheet-manager-summary");
+  const sheetFilteredProducts = () => {
+    const term = String(sheetSearchInput?.value || "").trim().toLowerCase();
+    const status = String(sheetStatusInput?.value || "");
+    const origin = String(sheetOriginInput?.value || "");
+    const category = String(sheetCategoryInput?.value || "");
+    return data.products.filter((product) => {
+      const categories = Array.isArray(product.categorias) && product.categorias.length
+        ? product.categorias
+        : String(product.categoria || "").split(",");
+      const categoryList = categories.map((item) => String(item || "").trim().toLowerCase()).filter(Boolean);
+      const text = `${product.sku || ""} ${product.nome || ""} ${categoryList.join(" ")}`.toLowerCase();
+      const productStatus = product.ativo ? "ativo" : "inativo";
+      const productOrigin = product.origem || "manual";
+      return (!term || text.includes(term))
+        && (!status || productStatus === status)
+        && (!origin || productOrigin === origin)
+        && (!category || categoryList.includes(category));
+    });
+  };
+  const updateSheetSummary = () => {
+    if (sheetSummary) sheetSummary.textContent = `${sheetFilteredProducts().length} de ${data.products.length} produto(s) selecionado(s)`;
+  };
+  const exportProductsSheet = (products, filename = "produtos_google_sheets.csv") => {
     const headers = ["SKU", "Produto", "Categoria", "Estoque Central", "Ativo", "Origem"];
-    const rows = data.products.map((p) => [spreadsheetText(p.sku), p.nome, p.categoria || "", p.qtd_total, p.ativo ? "SIM" : "N\u00c3O", p.origem || "manual"]);
-    downloadCsv("produtos_google_sheets.csv", [headers, ...rows]);
+    const rows = products.map((p) => [spreadsheetText(p.sku), p.nome, (p.categorias || []).join(", ") || p.categoria || "", p.qtd_total, p.ativo ? "SIM" : "N\u00c3O", p.origem || "manual"]);
+    downloadCsv(filename, [headers, ...rows]);
     closeSheetActions();
+  };
+  sheetActionsToggle?.addEventListener("click", () => {
+    if (sheetActionsMenu?.classList.contains("hidden")) {
+      openSheetActions();
+    } else {
+      closeSheetActions();
+    }
   });
+  document.querySelector("#close-sheet-actions")?.addEventListener("click", closeSheetActions);
+  sheetActionsBackdrop?.addEventListener("click", closeSheetActions);
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !sheetActionsMenu?.classList.contains("hidden")) {
+      closeSheetActions();
+    }
+  });
+  [sheetSearchInput, sheetStatusInput, sheetOriginInput, sheetCategoryInput].forEach((field) => {
+    field?.addEventListener("input", updateSheetSummary);
+    field?.addEventListener("change", updateSheetSummary);
+  });
+  document.querySelector("#export-products-filtered")?.addEventListener("click", () => exportProductsSheet(sheetFilteredProducts(), "produtos_filtrados_google_sheets.csv"));
+  document.querySelector("#export-products-all")?.addEventListener("click", () => exportProductsSheet(data.products, "produtos_google_sheets.csv"));
   document.querySelector("#import-products").addEventListener("change", async (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -5382,6 +5697,7 @@ async function viewProductsV2(options = {}) {
   }, 12000);
 }
 
+// View de estoque geral
 async function viewStock() {
   const pdvId = state.pdvs[0]?.id || 0;
   const data = pdvId ? await request(`/api/admin/stock?pdvId=${pdvId}`) : { stock: [], pdv: null };
@@ -5459,6 +5775,7 @@ async function viewStock() {
   });
 }
 
+// Dispara a impressão do estoque do PDV
 async function printStockPdv(payload = {}) {
   const pdv = payload.pdv || {};
   const stock = (payload.stock || []).filter((item) => Number(item.quantidade || 0) > 0);
@@ -5509,26 +5826,34 @@ async function printStockPdv(payload = {}) {
   });
 }
 
+// View de liberação de pedidos (Kanban)
 async function viewRelease(filters = {}) {
   let from = filters.from || weekAgo();
   let to = filters.to || today();
   let selectedPdvId = filters.pdvId || document.querySelector("#release-pdv-filter")?.value || "";
   let searchCode = filters.q || document.querySelector("#release-code-filter")?.value || "";
-  let activeStatus = filters.status || document.querySelector(".release-tabs .config-tab.is-active")?.dataset.releaseStatus || "Pendente";
+  const releaseMode = filters.mode || document.querySelector("[data-release-view-mode].is-active")?.dataset.releaseViewMode || "active";
+  const finalizedOffset = Number(filters.offset || 0);
   if (from && to && from > to) {
     toast("A data inicial não pode ser posterior à data final.", "error");
     [from, to] = [to, from];
   }
-  const statuses = orderStatuses;
+  const statuses = releaseKanbanStatuses;
   const statusLabels = orderStatusLabels;
-  const params = new URLSearchParams({ from, to });
+  const params = new URLSearchParams({ from, to, limit: "80" });
+  if (releaseMode === "finalized") {
+    params.set("status", "Finalizado");
+    params.set("offset", String(finalizedOffset));
+  } else {
+    params.set("active", "1");
+  }
   if (selectedPdvId) params.set("pdvId", selectedPdvId);
   if (searchCode) params.set("q", searchCode);
   let data;
   let loadError = null;
   try {
     data = await request(`/api/admin/orders?${params.toString()}`, {
-      loadingMessage: filters.auto ? "Atualizando solicitações..." : "Carregando Liberações...",
+      loadingMessage: filters.auto ? "Atualizando solicitações..." : releaseMode === "finalized" ? "Carregando pedidos finalizados..." : "Carregando Liberações...",
       silentLoading: Boolean(filters.auto)
     });
   } catch (error) {
@@ -5553,15 +5878,17 @@ async function viewRelease(filters = {}) {
     acc[status] = orderGroupsForStatus(grouped, status);
     return acc;
   }, {});
-  const visibleGroups = byStatus[activeStatus] || [];
+  const allGroupsByKey = new Map(grouped.map((group) => [orderGroupKey(group[0] || {}), group]));
   if (filters.auto) {
+    if (releaseMode !== "active") return;
     const scrollX = window.scrollX;
     const scrollY = window.scrollY;
     updateReleaseCounters(byStatus);
-    syncReleaseOrderList(visibleGroups, activeStatus, from, to);
+    syncReleaseKanbanBoard(byStatus, from, to, selectedPdvId, searchCode);
     window.scrollTo(scrollX, scrollY);
     return;
   }
+  const finalizedGroups = releaseMode === "finalized" ? sortOrderGroupsNewest(grouped) : [];
   shell(`
     <section class="release-screen">
       <section class="card release-filter-card">
@@ -5593,55 +5920,127 @@ async function viewRelease(filters = {}) {
       </section>
 
       <div class="release-tabs-row">
-        <div class="config-tabs release-tabs" role="tablist" aria-label="Status dos pedidos">
-          ${statuses.map((status) => `
-            <button class="config-tab ${status === activeStatus ? "is-active" : ""}" type="button" data-release-status="${esc(status)}" role="tab" aria-selected="${status === activeStatus ? "true" : "false"}">
-              ${esc(statusLabels[status] || status)} <span data-release-count="${esc(status)}">${byStatus[status].length}</span>
-            </button>`).join("")}
+        <div class="config-tabs release-tabs release-mode-tabs" role="tablist" aria-label="Visualização da liberação">
+          <button class="config-tab ${releaseMode === "active" ? "is-active" : ""}" data-release-view-mode="active" type="button">Pedidos ativos</button>
+          <button class="config-tab ${releaseMode === "finalized" ? "is-active" : ""}" data-release-view-mode="finalized" type="button">Finalizados</button>
         </div>
         <button class="btn secondary release-refresh" id="refresh-release" type="button">Atualizar solicitações</button>
       </div>
 
-      <section class="grid gap-4" id="release-orders-list">
-        ${loadError
-          ? `<div class="card release-error-state"><strong>Não foi possível carregar os pedidos.</strong><p>Tente novamente mantendo os filtros atuais.</p><button class="btn secondary retry-release" type="button">Tentar novamente</button></div>`
-          : visibleGroups.map((group) => orderCard(group)).join("") || `<div class="card release-empty-state">Não há pedidos neste período para os filtros selecionados.</div>`}
-      </section>
+      ${releaseMode === "finalized" ? `
+        <section class="card release-finalized-view" id="release-finalized-view">
+          <div class="release-finalized-head">
+            <div>
+              <p class="eyebrow">Finalizados</p>
+              <h3 class="section-title text-lg font-black">Pedidos finalizados</h3>
+              <p>Esta lista carrega separada do quadro ativo para evitar lentidão.</p>
+            </div>
+            <button class="btn secondary" id="back-release-active" type="button">Voltar aos pedidos ativos</button>
+          </div>
+          <div class="release-finalized-list" id="release-finalized-list" aria-live="polite">
+            ${loadError
+              ? `<div class="card release-error-state"><strong>Não foi possível carregar os finalizados.</strong><p>Tente novamente mantendo os filtros atuais.</p><button class="btn secondary retry-release" type="button">Tentar novamente</button></div>`
+              : finalizedGroups.map((group) => releaseFinalizedCard(group)).join("") || `<div class="card release-empty-state">Não há pedidos finalizados para os filtros selecionados.</div>`}
+          </div>
+          ${!loadError && orders.length >= 80 ? `<button class="btn secondary load-more-finalized" type="button" data-next-offset="${finalizedOffset + 80}">Carregar mais finalizados</button>` : ""}
+        </section>
+      ` : `
+        <div class="config-tabs release-tabs release-kanban-summary" role="list" aria-label="Resumo dos pedidos ativos">
+          ${statuses.map((status) => `
+            <span class="config-tab release-summary-pill" data-release-status="${esc(status)}" role="listitem">
+              ${esc(statusLabels[status] || status)} <span data-release-count="${esc(status)}">${byStatus[status].length}</span>
+            </span>`).join("")}
+        </div>
+        <section class="release-kanban-board" id="release-kanban-board" aria-label="Quadro de pedidos ativos">
+          ${loadError
+            ? `<div class="card release-error-state"><strong>Não foi possível carregar os pedidos.</strong><p>Tente novamente mantendo os filtros atuais.</p><button class="btn secondary retry-release" type="button">Tentar novamente</button></div>`
+            : statuses.map((status) => releaseKanbanColumn(status, byStatus[status] || [])).join("")}
+        </section>
+      `}
+
+      <div class="release-detail-panel" id="release-detail-panel" aria-live="polite"></div>
     </section>`);
   document.querySelector("#release-filter").addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = Object.fromEntries(new FormData(event.currentTarget));
-    await viewRelease({ ...form, status: activeStatus });
+    await viewRelease({ ...form, mode: releaseMode });
   });
-  document.querySelectorAll("[data-release-status]").forEach((button) => button.addEventListener("click", async () => {
-    await viewRelease({ from, to, pdvId: selectedPdvId, q: searchCode, status: button.dataset.releaseStatus });
-  }));
   document.querySelector("#refresh-release").addEventListener("click", async () => {
     const btn = document.querySelector("#refresh-release");
     btn.disabled = true;
     const previousText = btn.textContent;
     btn.textContent = "Atualizando solicitações...";
     try {
-      await viewRelease({ from, to, pdvId: selectedPdvId, q: searchCode, status: activeStatus });
+      await viewRelease({ from, to, pdvId: selectedPdvId, q: searchCode, mode: releaseMode, offset: releaseMode === "finalized" ? finalizedOffset : 0 });
     } finally {
       btn.disabled = false;
       btn.textContent = previousText;
     }
   });
   document.querySelector(".retry-release")?.addEventListener("click", async () => {
-    await viewRelease({ from, to, pdvId: selectedPdvId, q: searchCode, status: activeStatus });
+    await viewRelease({ from, to, pdvId: selectedPdvId, q: searchCode, mode: releaseMode, offset: finalizedOffset });
   });
-  bindReleaseInteractions(from, to, activeStatus, document, selectedPdvId, searchCode);
-  focusReleaseOrderFromAlert({ from, to, pdvId: selectedPdvId, q: searchCode, status: activeStatus, focusRetry: filters.focusRetry });
-  startAutoRefresh("release", async () => {
-    if (document.body.classList.contains("printing-receipt")) return;
-    const currentStatus = document.querySelector(".release-tabs .config-tab.is-active")?.dataset.releaseStatus || activeStatus;
-    const currentPdvId = document.querySelector("#release-pdv-filter")?.value || selectedPdvId;
-    const currentSearchCode = document.querySelector("#release-code-filter")?.value || searchCode;
-    await viewRelease({ from, to, pdvId: currentPdvId, q: currentSearchCode, status: currentStatus, auto: true });
-  }, 5000, { ignoreEditing: true });
+  document.querySelectorAll("[data-release-view-mode]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await viewRelease({ from, to, pdvId: selectedPdvId, q: searchCode, mode: button.dataset.releaseViewMode });
+    });
+  });
+  document.querySelector("#back-release-active")?.addEventListener("click", async () => {
+    await viewRelease({ from, to, pdvId: selectedPdvId, q: searchCode, mode: "active" });
+  });
+  document.querySelector(".load-more-finalized")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    if (button.disabled) return;
+    const nextOffset = Number(button.dataset.nextOffset || 0);
+    const previousText = button.textContent;
+    button.disabled = true;
+    button.textContent = "Carregando...";
+    try {
+      const moreParams = new URLSearchParams({ from, to, status: "Finalizado", limit: "80", offset: String(nextOffset) });
+      if (selectedPdvId) moreParams.set("pdvId", selectedPdvId);
+      if (searchCode) moreParams.set("q", searchCode);
+      const moreData = await request(`/api/admin/orders?${moreParams.toString()}`, { silentLoading: true });
+      const moreOrders = Array.isArray(moreData?.orders) ? moreData.orders : [];
+      const moreGroups = sortOrderGroupsNewest(Object.values(moreOrders.reduce((acc, row) => {
+        const key = orderGroupKey(row);
+        acc[key] ||= [];
+        acc[key].push(row);
+        return acc;
+      }, {})));
+      const list = document.querySelector("#release-finalized-list");
+      const moreGroupsByKey = new Map(moreGroups.map((group) => [orderGroupKey(group[0] || {}), group]));
+      moreGroups.forEach((group) => list?.insertAdjacentHTML("beforeend", releaseFinalizedCard(group)));
+      bindReleaseFinalizedList(from, to, selectedPdvId, searchCode, moreGroupsByKey);
+      if (!moreData?.hasMore || moreGroups.length === 0) {
+        button.remove();
+      } else {
+        button.dataset.nextOffset = String(nextOffset + 80);
+        button.disabled = false;
+        button.textContent = previousText;
+      }
+    } catch (error) {
+      toast(error.message || "Não foi possível carregar mais finalizados.", "error");
+      button.disabled = false;
+      button.textContent = previousText;
+    }
+  });
+  if (releaseMode === "finalized") {
+    bindReleaseFinalizedList(from, to, selectedPdvId, searchCode, allGroupsByKey, finalizedOffset);
+    stopAutoRefresh("release");
+  } else {
+    bindReleaseKanban(from, to, selectedPdvId, searchCode, allGroupsByKey);
+    focusReleaseOrderFromAlert({ from, to, pdvId: selectedPdvId, q: searchCode, status: "Pendente", focusRetry: filters.focusRetry });
+    startAutoRefresh("release", async () => {
+      if (document.body.classList.contains("printing-receipt")) return;
+      if (document.querySelector("[data-release-view-mode].is-active")?.dataset.releaseViewMode !== "active") return;
+      const currentPdvId = document.querySelector("#release-pdv-filter")?.value || selectedPdvId;
+      const currentSearchCode = document.querySelector("#release-code-filter")?.value || searchCode;
+      await viewRelease({ from, to, pdvId: currentPdvId, q: currentSearchCode, mode: "active", auto: true });
+    }, 5000, { ignoreEditing: true });
+  }
 }
 
+// Foca um pedido específico na tela de liberação a partir de um alerta
 async function focusReleaseOrderFromAlert(context = {}) {
   const orderCode = sessionStorage.getItem("acparkFocusReleaseOrder");
   if (!orderCode) return;
@@ -5666,6 +6065,17 @@ async function focusReleaseOrderFromAlert(context = {}) {
   setTimeout(() => card.classList.remove("order-alert-focus"), 4500);
 }
 
+// Liga as interações gerais da tela de liberação
+// Atualiza o painel do pedido em tela cheia após uma edição de itens (excluir, adicionar),
+// sem fechar o painel. Se o card não estiver dentro de um painel (uso futuro fora dele),
+// simplesmente não faz nada, para não quebrar em outro contexto.
+async function refreshReleasePanelAfterEdit(card, context = {}) {
+  const overlay = card?.closest(".release-detail-overlay");
+  if (!overlay) return false;
+  await reloadReleasePanel(overlay, card.dataset.order || "", context);
+  return true;
+}
+
 function bindReleaseInteractions(from, to, activeStatus, root = document, pdvId = "", q = "") {
   bindOrderToggles(root);
   root.querySelectorAll(".print-order").forEach((btn) => {
@@ -5680,21 +6090,9 @@ function bindReleaseInteractions(from, to, activeStatus, root = document, pdvId 
     if (btn.dataset.bound === "true") return;
     btn.dataset.bound = "true";
     btn.addEventListener("click", async () => {
-    const card = btn.closest("[data-order]");
-    const orderCode = card?.dataset.order || "";
-    const orderStatus = card?.dataset.orderStatus || "";
-    if (!orderCode) return;
-    const confirmed = await confirmSystem({
-      title: "Excluir pedido",
-      message: `Excluir o pedido ${orderCode} completo?`,
-      consequence: "Se houver baixa de estoque ligada ao pedido, o sistema fará o ajuste conforme a regra atual.",
-      confirmLabel: "Excluir pedido",
-      danger: true
-    });
-    if (!confirmed) return;
-    await request("/api/admin/orders", { method: "DELETE", body: JSON.stringify({ codigo_pedido: orderCode, status: orderStatus }) });
-    toast("Pedido excluído.");
-    await viewRelease({ from, to, pdvId, q, status: activeStatus });
+      const card = btn.closest("[data-order]");
+      const orderCode = card?.dataset.order || "";
+      await deleteReleaseOrderByCode(orderCode, btn);
     });
   });
   root.querySelectorAll(".bulk-order-item").forEach((input) => {
@@ -5755,7 +6153,10 @@ function bindReleaseInteractions(from, to, activeStatus, root = document, pdvId 
         }
         removeReleaseDraftItems(card.dataset.order, selectedItems.map((item) => item.id));
         toast(`${selectedItems.length} produto${selectedItems.length === 1 ? "" : "s"} excluído${selectedItems.length === 1 ? "" : "s"} do pedido.`);
-        await viewRelease({ from, to, pdvId, q, status: activeStatus });
+        // Atualiza o painel em tela cheia sem fechá-lo; o quadro ao fundo é só sincronizado (leve)
+        const atualizouPainel = await refreshReleasePanelAfterEdit(card, { from, to, pdvId, q });
+        if (!atualizouPainel) await viewRelease({ from, to, pdvId, q, status: activeStatus });
+        else viewRelease({ from, to, pdvId, q, status: activeStatus, auto: true }).catch(() => {});
       } catch (error) {
         toast(error.message || "Não foi possível excluir os produtos selecionados.", "error");
       } finally {
@@ -5784,22 +6185,30 @@ function bindReleaseInteractions(from, to, activeStatus, root = document, pdvId 
         danger: true
       });
       if (!confirmed) return;
-      await request("/api/admin/order-item", {
-        method: "DELETE",
-        body: JSON.stringify({
-          id: itemId,
-          version,
-          codigo_pedido: card.dataset.order || "",
-          status: card.dataset.orderStatus || ""
-        })
-      });
-      removeReleaseDraftItems(card.dataset.order, [itemId]);
-      row.remove();
-      if (!card.querySelector("tbody tr")) {
-        card.remove();
+      try {
+        await request("/api/admin/order-item", {
+          method: "DELETE",
+          body: JSON.stringify({
+            id: itemId,
+            version,
+            codigo_pedido: card.dataset.order || "",
+            status: card.dataset.orderStatus || ""
+          })
+        });
+        removeReleaseDraftItems(card.dataset.order, [itemId]);
+        toast("Produto excluído do pedido.");
+        // O painel se atualiza sozinho a partir dos dados do servidor — sem remover nós na mão,
+        // o que antes podia apagar o painel inteiro ao excluir o último produto
+        const atualizouPainel = await refreshReleasePanelAfterEdit(card, { from, to, pdvId, q });
+        if (!atualizouPainel) {
+          row.remove();
+          await viewRelease({ from, to, pdvId, q, status: activeStatus });
+        } else {
+          viewRelease({ from, to, pdvId, q, status: activeStatus, auto: true }).catch(() => {});
+        }
+      } catch (error) {
+        toast(error.message || "Não foi possível excluir o produto.", "error");
       }
-      toast("Produto excluído do pedido.");
-      await viewRelease({ from, to, pdvId, q, status: activeStatus });
     });
   });
   root.querySelectorAll(".confirm-order-withdrawal-open").forEach((btn) => {
@@ -5846,82 +6255,99 @@ function bindReleaseInteractions(from, to, activeStatus, root = document, pdvId 
     if (btn.dataset.bound === "true") return;
     btn.dataset.bound = "true";
     btn.addEventListener("click", async () => {
-      const card = btn.closest("[data-order]");
-      if (!card) return;
-      const previousText = btn.textContent;
-      btn.disabled = true;
-      btn.textContent = "Processando...";
-      try {
-        if (btn.dataset.fillRequested === "true") {
-          card.querySelectorAll("tbody tr").forEach((tr) => {
-            const input = tr.querySelector(".liberada");
-            const currentValue = Number(String(input?.value || "").replace(",", "."));
-            if (input && (!Number.isFinite(currentValue) || currentValue <= 0)) {
-              input.value = tr.dataset.requested || input.value;
-            }
-          });
-        }
-        const rows = [...card.querySelectorAll("tbody tr")];
-        const releaseMode = btn.dataset.releaseMode || "";
-        let items = rows.map((tr) => ({
-          id: tr.dataset.id,
-          version: tr.dataset.version,
-          quantidade_liberada: tr.querySelector(".liberada")?.value ?? tr.dataset.released ?? "0",
-          remover: Boolean(tr.querySelector(".remover")?.checked)
-        })).filter((item) => item.id);
-        if (releaseMode === "entered-only" && btn.dataset.status === "Aguardando Retirada") {
-          items = items.filter((item) => Number(String(item.quantidade_liberada || "0").replace(",", ".")) > 0);
-        }
-        if (!items.length && releaseMode !== "entered-only") {
-          try {
-            const fallbackItems = JSON.parse(card.dataset.orderItems || "[]");
-            items = Array.isArray(fallbackItems)
-              ? fallbackItems.map((item) => ({
-                  id: item.id,
-                  version: item.version,
-                  quantidade_liberada: btn.dataset.fillRequested === "true"
-                    ? item.quantidade_solicitada
-                    : item.quantidade_liberada || 0,
-                  remover: false
-                })).filter((item) => item.id)
-              : [];
-          } catch {
-            items = [];
-          }
-        }
-        if (!items.length) {
-          toast(releaseMode === "entered-only"
-            ? "Informe a quantidade que deseja liberar em pelo menos um produto."
-            : "Não há produtos disponíveis neste card para alterar o status.", "error");
-          return;
-        }
-        const nextStatus = btn.dataset.status;
-        await request("/api/admin/order-flow", {
-          method: "POST",
-          body: JSON.stringify({
-            codigo_pedido: card.dataset.order || "",
-            current_status: card.dataset.orderStatus || "",
-            status: nextStatus,
-            release_mode: releaseMode,
-            items
-          })
-        });
-        clearReleaseDraft(card.dataset.order);
-        toast("Pedido atualizado.");
-        await viewRelease({ from, to, pdvId, q, status: nextStatus });
-      } catch (error) {
-        if (!String(error.message || "").includes("Conflito")) {
-          toast(error.message || "Não foi possível atualizar o pedido.", "error");
-        }
-      } finally {
-        btn.disabled = false;
-        btn.textContent = previousText;
-      }
+      await submitOrderFlow(btn, { from, to, pdvId, q });
     });
   });
   bindReleaseDrafts(root);
 }
 
+// Envia a mudança de status do pedido com as quantidades informadas na tabela
+async function submitOrderFlow(btn, { from, to, pdvId = "", q = "" } = {}) {
+  const card = btn?.closest("[data-order]");
+  if (!card) return false;
+  const previousText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Processando...";
+  try {
+    if (btn.dataset.fillRequested === "true") {
+      card.querySelectorAll("tbody tr").forEach((tr) => {
+        const input = tr.querySelector(".liberada");
+        const currentValue = Number(String(input?.value || "").replace(",", "."));
+        if (input && (!Number.isFinite(currentValue) || currentValue <= 0)) {
+          input.value = tr.dataset.requested || input.value;
+        }
+      });
+    }
+    const rows = [...card.querySelectorAll("tbody tr")];
+    const releaseMode = btn.dataset.releaseMode || "";
+    let items = rows.map((tr) => ({
+      id: tr.dataset.id,
+      version: tr.dataset.version,
+      quantidade_liberada: tr.querySelector(".liberada")?.value ?? tr.dataset.released ?? "0",
+      remover: Boolean(tr.querySelector(".remover")?.checked)
+    })).filter((item) => item.id);
+    if (releaseMode === "entered-only" && btn.dataset.status === "Aguardando Retirada") {
+      items = items.filter((item) => Number(String(item.quantidade_liberada || "0").replace(",", ".")) > 0);
+    }
+    // Liberar acima do solicitado é permitido; a tela apenas avisa o almoxarifado
+    const excedentes = rows.filter((tr) => {
+      const requested = Number(tr.dataset.requested || 0);
+      const released = Number(String(tr.querySelector(".liberada")?.value || "0").replace(",", "."));
+      return Number.isFinite(released) && requested > 0 && released > requested;
+    });
+    if (excedentes.length) {
+      toast(`Atenção: ${excedentes.length} produto${excedentes.length === 1 ? "" : "s"} com liberação acima do solicitado.`);
+    }
+    if (!items.length && releaseMode !== "entered-only") {
+      try {
+        const fallbackItems = JSON.parse(card.dataset.orderItems || "[]");
+        items = Array.isArray(fallbackItems)
+          ? fallbackItems.map((item) => ({
+              id: item.id,
+              version: item.version,
+              quantidade_liberada: btn.dataset.fillRequested === "true"
+                ? item.quantidade_solicitada
+                : item.quantidade_liberada || 0,
+              remover: false
+            })).filter((item) => item.id)
+          : [];
+      } catch {
+        items = [];
+      }
+    }
+    if (!items.length) {
+      toast(releaseMode === "entered-only"
+        ? "Informe a quantidade que deseja liberar em pelo menos um produto."
+        : "Não há produtos disponíveis neste card para alterar o status.", "error");
+      return false;
+    }
+    const nextStatus = btn.dataset.status;
+    await request("/api/admin/order-flow", {
+      method: "POST",
+      body: JSON.stringify({
+        codigo_pedido: card.dataset.order || "",
+        current_status: card.dataset.orderStatus || "",
+        status: nextStatus,
+        release_mode: releaseMode,
+        items
+      })
+    });
+    clearReleaseDraft(card.dataset.order);
+    toast("Pedido atualizado.");
+    await viewRelease({ from, to, pdvId, q, status: nextStatus });
+    return true;
+  } catch (error) {
+    if (!String(error.message || "").includes("Conflito")) {
+      toast(error.message || "Não foi possível atualizar o pedido.", "error");
+    }
+    return false;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = previousText;
+  }
+}
+
+// Converte erro de adição de produtos em mensagem amigável
 function addProductsFriendlyError(error = {}) {
   const technicalMessage = String(error.data?.error || error.data?.message || error.message || "");
   if (error.status === 404 && technicalMessage.includes("Rota não encontrada")) return "Não foi possível localizar a função de inclusão de produtos. Atualize a página e tente novamente.";
@@ -5934,6 +6360,7 @@ function addProductsFriendlyError(error = {}) {
   return "Falha de conexão ao adicionar os produtos. Verifique a rede e tente novamente.";
 }
 
+// Envia requisição para adicionar produtos a um pedido existente
 async function adicionarProdutosAoPedido({ pedidoId, produtos, idempotencyKey = createIdempotencyKey() }) {
   const url = "/api/admin/orders/add-items";
   const method = "POST";
@@ -5991,6 +6418,7 @@ async function adicionarProdutosAoPedido({ pedidoId, produtos, idempotencyKey = 
   }
 }
 
+// Abre o modal de adicionar produtos do almoxarifado ao pedido
 function openAddAlmoxProductModal(card, filters = {}) {
   if (!card) return;
   const orderCode = card.dataset.order || "";
@@ -6164,7 +6592,11 @@ function openAddAlmoxProductModal(card, filters = {}) {
       });
       toast("Produtos adicionados com sucesso.");
       close();
-      await viewRelease(filters);
+      // Atualiza o painel de onde este modal foi aberto, sem fechá-lo; o quadro ao fundo
+      // é só sincronizado (leve), para não recarregar a tela inteira com o painel aberto
+      const atualizouPainel = await refreshReleasePanelAfterEdit(card, filters);
+      if (!atualizouPainel) await viewRelease(filters);
+      else viewRelease({ ...filters, auto: true }).catch(() => {});
     } catch (error) {
       toast(error.userMessage || error.message || "Não foi possível adicionar os produtos ao pedido.", "error");
     } finally {
@@ -6182,10 +6614,12 @@ function openAddAlmoxProductModal(card, filters = {}) {
   modal.querySelector("#add-almox-product-search")?.focus();
 }
 
+// Verifica se existe algum pedido aberto na liberação
 function releaseHasOpenOrder() {
   return Boolean(document.querySelector(".order-accordion.is-open"));
 }
 
+// Atualiza os contadores por status no quadro de liberação
 function updateReleaseCounters(byStatus) {
   Object.entries(byStatus).forEach(([status, groups]) => {
     const el = document.querySelector(`[data-release-count="${CSS.escape(status)}"]`);
@@ -6193,50 +6627,1129 @@ function updateReleaseCounters(byStatus) {
   });
 }
 
-function syncReleaseOrderList(visibleGroups, activeStatus, from, to) {
-  const list = document.querySelector("#release-orders-list");
-  if (!list) return;
-  const protectedOrders = new Set([...list.querySelectorAll(".order-accordion")]
-    .filter(orderCardHasUnsavedWork)
-    .map((card) => card.dataset.orderKey || card.dataset.order));
-  const nextCodes = new Set(visibleGroups.map((group) => orderGroupKey(group[0] || {})).filter(Boolean));
-  list.querySelectorAll(".order-accordion").forEach((card) => {
-    const code = card.dataset.orderKey || card.dataset.order;
-    if (!nextCodes.has(code) && !protectedOrders.has(code)) card.remove();
-  });
-  if (visibleGroups.length) {
-    [...list.children].forEach((child) => {
-      if (!child.matches(".order-accordion")) child.remove();
+// Monta uma coluna do quadro Kanban de liberação
+function releaseKanbanColumn(status, groups = []) {
+  return `
+    <section class="release-kanban-column" data-release-column="${esc(status)}" aria-label="${esc(orderStatusLabels[status] || status)}">
+      <header class="release-kanban-column-head">
+        <div>
+          <p class="eyebrow">${esc(orderStatusLabels[status] || status)}</p>
+          <strong>${groups.length} pedido${groups.length === 1 ? "" : "s"}</strong>
+        </div>
+        <span data-release-count="${esc(status)}">${groups.length}</span>
+      </header>
+      <div class="release-kanban-dropzone" data-release-dropzone="${esc(status)}">
+        ${groups.map((group) => releaseKanbanCard(group)).join("") || `<div class="release-kanban-empty">Nenhum pedido nesta coluna.</div>`}
+      </div>
+    </section>`;
+}
+
+// Monta o card de pedido do quadro Kanban de liberação
+function releaseKanbanCard(group = []) {
+  const first = group[0] || {};
+  const key = orderGroupKey(first);
+  const totalItems = group.length;
+  const totalRequested = group.reduce((sum, item) => sum + Number(item.quantidade_solicitada || 0), 0);
+  const version = releaseKanbanGroupVersion(group);
+  const statusTime = moneyDate(first.criado_em || first.data_hora || new Date().toISOString());
+  // Finalizar so aparece quando o pedido aguarda retirada e ainda nao tem assinatura
+  const canFinalize = first.status === "Aguardando Retirada" && !first.retirada_assinatura;
+  // Pendente avanca direto para separacao em um clique, sem abrir o painel
+  const quickAdvance = first.status === "Pendente" ? "Em Andamento" : "";
+  return `
+    <article class="release-kanban-card" draggable="true" tabindex="0"
+      data-order="${esc(first.codigo_pedido || "")}"
+      data-order-key="${esc(key)}"
+      data-order-status="${esc(first.status || "")}"
+      data-version="${esc(version)}">
+      <div class="release-kanban-card-main">
+        <strong>Pedido ${esc(first.codigo_pedido || "")}</strong>
+        <span>${esc(first.pdv || "PDV")}</span>
+        <small>${esc(first.solicitante || "Solicitante")} | ${esc(statusTime)}</small>
+      </div>
+      <div class="release-kanban-card-meta">
+        ${statusPill(first.status || "")}
+        ${orderEditedBadge(first)}
+        <span>${totalItems} item${totalItems === 1 ? "" : "s"}</span>
+        <span>${totalRequested} un.</span>
+      </div>
+      <div class="release-kanban-card-actions">
+        <button class="btn secondary open-release-detail" type="button">Visualizar</button>
+        ${quickAdvance ? `<button class="btn release-card-advance" type="button" data-next-status="${esc(quickAdvance)}">Iniciar separação</button>` : ""}
+        ${canFinalize ? `<button class="btn release-card-finalize" type="button">Finalizar pedido</button>` : ""}
+        <label class="release-mobile-move">Mover
+          <select class="release-card-status-select" aria-label="Mover pedido ${esc(first.codigo_pedido || "")}">
+            ${releaseKanbanStatuses.map((status) => `<option value="${esc(status)}" ${status === first.status ? "selected" : ""}>${esc(orderStatusLabels[status] || status)}</option>`).join("")}
+          </select>
+        </label>
+      </div>
+    </article>`;
+}
+
+// Extrai o identificador do pedido a partir do valor informado
+function releaseKanbanOrderId(value) {
+  if (!value) return "";
+  if (typeof value === "string") return value;
+  if (typeof Element !== "undefined" && value instanceof Element) return value.dataset.order || "";
+  if (Array.isArray(value)) return value[0]?.codigo_pedido || "";
+  return value.codigo_pedido || value.orderCode || "";
+}
+
+// Obtém a versão otimista do grupo de pedido
+function releaseKanbanGroupVersion(group = []) {
+  return Math.max(1, ...group.map((item) => Number(item.version || 1)).filter(Number.isFinite));
+}
+
+// Guarda o último status/versão conhecido do pedido no Kanban
+function rememberReleaseKanbanState(orderId = "", status = "", version = 1) {
+  if (!orderId) return;
+  const normalizedVersion = Math.max(Number(version) || 1, releaseKanbanKnownVersions.get(orderId) || 1);
+  releaseKanbanKnownVersions.set(orderId, normalizedVersion);
+  if (status) {
+    releaseKanbanRecentStatuses.set(orderId, {
+      status,
+      version: normalizedVersion,
+      at: Date.now()
     });
-  }
-  for (const group of visibleGroups) {
-    const code = orderGroupKey(group[0] || {});
-    if (!code) continue;
-    const existing = list.querySelector(`[data-order-key="${CSS.escape(code)}"]`);
-    if (orderCardHasUnsavedWork(existing)) continue;
-    if (existing) {
-      const wrapper = document.createElement("div");
-      wrapper.innerHTML = orderCard(group);
-      const next = wrapper.firstElementChild;
-      existing.replaceWith(next);
-      bindReleaseInteractions(from, to, activeStatus, next);
-    } else {
-      const wrapper = document.createElement("div");
-      wrapper.innerHTML = orderCard(group);
-      const next = wrapper.firstElementChild;
-      list.appendChild(next);
-      bindReleaseInteractions(from, to, activeStatus, next);
-    }
-  }
-  if (!list.querySelector(".order-accordion")) {
-    list.innerHTML = `<div class="card">Não há pedidos ${esc(activeStatus.toLowerCase())} no período.</div>`;
   }
 }
 
+// Verifica se o grupo recebido está desatualizado em relação ao estado local
+function isStaleReleaseKanbanGroup(orderId = "", group = []) {
+  if (!orderId) return true;
+  const incomingVersion = releaseKanbanGroupVersion(group);
+  const knownVersion = releaseKanbanKnownVersions.get(orderId) || 0;
+  if (knownVersion && incomingVersion < knownVersion) return true;
+  const recent = releaseKanbanRecentStatuses.get(orderId);
+  if (!recent) return false;
+  if (Date.now() - recent.at > 12000) {
+    releaseKanbanRecentStatuses.delete(orderId);
+    return false;
+  }
+  const incomingStatus = group[0]?.status || "";
+  return Boolean(incomingStatus && incomingStatus !== recent.status && incomingVersion <= recent.version);
+}
+
+// Retorna a operação em andamento para o pedido, se houver
+function activeReleaseKanbanOperation(orderId = "") {
+  return orderId ? releaseKanbanOperations.get(orderId) : null;
+}
+
+// Inicia o controle de uma operação assíncrona no Kanban (com AbortController)
+function beginReleaseKanbanOperation(orderId = "") {
+  if (!orderId || releaseKanbanOperations.has(orderId)) return null;
+  const operation = {
+    id: ++releaseKanbanOperationSeq,
+    orderId,
+    controller: new AbortController()
+  };
+  releaseKanbanOperations.set(orderId, operation);
+  return operation;
+}
+
+// Verifica se a operação informada ainda é a mais recente para o pedido
+function isCurrentReleaseKanbanOperation(orderId = "", operation = null) {
+  return Boolean(orderId && operation && releaseKanbanOperations.get(orderId)?.id === operation.id);
+}
+
+// Encerra o controle de operação em andamento do pedido
+function finishReleaseKanbanOperation(orderId = "", operation = null) {
+  if (isCurrentReleaseKanbanOperation(orderId, operation)) releaseKanbanOperations.delete(orderId);
+}
+
+// Remove cards duplicados do mesmo pedido no quadro
+function removeReleaseKanbanDuplicateCards(orderId = "", keepCard = null) {
+  if (!orderId) return;
+  document.querySelectorAll(`.release-kanban-card[data-order="${CSS.escape(orderId)}"]`).forEach((card) => {
+    if (card !== keepCard) card.remove();
+  });
+}
+
+// Insere o card na coluna evitando duplicidade
+function placeReleaseKanbanCardOnce(card, zone) {
+  if (!card || !zone) return;
+  removeReleaseKanbanDuplicateCards(card.dataset.order || "", card);
+  zone.appendChild(card);
+}
+
+// Monta o card de pedido finalizado na liberação
+function releaseFinalizedCard(group = []) {
+  const first = group[0] || {};
+  const key = orderGroupKey(first);
+  const totalItems = group.length;
+  const totalRequested = group.reduce((sum, item) => sum + Number(item.quantidade_solicitada || 0), 0);
+  const totalReleased = group.reduce((sum, item) => sum + Number(item.quantidade_liberada || 0), 0);
+  const finishedAt = moneyDate(first.retirada_em || first.liberado_em || first.criado_em || first.data_hora || new Date().toISOString());
+  return `
+    <article class="release-finalized-card"
+      data-finalized-order="${esc(first.codigo_pedido || "")}"
+      data-order-key="${esc(key)}">
+      <div class="release-finalized-card-main">
+        <strong>Pedido ${esc(first.codigo_pedido || "")}</strong>
+        <span>${esc(first.pdv || "PDV")}</span>
+        <small>${esc(first.solicitante || "Solicitante")} | ${esc(finishedAt)}</small>
+      </div>
+      <div class="release-finalized-card-meta">
+        ${statusPill("Finalizado")}
+        ${orderEditedBadge(first)}
+        <span>${totalItems} item${totalItems === 1 ? "" : "s"}</span>
+        <span>${totalRequested} solicitado${totalRequested === 1 ? "" : "s"}</span>
+        <span>${totalReleased} liberado${totalReleased === 1 ? "" : "s"}</span>
+      </div>
+      <div class="release-finalized-card-actions">
+        <button class="btn secondary open-release-detail" type="button">Visualizar</button>
+        <button class="btn secondary print-release-finalized" type="button">Imprimir</button>
+      </div>
+    </article>`;
+}
+
+// Liga os eventos da lista de pedidos finalizados
+function bindReleaseFinalizedList(from, to, pdvId, q, groupsByKey = new Map()) {
+  const list = document.querySelector("#release-finalized-list");
+  if (!list) return;
+  list.querySelectorAll("[data-finalized-order]").forEach((card) => {
+    if (card.dataset.bound === "true") return;
+    const key = card.dataset.orderKey || "";
+    const group = groupsByKey.get(key);
+    if (!group) return;
+    card.dataset.bound = "true";
+    card.querySelector(".open-release-detail")?.addEventListener("click", () => openReleaseDetailPanel(group, { from, to, pdvId, q, mode: "finalized" }));
+    card.querySelector(".print-release-finalized")?.addEventListener("click", async () => {
+      await printReleaseOrderGroup(group);
+    });
+  });
+}
+
+// Exclui um pedido pelo código na tela de liberação
+async function deleteReleaseOrderByCode(orderCode = "", triggerButton = null) {
+  const code = String(orderCode || "").trim();
+  if (!code || triggerButton?.classList.contains("is-processing")) return false;
+  const confirmation = await confirmOrderDeleteSystem(code);
+  if (!confirmation.confirmed) return false;
+  const previousText = triggerButton?.textContent || "";
+  if (triggerButton) {
+    triggerButton.classList.add("is-processing");
+    triggerButton.disabled = true;
+    triggerButton.textContent = "Excluindo...";
+  }
+  try {
+    await request("/api/admin/orders", {
+      method: "DELETE",
+      body: JSON.stringify({
+        codigo_pedido: code,
+        confirmation_code: code,
+        justificativa: confirmation.justification
+      })
+    });
+    clearReleaseDraft(code);
+    document.querySelectorAll(`[data-order="${CSS.escape(code)}"]`).forEach((orderCardNode) => orderCardNode.remove());
+    document.querySelectorAll(`[data-finalized-order="${CSS.escape(code)}"]`).forEach((orderCardNode) => orderCardNode.remove());
+    closeReleaseDetailOverlay();
+    updateReleaseKanbanColumnEmptyStates();
+    updateReleaseKanbanCounts();
+    toast("Pedido excluído.");
+    return true;
+  } catch (error) {
+    toast(error.message || "Não foi possível excluir o pedido.", "error");
+    return false;
+  } finally {
+    if (triggerButton) {
+      triggerButton.classList.remove("is-processing");
+      triggerButton.disabled = false;
+      triggerButton.textContent = previousText;
+    }
+  }
+}
+
+// Carrega os detalhes de um pedido para o painel de controle
+async function loadReleaseOrderDetails(orderCode = "", context = {}) {
+  const fallbackGroup = Array.isArray(context.group) ? context.group : [];
+  if (!orderCode) return fallbackGroup;
+  const buildParams = ({ includePeriod = true, includePdv = true } = {}) => {
+    const params = new URLSearchParams({
+      q: orderCode,
+      limit: "120"
+    });
+    if (includePeriod) {
+      params.set("from", context.from || weekAgo());
+      params.set("to", context.to || today());
+    }
+    if (includePdv && context.pdvId) params.set("pdvId", context.pdvId);
+    if (context.mode === "finalized") {
+      params.set("status", "Finalizado");
+    } else {
+      params.set("active", "1");
+    }
+    return params;
+  };
+  const fetchRows = async (params) => {
+    const data = await request(`/api/admin/orders?${params.toString()}`, { silentLoading: true });
+    return Array.isArray(data?.orders) ? data.orders.filter((row) => row.codigo_pedido === orderCode) : [];
+  };
+  let rows = await fetchRows(buildParams());
+  if (!rows.length) rows = await fetchRows(buildParams({ includePeriod: false }));
+  if (!rows.length && context.pdvId) rows = await fetchRows(buildParams({ includePeriod: false, includePdv: false }));
+  return rows.length ? rows : fallbackGroup;
+}
+
+// Fecha o painel do pedido e devolve a rolagem à página
+function closeReleaseDetailOverlay() {
+  document.querySelector(".release-detail-overlay")?.remove();
+  document.body.classList.remove("has-order-panel");
+}
+
+// Etapas do fluxo mostradas na trilha do painel do pedido
+const releasePanelSteps = ["Pendente", "Em Andamento", "Aguardando Retirada", "Finalizado"];
+
+// Lista as transições de status permitidas a partir do status atual
+function releaseAllowedTransitions(status = "") {
+  if (!releaseKanbanStatuses.includes(status)) return [];
+  return releaseKanbanStatuses.filter((nextStatus) => nextStatus !== status);
+}
+
+// Descreve em uma linha o que falta fazer no pedido
+function releasePanelStepHint(status = "") {
+  if (status === "Pendente") return "Inicie a separação para liberar os produtos deste PDV.";
+  if (status === "Em Andamento") return "Informe quanto será liberado de cada produto e envie para retirada.";
+  if (status === "Aguardando Retirada") return "Confirme a retirada com a assinatura do responsável.";
+  return "Pedido finalizado. Reabra apenas se precisar corrigir algo.";
+}
+
+// Monta a trilha visual de etapas do pedido
+function releasePanelStepsHtml(status = "") {
+  const current = releasePanelSteps.indexOf(status);
+  return releasePanelSteps.map((step, index) => {
+    const state = current < 0 ? "" : index < current ? "is-done" : index === current ? "is-current" : "";
+    return `<li class="${state}"><span aria-hidden="true">${index + 1}</span>${esc(orderStatusLabels[step] || step)}</li>`;
+  }).join("");
+}
+
+// Normaliza um número de estoque vindo da API
+function releasePanelStock(value) {
+  return Number.isFinite(Number(value)) ? Number(value) : 0;
+}
+
+// Monta a tabela única de itens: editável na separação, somente leitura nas demais etapas
+function releasePanelItemsTable(group = [], editable = false) {
+  const draft = getReleaseDraft(group[0]?.codigo_pedido);
+  const draftById = new Map((draft.items || []).map((item) => [String(item.id), item]));
+  const rows = group.map((item) => {
+    const central = centralStockValue(item);
+    const requested = Number(item.quantidade_solicitada || 0);
+    const saved = Number(item.quantidade_liberada || 0);
+    const draftItem = draftById.get(String(item.id));
+    const released = editable
+      ? Number((draftItem?.quantidade_liberada ?? (saved > 0 ? saved : requested)) || 0)
+      : saved;
+    const missing = Math.max(requested - released, 0);
+    const rowState = central < 0
+      ? "release-item-negative"
+      : central === 0
+        ? "release-item-zero"
+        : missing === 0
+          ? "release-item-complete"
+          : released > 0
+            ? "release-item-partial"
+            : "";
+    const stockClass = central < 0 ? "negative" : central === 0 ? "zero" : "positive";
+    return `
+      <tr class="release-item-row ${rowState}"
+        data-id="${esc(item.id)}"
+        data-version="${esc(item.version || 1)}"
+        data-requested="${esc(requested)}"
+        data-released="${esc(released)}"
+        data-product="${esc(item.produto || "")}"
+        data-sku="${esc(item.sku_produto || item.sku || "")}">
+        ${editable ? `<td class="order-panel-pick">
+          <label class="release-select-control" title="Selecionar produto">
+            <input class="bulk-order-item" type="checkbox" value="${esc(item.id)}" aria-label="Selecionar ${esc(item.produto || "")}">
+            <span aria-hidden="true"></span>
+          </label>
+        </td>` : ""}
+        <td class="order-panel-product">
+          <strong class="release-product-name">${esc(item.produto || "-")}</strong>
+          <small>${esc(item.sku_produto || item.sku || "sem SKU")}${item.item_origem === "ALMOX" ? ` <span class="order-source-badge">Almox</span>` : ""}</small>
+          <small class="order-panel-pdv">PDV ${releasePanelStock(item.estoque_pdv)} · mín ${releasePanelStock(item.estoque_minimo)} · máx ${releasePanelStock(item.estoque_maximo)}</small>
+        </td>
+        <td class="release-number-cell"><span class="stock-badge ${stockClass}">${central}</span></td>
+        <td class="release-number-cell" data-requested-value>${requested}</td>
+        <td class="release-number-cell">${editable
+          ? `<input class="liberada release-qty-input" type="number" min="0" step="1" inputmode="numeric" aria-label="Quantidade a liberar de ${esc(item.produto || "")}" value="${esc(released)}">`
+          : released}</td>
+        ${editable ? `<td class="release-number-cell release-missing-cell">${missing}</td>
+        <td class="order-panel-row-action">
+          <button class="release-remove-control delete-order-item" type="button" title="Excluir produto do pedido" aria-label="Excluir ${esc(item.produto || "")} do pedido">
+            <span aria-hidden="true">&#128465;</span>
+          </button>
+        </td>` : ""}
+      </tr>`;
+  });
+  // Na leitura, Liberado é a última coluna: é dela que o comprovante de retirada lê as quantidades
+  const headers = editable
+    ? ["", "Produto", "Estoque central", "Solicitado", "Liberar", "Falta", ""]
+    : ["Produto", "Estoque central", "Solicitado", "Liberado"];
+  const linhas = rows.length ? rows : [`<tr><td colspan="${headers.length}">Nenhum produto neste pedido.</td></tr>`];
+  return table(headers, linhas).replace("table-wrap", "table-wrap order-panel-table");
+}
+
+// Monta o HTML completo do painel do pedido
+function releasePanelHtml(group = []) {
+  const first = group[0] || {};
+  const status = first.status || "";
+  const editable = status === "Em Andamento";
+  const totalItems = group.length;
+  const totalRequested = group.reduce((sum, item) => sum + Number(item.quantidade_solicitada || 0), 0);
+  const totalReleased = group.reduce((sum, item) => sum + Number(item.quantidade_liberada || 0), 0);
+  const unavailable = group.filter((item) => centralStockValue(item) <= 0).length;
+  const canDelete = !["Finalizado", "Aguardando Retirada"].includes(status);
+  const currentIndex = releaseKanbanStatuses.indexOf(status);
+  // Ação principal de cada etapa: é sempre o próximo passo do fluxo
+  const primaryAction = status === "Pendente"
+    ? `<button class="btn order-panel-primary" type="button" data-panel-flow="true" data-status="Em Andamento">Iniciar separação</button>`
+    : editable
+      ? `<button class="btn order-panel-primary" type="button" data-panel-flow="true" data-status="Aguardando Retirada" data-release-mode="entered-only">Enviar para retirada</button>`
+      : status === "Aguardando Retirada"
+        ? `<button class="btn order-panel-primary order-panel-finalize" type="button">Finalizar com assinatura</button>`
+        : `<button class="btn secondary order-panel-primary" type="button" data-panel-flow="true" data-status="Em Andamento">Reabrir para edição</button>`;
+  // Só o retorno para a etapa imediatamente anterior, para não poluir com saltos de fluxo
+  const previousStatus = currentIndex > 0 ? releaseKanbanStatuses[currentIndex - 1] : "";
+  const backActions = previousStatus && releaseAllowedTransitions(status).includes(previousStatus)
+    ? `<button class="btn secondary" type="button" data-panel-flow="true" data-status="${esc(previousStatus)}">
+        Voltar para ${esc(orderStatusLabels[previousStatus] || previousStatus)}
+      </button>`
+    : "";
+  return `
+    <section class="order-panel" role="dialog" aria-modal="true" aria-label="Painel do pedido ${esc(first.codigo_pedido || "")}"
+      data-order="${esc(first.codigo_pedido || "")}"
+      data-order-status="${esc(status)}"
+      data-order-version="${esc(first.version || 1)}">
+      <header class="order-panel-head">
+        <div class="order-panel-head-main">
+          <h2>${esc(first.codigo_pedido || "")} ${statusPill(status)} ${orderEditedBadge(first)}</h2>
+          <p class="order-panel-origin">${esc(first.pdv || "PDV")} · ${esc(first.solicitante || "Solicitante")} · ${esc(moneyDate(first.criado_em || first.data_hora || new Date().toISOString()))}</p>
+        </div>
+        <ol class="order-panel-steps">${releasePanelStepsHtml(status)}</ol>
+        <button class="order-panel-timeline-open" type="button" aria-label="Histórico de edição do pedido" title="Histórico de edição do pedido">🕐</button>
+        <button class="order-panel-close" type="button" aria-label="Fechar painel">&times;</button>
+      </header>
+      <div class="order-panel-content">
+        <div class="order-panel-context">
+          <div class="order-panel-metrics">
+            <span><strong>${totalItems}</strong>produto${totalItems === 1 ? "" : "s"}</span>
+            <span><strong>${totalRequested}</strong>solicitado</span>
+            <span><strong>${totalReleased}</strong>liberado</span>
+            <span class="${unavailable ? "is-warning" : ""}"><strong>${unavailable}</strong>sem estoque</span>
+          </div>
+          <p class="order-panel-hint">${esc(releasePanelStepHint(status))}</p>
+        </div>
+        ${first.observacao ? `<p class="order-panel-note"><strong>Observação do PDV</strong>${esc(first.observacao)}</p>` : ""}
+        ${releasePanelItemsTable(group, editable)}
+      </div>
+      <footer class="order-panel-foot">
+        <div class="order-panel-foot-left">
+          ${editable ? `
+            <span class="order-panel-selection" data-selected-count>0 produtos selecionados</span>
+            <button class="btn secondary delete-selected-order-items" type="button" disabled>Excluir selecionados</button>
+            <button class="btn secondary order-panel-fill" type="button">Liberar tudo</button>
+            <button class="btn secondary save-release-draft" type="button">Salvar rascunho</button>
+            <button class="btn secondary add-almox-product" type="button">+ Produto</button>` : ""}
+          <button class="btn secondary order-panel-print" type="button">Imprimir</button>
+          ${canDelete ? `<button class="btn danger order-panel-delete" type="button">Excluir pedido</button>` : ""}
+        </div>
+        <div class="order-panel-foot-right">
+          <span class="order-panel-saving hidden">Salvando...</span>
+          ${backActions}
+          ${primaryAction}
+        </div>
+      </footer>
+    </section>`;
+}
+
+// Traduz a ação registrada na auditoria para um rótulo legível na linha do tempo
+function releaseTimelineLabel(acao = "") {
+  if (acao === "status_alterado_kanban") return "Movido no quadro";
+  if (acao === "status_alterado_painel") return "Movido no painel";
+  if (acao === "retirada_confirmada") return "Retirada confirmada";
+  if (acao === "pedido_excluido") return "Pedido excluído";
+  return acao || "Alteração";
+}
+
+// Abre o relatório de edição do pedido (histórico de etapas) em um modal à parte,
+// carregado sob demanda ao clicar no ícone de relógio — não ocupa espaço no painel principal
+async function openReleaseTimelineModal(orderCode = "") {
+  if (!orderCode) return;
+  const modal = document.createElement("div");
+  modal.className = "photo-viewer order-timeline-modal";
+  modal.innerHTML = `
+    <div class="photo-viewer-dialog" role="dialog" aria-modal="true" aria-label="Histórico de edição do pedido ${esc(orderCode)}">
+      <div class="photo-viewer-head">
+        <div>
+          <p class="eyebrow">Relatório de edição</p>
+          <h3>Pedido ${esc(orderCode)}</h3>
+        </div>
+        <button class="icon-btn close-order-timeline" type="button" aria-label="Fechar">&times;</button>
+      </div>
+      <div class="order-timeline-body">
+        <p class="order-panel-timeline-loading">Carregando histórico...</p>
+      </div>
+    </div>`;
+  const close = () => modal.remove();
+  modal.querySelector(".close-order-timeline").addEventListener("click", close);
+  modal.addEventListener("click", (event) => {
+    if (event.target === modal) close();
+  });
+  document.body.appendChild(modal);
+  const body = modal.querySelector(".order-timeline-body");
+  try {
+    const data = await request(`/api/admin/order-timeline?codigo_pedido=${encodeURIComponent(orderCode)}`, { silentLoading: true });
+    const linhas = Array.isArray(data?.timeline) ? data.timeline : [];
+    if (!linhas.length) {
+      body.innerHTML = `<p class="order-panel-timeline-empty">Nenhuma movimentação registrada para este pedido.</p>`;
+      return;
+    }
+    body.innerHTML = `
+      <ol class="order-panel-timeline-list">
+        ${linhas.map((linha) => {
+          const de = linha.dados?.status_anterior;
+          const para = linha.dados?.novo_status;
+          const caminho = de && para ? `${esc(de)} → ${esc(para)}` : para ? esc(para) : "";
+          return `
+          <li>
+            <strong>${esc(releaseTimelineLabel(linha.acao))}</strong>
+            ${caminho ? `<span class="order-panel-timeline-path">${caminho}</span>` : ""}
+            <small>${esc(linha.usuario || "Almoxarifado")} · ${esc(moneyDate(linha.criado_em))}</small>
+          </li>`;
+        }).join("")}
+      </ol>`;
+  } catch (error) {
+    body.innerHTML = `<p class="order-panel-timeline-empty">Não foi possível carregar o histórico. ${esc(error.message || "")}</p>`;
+  }
+}
+
+// Abre o fluxo de finalizacao com assinatura a partir do grupo do pedido
+function openReleaseWithdrawalFlow(group = [], context = {}) {
+  if (!group?.length) {
+    toast("Não foi possível carregar os produtos deste pedido.", "error");
+    return false;
+  }
+  // O modal de retirada le os itens de um card renderizado, entao montamos um fora da tela
+  const holder = document.createElement("div");
+  holder.className = "release-withdrawal-buffer hidden";
+  holder.innerHTML = orderCard(group);
+  document.body.appendChild(holder);
+  const card = holder.querySelector("[data-order]");
+  const opened = openOrderWithdrawalModal(card, {
+    from: context.from,
+    to: context.to,
+    pdvId: context.pdvId,
+    onSuccess: async () => {
+      holder.remove();
+      closeReleaseDetailOverlay();
+      await viewRelease({ from: context.from, to: context.to, pdvId: context.pdvId });
+    },
+    onClose: () => holder.remove()
+  });
+  if (!opened) holder.remove();
+  return opened;
+}
+
+// Carrega os dados atualizados do pedido e abre a finalizacao com assinatura
+async function finalizeReleaseOrder(orderCode = "", context = {}, trigger = null) {
+  if (!orderCode) return;
+  const previousText = trigger?.textContent;
+  if (trigger) {
+    trigger.disabled = true;
+    trigger.textContent = "Abrindo...";
+  }
+  try {
+    const group = await loadReleaseOrderDetails(orderCode, { ...context, mode: "active" });
+    if (group[0]?.status !== "Aguardando Retirada") {
+      toast("Só é possível finalizar pedidos em Aguardando Retirada.", "error");
+      return;
+    }
+    openReleaseWithdrawalFlow(group, context);
+  } catch (error) {
+    toast(error.message || "Não foi possível abrir a finalização do pedido.", "error");
+  } finally {
+    if (trigger) {
+      trigger.disabled = false;
+      trigger.textContent = previousText;
+    }
+  }
+}
+
+// Liga todos os eventos do painel do pedido
+function bindReleasePanel(overlay, group = [], context = {}) {
+  const panel = overlay?.querySelector(".order-panel");
+  if (!panel) return;
+  const orderCode = panel.dataset.order || group[0]?.codigo_pedido || "";
+  bindReleasePanelClose(overlay);
+  // Toda a mecânica da tabela (quantidades, seleção, rascunho, excluir item, adicionar produto)
+  bindReleaseInteractions(context.from, context.to, group[0]?.status || "Pendente", panel, context.pdvId, context.q);
+  updateReleaseBulkActions(panel);
+
+  // Os controles de exclusão em massa só aparecem quando há algo selecionado
+  const syncSelection = () => {
+    panel.classList.toggle("has-selection", releaseSelectedItemRows(panel).length > 0);
+  };
+  panel.addEventListener("change", (event) => {
+    if (event.target?.classList?.contains("bulk-order-item")) syncSelection();
+  });
+  syncSelection();
+  panel.querySelector(".order-panel-timeline-open")?.addEventListener("click", () => {
+    openReleaseTimelineModal(orderCode);
+  });
+
+  const setSaving = (saving) => {
+    panel.classList.toggle("is-saving", saving);
+    panel.querySelector(".order-panel-saving")?.classList.toggle("hidden", !saving);
+    panel.querySelectorAll(".order-panel-foot .btn").forEach((button) => {
+      button.disabled = saving || (button.classList.contains("delete-selected-order-items") && !releaseSelectedItemRows(panel).length);
+    });
+  };
+
+  // Imprime a partir de um card montado fora da tela, que tem o layout do comprovante
+  panel.querySelector(".order-panel-print")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      await printReleaseOrderGroup(group);
+    } finally {
+      button.disabled = false;
+    }
+  });
+
+  panel.querySelector(".order-panel-delete")?.addEventListener("click", async (event) => {
+    await deleteReleaseOrderByCode(orderCode, event.currentTarget);
+  });
+
+  panel.querySelector(".order-panel-finalize")?.addEventListener("click", () => {
+    openReleaseWithdrawalFlow(group, context);
+  });
+
+  // Preenche todas as quantidades com o que foi solicitado
+  panel.querySelector(".order-panel-fill")?.addEventListener("click", () => {
+    let changed = 0;
+    panel.querySelectorAll("tbody tr").forEach((row) => {
+      const input = row.querySelector(".liberada");
+      if (!input) return;
+      const requested = row.dataset.requested || "0";
+      if (String(input.value) !== String(requested)) changed += 1;
+      input.value = requested;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    toast(changed ? "Quantidades preenchidas com o solicitado." : "As quantidades já estavam iguais ao solicitado.");
+  });
+
+  // Enter salta para o próximo produto e, no último, para a ação principal
+  const inputs = [...panel.querySelectorAll(".liberada")];
+  inputs.forEach((input, index) => {
+    input.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      const next = inputs[index + 1];
+      if (next) {
+        next.focus();
+        next.select?.();
+      } else {
+        panel.querySelector(".order-panel-primary")?.focus();
+      }
+    });
+  });
+
+  // Avanços e retornos de etapa usam o mesmo envio de fluxo da tela de liberação
+  panel.querySelectorAll("[data-panel-flow]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      setSaving(true);
+      try {
+        const done = await submitOrderFlow(button, context);
+        // O painel continua aberto e já mostra a etapa seguinte: quem fecha é só o X
+        if (done) await reloadReleasePanel(overlay, orderCode, context);
+      } finally {
+        setSaving(false);
+      }
+    });
+  });
+}
+
+// Recarrega o painel com os dados atuais do pedido, mantendo-o aberto
+async function reloadReleasePanel(overlay, orderCode = "", context = {}) {
+  if (!overlay?.isConnected) return;
+  try {
+    const group = await loadReleaseOrderDetails(orderCode, { ...context, group: [] });
+    if (!group.length) {
+      overlay.innerHTML = releasePanelShell(orderCode, `
+        <div class="order-panel-message">
+          <strong>Pedido não encontrado.</strong>
+          <p>Ele pode ter sido alterado ou removido por outro usuário.</p>
+        </div>`);
+      bindReleasePanelClose(overlay);
+      return;
+    }
+    renderReleasePanel(overlay, group, context);
+  } catch (error) {
+    toast(error.message || "Não foi possível atualizar o painel do pedido.", "error");
+  }
+}
+
+// Renderiza o painel e devolve o foco para onde o trabalho continua
+function renderReleasePanel(overlay, group = [], context = {}) {
+  overlay.innerHTML = releasePanelHtml(group);
+  bindReleasePanel(overlay, group, context);
+  const firstInput = overlay.querySelector(".liberada");
+  if (firstInput) {
+    firstInput.focus();
+    firstInput.select?.();
+  } else {
+    overlay.querySelector(".order-panel-primary, .order-panel-close")?.focus();
+  }
+}
+
+// Liga o botão X, único jeito de fechar o painel
+function bindReleasePanelClose(overlay) {
+  overlay?.querySelectorAll(".order-panel-close").forEach((button) => {
+    if (button.dataset.bound === "true") return;
+    button.dataset.bound = "true";
+    button.addEventListener("click", closeReleaseDetailOverlay);
+  });
+}
+
+// Monta a casca do painel usada nos estados de carregamento e erro
+function releasePanelShell(orderCode = "", inner = "") {
+  return `
+    <section class="order-panel" role="dialog" aria-modal="true" aria-label="Painel do pedido ${esc(orderCode)}">
+      <header class="order-panel-head">
+        <div class="order-panel-head-main">
+          <p class="eyebrow">Liberação de pedido</p>
+          <h2>${esc(orderCode)}</h2>
+        </div>
+        <button class="order-panel-close" type="button" aria-label="Fechar painel">&times;</button>
+      </header>
+      <div class="order-panel-content">${inner}</div>
+    </section>`;
+}
+
+// Abre o painel do pedido em tela cheia
+async function openReleaseDetailPanel(group = [], context = {}) {
+  const first = Array.isArray(group) && group.length ? group[0] : {};
+  const orderCode = context.orderCode || first.codigo_pedido || "";
+  if (!orderCode || document.querySelector(".release-detail-overlay.is-loading")) return;
+  closeReleaseDetailOverlay();
+  const overlay = document.createElement("div");
+  overlay.className = "release-detail-overlay order-panel-overlay is-loading";
+  overlay.innerHTML = releasePanelShell(orderCode, `<div class="order-panel-loading">Carregando pedido...</div>`);
+  document.body.appendChild(overlay);
+  document.body.classList.add("has-order-panel");
+  bindReleasePanelClose(overlay);
+  overlay.querySelector(".order-panel-close")?.focus();
+
+  try {
+    const freshGroup = await loadReleaseOrderDetails(orderCode, { ...context, group });
+    overlay.classList.remove("is-loading");
+    if (!freshGroup.length) {
+      overlay.innerHTML = releasePanelShell(orderCode, `
+        <div class="order-panel-message">
+          <strong>Pedido não encontrado.</strong>
+          <p>Ele pode ter sido alterado ou removido por outro usuário.</p>
+        </div>`);
+      bindReleasePanelClose(overlay);
+      return;
+    }
+    // Na separação o cursor já começa na primeira quantidade
+    renderReleasePanel(overlay, freshGroup, context);
+  } catch (error) {
+    overlay.classList.remove("is-loading");
+    overlay.innerHTML = releasePanelShell(orderCode, `
+      <div class="order-panel-message">
+        <strong>Não foi possível carregar o pedido.</strong>
+        <p>${esc(error.message || "Verifique a conexão e tente novamente.")}</p>
+      </div>`);
+    bindReleasePanelClose(overlay);
+  }
+}
+
+// Dispara a impressão do pedido a partir da liberação
+async function printReleaseOrderGroup(group = []) {
+  if (!group?.length) return;
+  const holder = document.createElement("div");
+  holder.className = "release-print-buffer";
+  holder.innerHTML = orderCard(group);
+  document.body.appendChild(holder);
+  const card = holder.querySelector("[data-order]");
+  try {
+    await printOrder(card);
+  } finally {
+    setTimeout(() => holder.remove(), 3000);
+  }
+}
+
+// Liga os eventos gerais do quadro Kanban de liberação
+function bindReleaseKanban(from, to, pdvId, q, groupsByKey = new Map()) {
+  const board = document.querySelector("#release-kanban-board");
+  if (!board) return;
+  board.__releaseContext = { from, to, pdvId, q, groupsByKey };
+
+  board.querySelectorAll(".release-kanban-card").forEach((card) => {
+    bindReleaseKanbanCard(card, { from, to, pdvId, q, groupsByKey });
+    if (card.dataset.dragBound === "true") return;
+    card.dataset.dragBound = "true";
+    card.addEventListener("dragstart", (event) => {
+      const orderId = card.dataset.order || "";
+      if (card.dataset.saving === "true" || activeReleaseKanbanOperation(orderId)) {
+        event.preventDefault();
+        return;
+      }
+      board.__releaseDraggedCard = card;
+      card.classList.add("is-dragging");
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("text/plain", card.dataset.orderKey || "");
+    });
+    card.addEventListener("dragend", () => {
+      card.classList.remove("is-dragging");
+      board.__releaseDraggedCard = null;
+    });
+  });
+
+  board.querySelectorAll(".release-kanban-dropzone").forEach((zone) => {
+    zone.__releaseDropContext = { from, to, pdvId, q };
+    if (zone.dataset.dropBound === "true") return;
+    zone.dataset.dropBound = "true";
+    zone.addEventListener("dragover", (event) => {
+      const draggedCard = board.__releaseDraggedCard;
+      if (!draggedCard) return;
+      event.preventDefault();
+      zone.classList.add("is-drag-over");
+    });
+    zone.addEventListener("dragleave", () => zone.classList.remove("is-drag-over"));
+    zone.addEventListener("drop", async (event) => {
+      event.preventDefault();
+      zone.classList.remove("is-drag-over");
+      const draggedCard = board.__releaseDraggedCard;
+      const card = draggedCard || board.querySelector(`[data-order-key="${CSS.escape(event.dataTransfer.getData("text/plain") || "")}"]`);
+      if (!card) return;
+      if (activeReleaseKanbanOperation(card.dataset.order || "")) return;
+      await moveReleaseKanbanCard(card, zone.dataset.releaseDropzone, zone.__releaseDropContext || board.__releaseContext || {});
+    });
+  });
+}
+
+// Liga os eventos (arrastar, clique) de um card do Kanban
+function bindReleaseKanbanCard(card, context = {}) {
+  if (!card) return;
+  const { from, to, pdvId, q, groupsByKey = new Map() } = context;
+  const openDetail = () => {
+    const key = card.dataset.orderKey || "";
+    const orderCode = card.dataset.order || "";
+    const group = groupsByKey.get(key) || [];
+    const fallbackGroup = group.length ? group : [{
+      codigo_pedido: orderCode,
+      status: card.dataset.orderStatus || "",
+      version: card.dataset.version || 1
+    }];
+    openReleaseDetailPanel(fallbackGroup, { from, to, pdvId, q, mode: "active", orderCode });
+  };
+  const detailButton = card.querySelector(".open-release-detail");
+  if (detailButton && detailButton.dataset.bound !== "true") {
+    detailButton.dataset.bound = "true";
+    detailButton.addEventListener("click", openDetail);
+  }
+  const advanceButton = card.querySelector(".release-card-advance");
+  if (advanceButton && advanceButton.dataset.bound !== "true") {
+    advanceButton.dataset.bound = "true";
+    advanceButton.addEventListener("click", async () => {
+      if (activeReleaseKanbanOperation(card.dataset.order || "")) return;
+      await moveReleaseKanbanCard(card, advanceButton.dataset.nextStatus || "", context);
+    });
+  }
+  const finalizeButton = card.querySelector(".release-card-finalize");
+  if (finalizeButton && finalizeButton.dataset.bound !== "true") {
+    finalizeButton.dataset.bound = "true";
+    finalizeButton.addEventListener("click", async (event) => {
+      const orderCode = card.dataset.order || "";
+      if (activeReleaseKanbanOperation(orderCode)) return;
+      const key = card.dataset.orderKey || "";
+      await finalizeReleaseOrder(orderCode, { from, to, pdvId, q, group: groupsByKey.get(key) || [] }, event.currentTarget);
+    });
+  }
+  if (card.dataset.keyboardBound !== "true") {
+    card.dataset.keyboardBound = "true";
+    card.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        openDetail();
+      }
+    });
+  }
+  const select = card.querySelector(".release-card-status-select");
+  if (select && select.dataset.bound !== "true") {
+    select.dataset.bound = "true";
+    select.addEventListener("change", async (event) => {
+      const currentSelect = event.currentTarget;
+      const previous = card.dataset.orderStatus || "";
+      const next = currentSelect.value;
+      if (previous === next) return;
+      if (activeReleaseKanbanOperation(card.dataset.order || "")) {
+        currentSelect.value = previous;
+        return;
+      }
+      const moved = await moveReleaseKanbanCard(card, next, context);
+      if (!moved) currentSelect.value = previous;
+    });
+  }
+}
+
+// Envia PATCH de status do pedido com controle de versão otimista
+async function atualizarStatusPedido({ pedidoCodigo, statusAnterior, novoStatus, versao, signal } = {}) {
+  const endpoint = "/api/admin/orders/status";
+  const method = "PATCH";
+  const expectedStatusCode = orderStatusCodes[statusAnterior] || statusAnterior;
+  const nextStatusCode = orderStatusCodes[novoStatus] || novoStatus;
+  try {
+    return await request(endpoint, {
+      method,
+      signal,
+      body: JSON.stringify({
+        codigo_pedido: pedidoCodigo,
+        expected_status: expectedStatusCode,
+        status: nextStatusCode,
+        version: versao ? Number(versao) : undefined
+      })
+    });
+  } catch (error) {
+    console.error("Falha ao atualizar status do pedido", {
+      endpoint,
+      method,
+      httpStatus: error?.status,
+      pedidoCodigo,
+      statusAnterior: expectedStatusCode,
+      novoStatus: nextStatusCode
+    });
+    throw error;
+  }
+}
+
+// Traduz o erro da API de status em mensagem amigável
+function releaseStatusErrorMessage(error) {
+  const technicalMessage = String(error?.details?.error || error?.details?.message || error?.message || "");
+  if (error?.status === 404 && /rota n[aã]o encontrada/i.test(technicalMessage)) {
+    return "A rota de atualização de status não respondeu neste ambiente. Reinicie o servidor local ou atualize a versão publicada e tente novamente.";
+  }
+  if (error?.status === 404 && /pedido n[aã]o encontrado/i.test(technicalMessage)) {
+    return "Pedido não encontrado. Atualize as solicitações para sincronizar o quadro.";
+  }
+  if (error?.status === 404) return technicalMessage || "Não foi possível localizar o pedido informado.";
+  if (error?.status === 401) return "Sua sessão expirou. Entre novamente para continuar.";
+  if (error?.status === 403) return "Seu usuário não tem permissão para alterar este pedido.";
+  if (error?.status === 409) return "Este pedido foi alterado por outro usuário. Atualize as solicitações.";
+  if (error?.status === 422) return "Esta movimentação de status não é permitida.";
+  if (error?.status >= 500) return "O servidor não conseguiu salvar o status agora. Tente novamente.";
+  return error?.message || "Não foi possível mover o pedido.";
+}
+
+// Move um card para outro status, com atualização otimista e rollback
+async function moveReleaseKanbanCard(card, nextStatus, context = {}) {
+  const previousStatus = card?.dataset.orderStatus || "";
+  const orderCode = card?.dataset.order || "";
+  if (!card || !orderCode || !nextStatus || previousStatus === nextStatus) return false;
+  if (!releaseKanbanStatuses.includes(previousStatus) || !releaseKanbanStatuses.includes(nextStatus)) return false;
+  if (!releaseAllowedTransitions(previousStatus).includes(nextStatus)) {
+    const now = Date.now();
+    const lastInvalidToast = Number(card.dataset.lastInvalidMoveToast || 0);
+    if (now - lastInvalidToast > 1200) {
+      card.dataset.lastInvalidMoveToast = String(now);
+      toast("Movimentação não permitida para este status.", "error");
+    }
+    return false;
+  }
+  if (card.dataset.saving === "true" || activeReleaseKanbanOperation(orderCode)) return false;
+  const operation = beginReleaseKanbanOperation(orderCode);
+  if (!operation) return false;
+
+  const previousZone = card.closest("[data-release-dropzone]");
+  const nextZone = document.querySelector(`[data-release-dropzone="${CSS.escape(nextStatus)}"]`);
+  const placeholder = document.createComment("release-card-position");
+  previousZone?.insertBefore(placeholder, card.nextSibling);
+  card.dataset.saving = "true";
+  card.dataset.operationId = String(operation.id);
+  card.classList.add("is-saving");
+  placeReleaseKanbanCardOnce(card, nextZone);
+  updateReleaseKanbanColumnEmptyStates();
+  updateReleaseKanbanCounts();
+
+  try {
+    const resultado = await atualizarStatusPedido({
+      pedidoCodigo: orderCode,
+      statusAnterior: previousStatus,
+      novoStatus: nextStatus,
+      versao: card.dataset.version,
+      signal: operation.controller.signal
+    });
+    if (!isCurrentReleaseKanbanOperation(orderCode, operation)) return false;
+    card.dataset.orderStatus = nextStatus;
+    const optimisticVersion = Number(card.dataset.version || 1) + 1;
+    card.dataset.version = String(optimisticVersion);
+    rememberReleaseKanbanState(orderCode, nextStatus, optimisticVersion);
+    card.querySelector(".release-card-status-select").value = nextStatus;
+    // Arrastar para Aguardando Retirada libera a quantidade total solicitada; avisa o usuário
+    const liberadoNoQuadro = Number(resultado?.quantidade_liberada || 0);
+    toast(nextStatus === "Aguardando Retirada" && liberadoNoQuadro > 0
+      ? `Pedido movido para Aguardando Retirada com ${liberadoNoQuadro} unidade(s) liberada(s).`
+      : `Pedido movido para ${orderStatusLabels[nextStatus] || nextStatus}.`);
+    const refreshedCard = await refreshReleaseKanbanCard(orderCode, context, operation);
+    if (refreshedCard) card = refreshedCard;
+    return true;
+  } catch (error) {
+    if (isCurrentReleaseKanbanOperation(orderCode, operation)) {
+      removeReleaseKanbanDuplicateCards(orderCode, card);
+      placeholder.parentNode?.insertBefore(card, placeholder);
+    }
+    toast(releaseStatusErrorMessage(error), "error");
+    updateReleaseKanbanColumnEmptyStates();
+    updateReleaseKanbanCounts();
+    return false;
+  } finally {
+    placeholder.remove();
+    if (isCurrentReleaseKanbanOperation(orderCode, operation)) {
+      finishReleaseKanbanOperation(orderCode, operation);
+      const currentCard = document.querySelector(`.release-kanban-card[data-order="${CSS.escape(orderCode)}"]`) || card;
+      currentCard.dataset.saving = "false";
+      delete currentCard.dataset.operationId;
+      currentCard.classList.remove("is-saving");
+      removeReleaseKanbanDuplicateCards(orderCode, currentCard);
+      updateReleaseKanbanColumnEmptyStates();
+      updateReleaseKanbanCounts();
+    }
+  }
+}
+
+// Recarrega os dados de um card específico do Kanban
+async function refreshReleaseKanbanCard(orderCode, context = {}, operation = null) {
+  if (!orderCode) return null;
+  if (operation && !isCurrentReleaseKanbanOperation(orderCode, operation)) return null;
+  const params = new URLSearchParams({ from: context.from || weekAgo(), to: context.to || today(), active: "1", q: orderCode, limit: "10" });
+  if (context.pdvId) params.set("pdvId", context.pdvId);
+  try {
+    const data = await request(`/api/admin/orders?${params.toString()}`, {
+      silentLoading: true,
+      signal: operation?.controller?.signal
+    });
+    if (operation && !isCurrentReleaseKanbanOperation(orderCode, operation)) return null;
+    const grouped = Object.values((data.orders || []).reduce((acc, row) => {
+      const key = orderGroupKey(row);
+      acc[key] ||= [];
+      acc[key].push(row);
+      return acc;
+    }, {}));
+    const group = grouped.find((items) => items[0]?.codigo_pedido === orderCode);
+    if (!group) return null;
+    rememberReleaseKanbanState(orderCode, group[0]?.status || "", releaseKanbanGroupVersion(group));
+    const card = document.querySelector(`.release-kanban-card[data-order="${CSS.escape(orderCode)}"]`);
+    if (!card) return null;
+    const oldKey = card.dataset.orderKey || "";
+    const wrapper = document.createElement("div");
+    wrapper.innerHTML = releaseKanbanCard(group);
+    const nextCard = wrapper.firstElementChild;
+    if (operation && isCurrentReleaseKanbanOperation(orderCode, operation)) {
+      nextCard.dataset.saving = "true";
+      nextCard.dataset.operationId = String(operation.id);
+      nextCard.classList.add("is-saving");
+    }
+    if (context.groupsByKey) {
+      if (oldKey) context.groupsByKey.delete(oldKey);
+      context.groupsByKey.set(orderGroupKey(group[0]), group);
+    }
+    removeReleaseKanbanDuplicateCards(orderCode, card);
+    card.replaceWith(nextCard);
+    bindReleaseKanbanCard(nextCard, context);
+    bindReleaseKanban(context.from, context.to, context.pdvId, context.q, context.groupsByKey || new Map([[orderGroupKey(group[0]), group]]));
+    return nextCard;
+  } catch {
+    return null;
+  }
+}
+
+// Sincroniza o quadro Kanban inteiro com os dados recebidos
+function syncReleaseKanbanBoard(byStatus, from, to, pdvId, q) {
+  const groupsByKey = new Map();
+  const groupsByOrder = new Map();
+  const statusByOrder = new Map();
+
+  releaseKanbanStatuses.forEach((status) => {
+    (byStatus[status] || []).forEach((group) => {
+      const first = group[0] || {};
+      const orderId = releaseKanbanOrderId(first);
+      if (!orderId || groupsByOrder.has(orderId)) return;
+      if (isStaleReleaseKanbanGroup(orderId, group)) return;
+      groupsByOrder.set(orderId, group);
+      statusByOrder.set(orderId, status);
+      groupsByKey.set(orderGroupKey(first), group);
+      rememberReleaseKanbanState(orderId, status, releaseKanbanGroupVersion(group));
+    });
+  });
+
+  releaseKanbanStatuses.forEach((status) => {
+    const zone = document.querySelector(`[data-release-dropzone="${CSS.escape(status)}"]`);
+    if (!zone) return;
+    zone.querySelectorAll(".release-kanban-card").forEach((card) => {
+      const orderId = card.dataset.order || "";
+      if (card.dataset.saving === "true" || activeReleaseKanbanOperation(orderId)) return;
+      const recent = releaseKanbanRecentStatuses.get(orderId);
+      if (!statusByOrder.has(orderId) && recent && Date.now() - recent.at <= 12000) return;
+      if (statusByOrder.get(orderId) !== status) card.remove();
+    });
+  });
+
+  groupsByOrder.forEach((group, orderId) => {
+    if (activeReleaseKanbanOperation(orderId)) return;
+    const status = statusByOrder.get(orderId);
+    const zone = document.querySelector(`[data-release-dropzone="${CSS.escape(status)}"]`);
+    if (!zone) return;
+    const wrapper = document.createElement("div");
+    wrapper.innerHTML = releaseKanbanCard(group);
+    const nextCard = wrapper.firstElementChild;
+    const existingCard = document.querySelector(`.release-kanban-card[data-order="${CSS.escape(orderId)}"]`);
+    if (existingCard) {
+      removeReleaseKanbanDuplicateCards(orderId, existingCard);
+      existingCard.replaceWith(nextCard);
+    } else {
+      removeReleaseKanbanDuplicateCards(orderId);
+      zone.appendChild(nextCard);
+    }
+  });
+
+  updateReleaseKanbanColumnEmptyStates();
+  updateReleaseKanbanCounts();
+  bindReleaseKanban(from, to, pdvId, q, groupsByKey);
+}
+
+// Atualiza o estado visual das colunas vazias do Kanban
+function updateReleaseKanbanColumnEmptyStates() {
+  document.querySelectorAll(".release-kanban-dropzone").forEach((zone) => {
+    const hasCards = Boolean(zone.querySelector(".release-kanban-card"));
+    zone.querySelectorAll(".release-kanban-empty").forEach((empty) => empty.remove());
+    if (!hasCards) zone.insertAdjacentHTML("beforeend", `<div class="release-kanban-empty">Nenhum pedido nesta coluna.</div>`);
+  });
+}
+
+// Atualiza a contagem de cards por coluna do Kanban
+function updateReleaseKanbanCounts() {
+  document.querySelectorAll("[data-release-column]").forEach((column) => {
+    const status = column.dataset.releaseColumn;
+    const total = new Set([...column.querySelectorAll(".release-kanban-card")]
+      .map((card) => card.dataset.order)
+      .filter(Boolean)).size;
+    column.querySelector("[data-release-count]") && (column.querySelector("[data-release-count]").textContent = total);
+    const globalCount = document.querySelector(`.release-kanban-summary [data-release-count="${CSS.escape(status)}"]`);
+    if (globalCount) globalCount.textContent = total;
+  });
+}
+
+// Gera a chave de armazenamento do rascunho do pedido
 function releaseDraftKey(orderCode) {
   return `acpark_release_draft_${orderCode || ""}`;
 }
 
+// Recupera o rascunho salvo de um pedido
 function getReleaseDraft(orderCode) {
   try {
     return JSON.parse(localStorage.getItem(releaseDraftKey(orderCode)) || "{}");
@@ -6245,6 +7758,7 @@ function getReleaseDraft(orderCode) {
   }
 }
 
+// Salva o rascunho das alterações do pedido
 function saveReleaseDraft(card) {
   const orderCode = card?.dataset.order;
   if (!orderCode) return;
@@ -6256,10 +7770,12 @@ function saveReleaseDraft(card) {
   localStorage.setItem(releaseDraftKey(orderCode), JSON.stringify({ items, savedAt: new Date().toISOString() }));
 }
 
+// Remove o rascunho salvo de um pedido
 function clearReleaseDraft(orderCode) {
   if (orderCode) localStorage.removeItem(releaseDraftKey(orderCode));
 }
 
+// Remove itens específicos do rascunho de um pedido
 function removeReleaseDraftItems(orderCode, removedIds = []) {
   if (!orderCode) return;
   const removed = new Set(removedIds.map(String));
@@ -6274,6 +7790,7 @@ function removeReleaseDraftItems(orderCode, removedIds = []) {
   localStorage.setItem(releaseDraftKey(orderCode), JSON.stringify({ ...draft, items, savedAt: new Date().toISOString() }));
 }
 
+// Atualiza o estado visual da linha de item do pedido
 function updateReleaseItemRowState(row) {
   if (!row) return;
   const parseQty = (value) => {
@@ -6295,12 +7812,14 @@ function updateReleaseItemRowState(row) {
   row.classList.toggle("release-item-invalid", !Number.isFinite(released) || released < 0);
 }
 
+// Retorna as linhas de itens selecionadas no card
 function releaseSelectedItemRows(card) {
   return [...(card?.querySelectorAll(".bulk-order-item:checked") || [])]
     .map((input) => input.closest("tr"))
     .filter(Boolean);
 }
 
+// Resume os itens selecionados (quantidade/total)
 function releaseSelectedItemsSummary(rows = []) {
   return rows.map((row) => ({
     id: row.dataset.id,
@@ -6311,6 +7830,7 @@ function releaseSelectedItemsSummary(rows = []) {
   })).filter((item) => item.id);
 }
 
+// Atualiza a visibilidade das ações em lote conforme seleção
 function updateReleaseBulkActions(card) {
   if (!card) return;
   const selected = releaseSelectedItemRows(card);
@@ -6320,6 +7840,7 @@ function updateReleaseBulkActions(card) {
   if (button) button.disabled = selected.length === 0 || button.classList.contains("is-processing");
 }
 
+// Liga os eventos de edição/rascunho dos pedidos
 function bindReleaseDrafts(root = document) {
   const cards = [
     ...(root.matches?.("[data-order]") ? [root] : []),
@@ -6348,6 +7869,7 @@ function bindReleaseDrafts(root = document) {
   });
 }
 
+// Monta o card de um pedido para exibição
 function orderCard(group) {
   const first = group[0];
   const draft = getReleaseDraft(first.codigo_pedido);
@@ -6465,6 +7987,7 @@ function orderCard(group) {
   </article>`;
 }
 
+// Liga os eventos de expandir/recolher dos cards de pedido
 function bindOrderToggles(root = document) {
   root.querySelectorAll("[data-toggle-order]").forEach((button) => {
     if (button.dataset.bound === "true") return;
@@ -6480,6 +8003,7 @@ function bindOrderToggles(root = document) {
   });
 }
 
+// Aguarda o conteúdo estar pronto antes de imprimir
 function waitForPrintReady(target) {
   const waitFrame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
   const images = [...(target?.querySelectorAll("img") || [])].map((img) => {
@@ -6493,6 +8017,7 @@ function waitForPrintReady(target) {
   return Promise.all([waitFrame(), ...images]);
 }
 
+// Agenda a limpeza dos elementos temporários após a impressão
 function schedulePrintCleanup(cleanup) {
   let done = false;
   const run = () => {
@@ -6505,6 +8030,7 @@ function schedulePrintCleanup(cleanup) {
   setTimeout(run, 3500);
 }
 
+// Dispara a impressão de um pedido
 async function printOrder(card, options = {}) {
   if (!card) return;
   const orderCode = card.dataset.order || "";
@@ -6527,6 +8053,17 @@ async function printOrder(card, options = {}) {
     return { product, requested };
   }).filter((item) => item.product && item.product !== "Nenhum registro encontrado.");
 
+  // Sem isso o cupom herdava o @page A4 global e imprimia como folha cheia, não como recibo estreito
+  const printStyle = document.createElement("style");
+  printStyle.id = "receipt-80mm-print-style";
+  printStyle.textContent = `
+    @media print {
+      @page {
+        size: 80mm auto;
+        margin: 0;
+      }
+    }
+  `;
   const receipt = document.createElement("section");
   receipt.className = "receipt-print-target order-request-print-target";
   receipt.innerHTML = `
@@ -6553,17 +8090,20 @@ async function printOrder(card, options = {}) {
     </div>
     <div class="receipt-foot">${esc(statusTime || `Emitido em ${moneyDate(new Date().toISOString())}`)}</div>
   `;
+  document.head.appendChild(printStyle);
   document.body.appendChild(receipt);
   document.body.classList.add("printing-receipt");
   await waitForPrintReady(receipt);
   window.print();
   schedulePrintCleanup(() => {
     document.body.classList.remove("printing-receipt");
+    printStyle.remove();
     receipt.remove();
   });
   return { method: "Navegador", printer: "Navegador" };
 }
 
+// Extrai os itens de retirada a partir do card do pedido
 function orderWithdrawalItemsFromCard(card) {
   return [...card.querySelectorAll("tbody tr:not(.hidden)")].map((row) => {
     const cells = row.querySelectorAll("td");
@@ -6582,6 +8122,7 @@ function orderWithdrawalItemsFromCard(card) {
   }).filter((item) => item.produto && item.produto !== "Nenhum registro encontrado." && Number(item.liberada || 0) > 0);
 }
 
+// Extrai os itens de retirada a partir do grupo do pedido
 function orderWithdrawalItemsFromGroup(group = []) {
   return orderReleasedItems(group).map((item) => ({
     produto: item.produto,
@@ -6589,10 +8130,12 @@ function orderWithdrawalItemsFromGroup(group = []) {
   })).filter((item) => item.produto);
 }
 
+// Serializa os itens de retirada para um atributo HTML
 function withdrawalItemsAttribute(items = []) {
   return esc(JSON.stringify(orderWithdrawalItemsFromGroup(items).length ? orderWithdrawalItemsFromGroup(items) : items));
 }
 
+// Extrai os itens de retirada a partir do botão acionado
 function orderWithdrawalItemsFromButton(button, card) {
   try {
     const parsed = JSON.parse(button?.dataset.items || "[]");
@@ -6601,6 +8144,7 @@ function orderWithdrawalItemsFromButton(button, card) {
   return orderWithdrawalItemsFromCard(card);
 }
 
+// Dispara a impressão do recibo de retirada do pedido
 async function printWithdrawalReceipt({ orderCode, pdv, responsible, date, user, signature, items = [] }) {
   const printStyle = document.createElement("style");
   printStyle.id = "receipt-a4-print-style";
@@ -6653,6 +8197,7 @@ async function printWithdrawalReceipt({ orderCode, pdv, responsible, date, user,
   });
 }
 
+// Abre a visualização do recibo de retirada
 function openOrderWithdrawalReceipt({ orderCode, pdv, responsible, date, user, signature, items = [] }) {
   if (!signature) {
     toast("Este pedido ainda não possui comprovante de retirada.", "error");
@@ -6693,7 +8238,8 @@ function openOrderWithdrawalReceipt({ orderCode, pdv, responsible, date, user, s
   document.body.appendChild(modal);
 }
 
-function openOrderWithdrawalModal(card, { from, to, pdvId = "" }) {
+// Abre o modal de confirmação de retirada do pedido (com assinatura)
+function openOrderWithdrawalModal(card, { from, to, pdvId = "", onSuccess, onClose } = {}) {
   const orderCode = card?.dataset.order || "";
   const currentStatus = card?.dataset.orderStatus || "";
   const headText = card?.querySelector(".order-accordion-head strong")?.textContent || `Pedido ${orderCode}`;
@@ -6701,7 +8247,7 @@ function openOrderWithdrawalModal(card, { from, to, pdvId = "" }) {
   const items = orderWithdrawalItemsFromCard(card);
   if (!items.length) {
     toast("Não há produtos com quantidade liberada para confirmar retirada.", "error");
-    return;
+    return false;
   }
   const modal = document.createElement("div");
   modal.className = "damage-status-modal";
@@ -6763,7 +8309,10 @@ function openOrderWithdrawalModal(card, { from, to, pdvId = "" }) {
     canvas.height = Math.max(160, Math.floor(rect.height * ratio));
     clearSignatureCanvas();
   };
-  const close = () => modal.remove();
+  const close = () => {
+    modal.remove();
+    onClose?.();
+  };
   const updateConfirm = () => {
     confirm.disabled = !(responsible.value.trim() && hidden.value.length > 1200);
   };
@@ -6817,7 +8366,7 @@ function openOrderWithdrawalModal(card, { from, to, pdvId = "" }) {
     const previousText = confirm.textContent;
     confirm.textContent = "Confirmando...";
     try {
-      await request("/api/admin/order-withdrawal", {
+      const resultado = await request("/api/admin/order-withdrawal", {
         method: "POST",
         body: JSON.stringify({
           codigo_pedido: orderCode,
@@ -6828,16 +8377,33 @@ function openOrderWithdrawalModal(card, { from, to, pdvId = "" }) {
         })
       });
       toast("Retirada confirmada com sucesso. O pedido foi finalizado.");
+      // A sobra não vira pendência: o usuário é avisado do que ficou sem atendimento
+      const sobras = resultado?.sobras || [];
+      if (sobras.length) {
+        const naoAtendidas = sobras.reduce((soma, item) => soma + Number(item.nao_atendida || 0), 0);
+        toast(`${naoAtendidas} unidade${naoAtendidas === 1 ? "" : "s"} do pedido não ${naoAtendidas === 1 ? "foi atendida" : "foram atendidas"}. Não geram pendência.`);
+      }
+      // Saldo central negativo não bloqueia a retirada, mas precisa ser visível
+      const negativos = resultado?.saldos_negativos || [];
+      if (negativos.length) {
+        toast(`Estoque central negativo em ${negativos.length} produto${negativos.length === 1 ? "" : "s"} (ex: ${negativos[0].nome || negativos[0].sku} = ${negativos[0].saldo}).`, "error");
+      }
       close();
-      await viewRelease({ from, to, pdvId, status: "Finalizado" });
+      if (typeof onSuccess === "function") {
+        await onSuccess();
+      } else {
+        await viewRelease({ from, to, pdvId, status: "Finalizado" });
+      }
     } catch (error) {
       toast(error.message || "Não foi possível confirmar a retirada.", "error");
       confirm.disabled = false;
       confirm.textContent = previousText;
     }
   });
+  return true;
 }
 
+// Normaliza os filtros usados na consulta de histórico
 function normalizeHistoryFilters(filters = {}) {
   return {
     status: filters.status || "",
@@ -6847,10 +8413,12 @@ function normalizeHistoryFilters(filters = {}) {
   };
 }
 
+// Gera uma assinatura única para os filtros aplicados no histórico
 function historyFilterSignature(filters = {}) {
   return JSON.stringify(normalizeHistoryFilters(filters));
 }
 
+// Monta os parâmetros de query da consulta de histórico
 function historyQueryParams(autoOnly, filters = {}, options = {}) {
   const { includePoint = true } = options;
   const normalized = normalizeHistoryFilters(filters);
@@ -6862,6 +8430,7 @@ function historyQueryParams(autoOnly, filters = {}, options = {}) {
   return params;
 }
 
+// View de histórico de pedidos
 async function viewHistory(autoOnly, filters = {}, options = {}) {
   document.querySelectorAll(".history-actions-dropdown").forEach((menu) => menu.remove());
   const activeFilters = normalizeHistoryFilters(filters);
@@ -6913,6 +8482,8 @@ async function viewHistory(autoOnly, filters = {}, options = {}) {
                 <button class="btn secondary" id="export-history-current" type="button">${pdvId ? "Exportar ponto" : "Exportar planilha"}</button>
                 <button class="btn secondary" id="export-history-all" type="button">Exportar todos os pontos</button>
                 ${!autoOnly ? `<button class="btn secondary" id="print-history" type="button">Imprimir relatório</button>` : ""}
+                ${!autoOnly ? `<button class="btn secondary" id="print-history-grouped" type="button">Imprimir agrupado por PDV</button>` : ""}
+                ${!autoOnly ? `<button class="btn secondary" id="export-history-grouped" type="button">Exportar agrupado por PDV</button>` : ""}
               </div>
             </div>
           </div>
@@ -6931,6 +8502,7 @@ async function viewHistory(autoOnly, filters = {}, options = {}) {
           ${renderHistoryPointGroups(grouped)}
         </div>
         ${renderHistoryPrintReport(grouped)}
+        ${renderHistoryGroupedPrintReport(data.history || [], { periodLabel, pointLabel, statusLabel: activeStatus || "Todos" })}
       </section>
     </section>`);
   const historyForm = document.querySelector("#history-filter");
@@ -6961,11 +8533,15 @@ async function viewHistory(autoOnly, filters = {}, options = {}) {
       closeHistoryActionsOnOutside = null;
     }
   };
-  const printRenderedHistory = async () => {
+  const printRenderedHistory = async ({ groupedReport = false } = {}) => {
     document.body.classList.add("printing-history");
+    document.body.classList.toggle("printing-history-grouped", groupedReport);
     await waitForPrintReady(document.querySelector(".print-history-area"));
     window.print();
-    schedulePrintCleanup(() => document.body.classList.remove("printing-history"));
+    schedulePrintCleanup(() => {
+      document.body.classList.remove("printing-history");
+      document.body.classList.remove("printing-history-grouped");
+    });
   };
 
   historyActionsToggle?.addEventListener("click", (event) => {
@@ -7001,6 +8577,15 @@ async function viewHistory(autoOnly, filters = {}, options = {}) {
     }
     await printRenderedHistory();
   });
+  document.querySelector("#print-history-grouped")?.addEventListener("click", async () => {
+    closeHistoryActions();
+    const selectedFilters = formFilters();
+    if (historyFilterSignature(selectedFilters) !== historyFilterSignature(activeFilters)) {
+      await viewHistory(autoOnly, selectedFilters, { printGroupedAfterRender: true });
+      return;
+    }
+    await printRenderedHistory({ groupedReport: true });
+  });
   document.querySelector("#export-history-current")?.addEventListener("click", async () => {
     closeHistoryActions();
     const selectedFilters = formFilters();
@@ -7010,7 +8595,8 @@ async function viewHistory(autoOnly, filters = {}, options = {}) {
       ? data
       : await request(`/api/admin/history?${historyQueryParams(autoOnly, selectedFilters).toString()}`);
     exportHistoryReport(selectedData.history || [], {
-      filename: selectedFilters.pdvId ? `historico_${slugFileName(selectedPointLabel)}.csv` : "historico_todos_os_pontos.csv"
+      filename: selectedFilters.pdvId ? `historico_${slugFileName(selectedPointLabel)}.xlsx` : "historico_todos_os_pontos.xlsx",
+      title: selectedFilters.pdvId ? `Histórico do ponto ${selectedPointLabel}` : "Histórico de todos os pontos"
     });
   });
   document.querySelector("#export-history-all")?.addEventListener("click", async () => {
@@ -7018,21 +8604,33 @@ async function viewHistory(autoOnly, filters = {}, options = {}) {
     const selectedFilters = formFilters();
     const allParams = historyQueryParams(autoOnly, selectedFilters, { includePoint: false });
     const allData = await request(`/api/admin/history?${allParams.toString()}`);
-    exportHistoryReport(allData.history || [], { filename: "historico_todos_os_pontos.csv" });
+    exportHistoryReport(allData.history || [], { filename: "historico_todos_os_pontos.xlsx", title: "Histórico de todos os pontos" });
+  });
+  document.querySelector("#export-history-grouped")?.addEventListener("click", async () => {
+    closeHistoryActions();
+    const selectedFilters = formFilters();
+    const selectedData = historyFilterSignature(selectedFilters) === historyFilterSignature(activeFilters)
+      ? data
+      : await request(`/api/admin/history?${historyQueryParams(autoOnly, selectedFilters).toString()}`);
+    exportGroupedHistoryReport(selectedData.history || [], { filename: "historico_agrupado_por_pdv.xlsx" });
   });
   bindOrderToggles();
   if (options.printAfterRender) await printRenderedHistory();
+  if (options.printGroupedAfterRender) await printRenderedHistory({ groupedReport: true });
 }
 
+// Gera a chave de data usada para agrupar o histórico
 function historyDateKey(row = {}) {
   return String(row.retirada_em || row.data_hora || "").slice(0, 10) || "Sem data";
 }
 
+// Formata o rótulo de data exibido no histórico
 function historyDateLabel(dateKey) {
   if (!dateKey || dateKey === "Sem data") return "Sem data";
   return moneyDate(dateKey);
 }
 
+// Agrupa os registros de histórico por ponto de venda e data
 function groupHistoryByPointAndDate(rows = []) {
   const points = new Map();
   for (const row of rows) {
@@ -7067,6 +8665,7 @@ function groupHistoryByPointAndDate(rows = []) {
     }));
 }
 
+// Renderiza os grupos de histórico por ponto de venda
 function renderHistoryPointGroups(pointGroups = []) {
   if (!pointGroups.length) return `<div class="card">Nenhum pedido encontrado.</div>`;
   return pointGroups.map((point) => `
@@ -7086,6 +8685,7 @@ function renderHistoryPointGroups(pointGroups = []) {
     </section>`).join("");
 }
 
+// Formata o rótulo de horário exibido no histórico
 function historyTimeLabel(value) {
   if (!value) return "-";
   const date = new Date(value);
@@ -7093,6 +8693,7 @@ function historyTimeLabel(value) {
   return date.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
+// Monta os metadados de cabeçalho para impressão do histórico
 function historyOrderPrintMeta(first = {}) {
   const parts = [
     first.solicitante || "-",
@@ -7104,6 +8705,7 @@ function historyOrderPrintMeta(first = {}) {
   return parts.join(" | ");
 }
 
+// Monta as linhas de impressão de um pedido do histórico
 function historyOrderPrintRows(group = []) {
   const first = group[0] || {};
   const observation = first.observacao
@@ -7126,6 +8728,7 @@ function historyOrderPrintRows(group = []) {
       </tr>`).join("")}`;
 }
 
+// Monta o HTML do relatório de histórico para impressão
 function renderHistoryPrintReport(pointGroups = []) {
   if (!pointGroups.length) return `<div class="history-print-report card">Nenhum pedido encontrado.</div>`;
   return `<div class="history-print-report">
@@ -7155,6 +8758,93 @@ function renderHistoryPrintReport(pointGroups = []) {
   </div>`;
 }
 
+// Gera a chave de agrupamento por produto no histórico
+function historyProductGroupKey(row = {}) {
+  return `${String(row.sku_produto || "").trim()}::${String(row.produto || "").trim().toUpperCase()}`;
+}
+
+// Agrupa os produtos do histórico por PDV
+function groupHistoryProductsByPdv(rows = []) {
+  const points = new Map();
+  for (const row of rows) {
+    const pointName = row.pdv || "Sem ponto";
+    if (!points.has(pointName)) points.set(pointName, { pdv: pointName, products: new Map(), orders: new Set() });
+    const point = points.get(pointName);
+    if (row.codigo_pedido) point.orders.add(row.codigo_pedido);
+    const productKey = historyProductGroupKey(row);
+    if (!point.products.has(productKey)) {
+      point.products.set(productKey, {
+        sku: row.sku_produto || "",
+        produto: row.produto || "-",
+        categoria: row.categoria || row.categoria_nome || "",
+        quantidadeSolicitada: 0,
+        quantidadeLiberada: 0,
+        pedidos: new Set()
+      });
+    }
+    const product = point.products.get(productKey);
+    product.quantidadeSolicitada += Number(row.quantidade_solicitada || 0);
+    product.quantidadeLiberada += Number(row.quantidade_liberada || 0);
+    if (row.codigo_pedido) product.pedidos.add(row.codigo_pedido);
+  }
+
+  return [...points.values()]
+    .sort((left, right) => left.pdv.localeCompare(right.pdv, "pt-BR"))
+    .map((point) => ({
+      pdv: point.pdv,
+      totalPedidos: point.orders.size,
+      products: [...point.products.values()]
+        .sort((left, right) => left.produto.localeCompare(right.produto, "pt-BR"))
+        .map((product) => ({
+          ...product,
+          totalPedidos: product.pedidos.size
+        }))
+    }));
+}
+
+// Monta o HTML do relatório de histórico agrupado por PDV para impressão
+function renderHistoryGroupedPrintReport(rows = [], meta = {}) {
+  const grouped = groupHistoryProductsByPdv(rows);
+  if (!grouped.length) return `<div class="history-grouped-print-report card">Nenhum produto encontrado.</div>`;
+  const totalPedidos = new Set(rows.map((row) => row.codigo_pedido).filter(Boolean)).size;
+  const totalProdutos = rows.reduce((sum, row) => sum + Number(row.quantidade_solicitada || 0), 0);
+  return `<div class="history-grouped-print-report">
+    <div class="history-grouped-summary">
+      <strong>Relatório agrupado por PDV</strong>
+      <span>Período: ${esc(meta.periodLabel || "Todos os períodos")} | Ponto: ${esc(meta.pointLabel || "Todos os pontos")} | Status: ${esc(meta.statusLabel || "Todos")}</span>
+      <span>Total de pedidos: ${esc(totalPedidos)} | Quantidade solicitada total: ${esc(totalProdutos)}</span>
+    </div>
+    ${grouped.map((point) => {
+      const pointTotal = point.products.reduce((sum, product) => sum + product.quantidadeSolicitada, 0);
+      return `
+        <section class="history-print-point history-grouped-point">
+          <h3>${esc(point.pdv)}</h3>
+          <p class="history-grouped-point-meta">${esc(point.totalPedidos)} pedido(s) considerado(s) | ${esc(pointTotal)} unidade(s) solicitada(s)</p>
+          <table class="historico-pedidos-print historico-agrupado-print">
+            <thead>
+              <tr>
+                <th>Produto</th>
+                <th>Qtd total</th>
+                <th>Qtd liberada</th>
+                <th>Pedidos</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${point.products.map((product) => `
+                <tr class="pedido-product-row">
+                  <td>${esc(product.produto)}${product.sku ? `<small>SKU ${esc(product.sku)}</small>` : ""}</td>
+                  <td>${esc(product.quantidadeSolicitada)}</td>
+                  <td>${esc(product.quantidadeLiberada)}</td>
+                  <td>${esc(product.totalPedidos)}</td>
+                </tr>`).join("")}
+            </tbody>
+          </table>
+        </section>`;
+    }).join("")}
+  </div>`;
+}
+
+// Normaliza um nome de arquivo removendo acentos e caracteres especiais
 function slugFileName(value = "relatorio") {
   return String(value || "relatorio")
     .normalize("NFD")
@@ -7164,16 +8854,67 @@ function slugFileName(value = "relatorio") {
     .toLowerCase() || "relatorio";
 }
 
-function exportHistoryReport(rows = [], { filename = "historico_pedidos.csv" } = {}) {
+// Garante que o nome do arquivo termine com a extensão .xlsx
+function ensureXlsxFilename(filename = "relatorio.xlsx") {
+  return String(filename || "relatorio.xlsx").replace(/\.(csv|tsv)$/i, ".xlsx").replace(/\.xlsx$/i, "") + ".xlsx";
+}
+
+// Formata a data para exportação do histórico
+function historyExportDate(value) {
+  const dateKey = historyDateKey(value);
+  return dateKey || "";
+}
+
+// Formata o horário para exportação do histórico
+function historyExportTime(value) {
+  if (!value) return "";
+  return historyTimeLabel(value);
+}
+
+// Gera e baixa uma planilha (workbook) a partir das definições de abas
+function downloadWorkbook(filename, sheetDefinitions = []) {
+  if (!window.XLSX?.utils?.book_new || !window.XLSX?.writeFile) {
+    const firstSheet = sheetDefinitions[0];
+    if (firstSheet?.rows?.length) downloadCsv(filename.replace(/\.xlsx$/i, ".csv"), firstSheet.rows);
+    return;
+  }
+
+  const workbook = window.XLSX.utils.book_new();
+  sheetDefinitions.forEach((definition) => {
+    const rows = definition.rows || [];
+    const sheet = window.XLSX.utils.aoa_to_sheet(rows);
+    const maxCols = rows.reduce((max, row) => Math.max(max, row.length), 0);
+    const maxRows = rows.length;
+    if (definition.headerRow && maxRows >= definition.headerRow) {
+      const headerIndex = definition.headerRow - 1;
+      sheet["!autofilter"] = {
+        ref: window.XLSX.utils.encode_range({
+          s: { r: headerIndex, c: 0 },
+          e: { r: Math.max(maxRows - 1, headerIndex), c: Math.max(maxCols - 1, 0) }
+        })
+      };
+    }
+    if (definition.cols?.length) sheet["!cols"] = definition.cols.map((width) => ({ wch: width }));
+    window.XLSX.utils.book_append_sheet(workbook, sheet, definition.name.slice(0, 31));
+  });
+
+  window.XLSX.writeFile(workbook, ensureXlsxFilename(filename), { compression: true });
+}
+
+// Monta as linhas de dados para exportação do histórico
+function buildHistoryExportRows(rows = []) {
   const headers = [
     "PDV",
     "Data",
+    "Hora",
     "Pedido",
+    "Status",
     "Solicitante",
+    "SKU/Código",
     "Produto",
+    "Categoria",
     "Quantidade solicitada",
     "Quantidade liberada",
-    "Status",
     "Responsável retirada",
     "Data retirada",
     "Usuário almoxarifado",
@@ -7189,21 +8930,103 @@ function exportHistoryReport(rows = [], { filename = "historico_pedidos.csv" } =
     })
     .map((row) => [
       row.pdv || "",
-      historyDateKey(row),
+      historyExportDate(row),
+      historyExportTime(row.data_hora),
       row.codigo_pedido || "",
+      row.status || "",
       row.solicitante || "",
+      row.sku_produto || row.sku || "",
       row.produto || "",
+      row.categoria || row.categoria_nome || "",
       row.quantidade_solicitada || 0,
       row.quantidade_liberada || 0,
-      row.status || "",
       row.retirada_responsavel || "",
       row.retirada_em ? moneyDate(row.retirada_em) : "",
       row.retirada_usuario_almoxarifado || "",
       row.observacao || ""
     ]);
-  downloadCsv(filename, [headers, ...dataRows]);
+  return [headers, ...dataRows];
 }
 
+// Monta as linhas de resumo para exportação do histórico
+function buildHistorySummaryRows(rows = [], title = "Histórico geral") {
+  const orders = new Set(rows.map((row) => row.codigo_pedido).filter(Boolean));
+  const points = new Set(rows.map((row) => row.pdv).filter(Boolean));
+  const requested = rows.reduce((sum, row) => sum + Number(row.quantidade_solicitada || 0), 0);
+  const released = rows.reduce((sum, row) => sum + Number(row.quantidade_liberada || 0), 0);
+  return [
+    ["Resumo gerencial"],
+    [title],
+    [],
+    ["Indicador", "Valor"],
+    ["Pedidos", orders.size],
+    ["Pontos", points.size],
+    ["Linhas de produto", rows.length],
+    ["Quantidade solicitada", requested],
+    ["Quantidade liberada", released]
+  ];
+}
+
+// Monta as linhas de instruções da planilha exportada
+function buildHistoryInstructionsRows() {
+  return [
+    ["Modelo ACPARK - Histórico Geral"],
+    ["Use os filtros dos cabeçalhos para gerenciar por PDV, pedido, status, produto e data."],
+    ["A aba Histórico Geral mostra cada produto em uma linha própria."],
+    ["A aba Agrupado por PDV soma os produtos por ponto de venda, sem misturar pontos diferentes."],
+    ["SKUs e códigos podem conter letras e devem ser mantidos como texto."]
+  ];
+}
+
+// Exporta o relatório de histórico em planilha
+function exportHistoryReport(rows = [], { filename = "historico_pedidos.xlsx", title = "Histórico geral" } = {}) {
+  const historyRows = buildHistoryExportRows(rows);
+  const groupedRows = buildGroupedHistoryExportRows(rows);
+  downloadWorkbook(filename, [
+    { name: "Instruções", rows: buildHistoryInstructionsRows(), cols: [70] },
+    { name: "Histórico Geral", rows: [["Histórico geral ACPARK"], ["Pedidos exportados conforme filtros aplicados."], [], ...historyRows], headerRow: 4, cols: [18, 12, 10, 28, 22, 24, 18, 42, 22, 18, 18, 28, 22, 28, 42] },
+    { name: "Agrupado por PDV", rows: [["Pedidos agrupados por PDV"], ["Produtos somados por ponto de venda."], [], ...groupedRows], headerRow: 4, cols: [18, 18, 42, 22, 20, 20, 20] },
+    { name: "Resumo", rows: buildHistorySummaryRows(rows, title), headerRow: 4, cols: [34, 16] }
+  ]);
+}
+
+// Monta as linhas de exportação do histórico agrupado por PDV
+function buildGroupedHistoryExportRows(rows = []) {
+  const headers = [
+    "PDV",
+    "SKU/Código",
+    "Produto",
+    "Categoria",
+    "Quantidade solicitada total",
+    "Quantidade liberada total",
+    "Pedidos considerados"
+  ];
+  const dataRows = groupHistoryProductsByPdv(rows).flatMap((point) =>
+    point.products.map((product) => [
+      point.pdv,
+      product.sku || "",
+      product.produto || "",
+      product.categoria || "",
+      product.quantidadeSolicitada || 0,
+      product.quantidadeLiberada || 0,
+      product.totalPedidos || 0
+    ])
+  );
+  return [headers, ...dataRows];
+}
+
+// Exporta o relatório de histórico agrupado por PDV em planilha
+function exportGroupedHistoryReport(rows = [], { filename = "historico_agrupado_por_pdv.xlsx" } = {}) {
+  const groupedRows = buildGroupedHistoryExportRows(rows);
+  downloadWorkbook(filename, [
+    { name: "Instruções", rows: buildHistoryInstructionsRows(), cols: [70] },
+    { name: "Agrupado por PDV", rows: [["Pedidos agrupados por PDV"], ["Totalização por produto e ponto de venda."], [], ...groupedRows], headerRow: 4, cols: [18, 18, 42, 22, 20, 20, 20] },
+    { name: "Histórico Geral", rows: [["Histórico geral ACPARK"], ["Base linha a linha usada para agrupamento."], [], ...buildHistoryExportRows(rows)], headerRow: 4, cols: [18, 12, 10, 28, 22, 24, 18, 42, 22, 18, 18, 28, 22, 28, 42] },
+    { name: "Resumo", rows: buildHistorySummaryRows(rows, "Histórico agrupado por PDV"), headerRow: 4, cols: [34, 16] }
+  ]);
+}
+
+// Monta o card de um pedido no histórico
 function historyOrderCard(group) {
   const first = group[0];
   return `<article class="card order-accordion" data-order="${esc(first.codigo_pedido)}">
@@ -7228,6 +9051,7 @@ function historyOrderCard(group) {
   </article>`;
 }
 
+// View de configurações (versão antiga)
 async function viewConfig() {
   const categories = categoryOptions();
   shell(`
@@ -7392,6 +9216,7 @@ async function viewConfig() {
   });
 }
 
+// View de configurações (usuários, categorias, integrações)
 async function viewConfigV2() {
   const categories = categoryOptions();
   const categorySelect = (id) => `

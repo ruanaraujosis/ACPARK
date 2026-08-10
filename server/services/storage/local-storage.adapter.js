@@ -1,11 +1,13 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
+// Adaptador de storage que grava arquivos no disco local (uso em dev/local)
 export class LocalStorageAdapter {
   constructor({ root }) {
     this.root = root;
   }
 
+  // Resolve a chave para um caminho absoluto e impede path traversal fora da raiz
   safePath(key) {
     const resolved = path.resolve(this.root, key);
     const root = path.resolve(this.root);

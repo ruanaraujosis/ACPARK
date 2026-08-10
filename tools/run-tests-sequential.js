@@ -1,3 +1,5 @@
+// Script: executa todos os arquivos *.test.js da pasta tests/ um de cada vez
+// (em vez de em paralelo), parando no primeiro que falhar
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -6,6 +8,7 @@ const root = path.resolve(".");
 const testsDir = path.join(root, "tests");
 const node = process.execPath;
 
+// Filtra apenas arquivos de teste
 function shouldRun(file) {
   return file.endsWith(".test.js");
 }
@@ -29,6 +32,7 @@ for (const file of files) {
   const start = Date.now();
   console.log(`\n=== ${label} ===`);
 
+  // Roda o arquivo de teste em um processo Node separado, herdando stdout/stderr
   const result = spawnSync(node, [file], {
     cwd: root,
     env: process.env,
@@ -60,6 +64,7 @@ for (const file of files) {
 printSummary(results, Date.now() - startedAt);
 process.exit(0);
 
+// Imprime contagem de aprovados/falhas e lista os arquivos que falharam
 function printSummary(items, totalMs) {
   const passed = items.filter((item) => item.status === 0).length;
   const failed = items.length - passed;

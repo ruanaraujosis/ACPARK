@@ -6,17 +6,21 @@ import { normalizePriority } from "../../services/integrations/integration.servi
 import { normalizeSyncScope, enqueueIntegrationJob, processIntegrationJobById, processNextIntegrationJob } from "../../services/integrations/omie/omie.sync.js";
 import { testOmieProductsConnection } from "../../services/integrations/omie/omie.products.js";
 
+// Atalho para exigir sessão de admin usando o contexto de rota
 function requireAdmin(req, res, context) {
   return context.requireUser(req, res, "admin");
 }
 
+// Reservado para webhooks públicos de integrações (nenhum implementado no momento)
 export async function handleIntegrationWebhookRoutes(req, res) {
   return false;
 }
 
+// Roteador administrativo de integrações externas (hoje, OMIE)
 export async function handleIntegrationsRoutes(req, res, context) {
   const { method, url } = context;
 
+  // Conexão de eventos em tempo real (SSE) sobre o status das integrações
   if (url.pathname === "/api/admin/integrations/events") {
     if (!requireAdmin(req, res, context)) return true;
     handleIntegrationEvents(req, res);
@@ -29,6 +33,7 @@ export async function handleIntegrationsRoutes(req, res, context) {
     return send(res, 200, { ok: true, runtime }), true;
   }
 
+  // Lista integrações cadastradas com suas credenciais mascaradas (nunca em texto puro)
   if (url.pathname === "/api/admin/integrations" && method === "GET") {
     if (!requireAdmin(req, res, context)) return true;
     const integrations = await query("SELECT * FROM integrations ORDER BY provedor, nome");
@@ -41,6 +46,7 @@ export async function handleIntegrationsRoutes(req, res, context) {
     }), true;
   }
 
+  // Cria ou atualiza a configuração de uma integração (upsert por id ou por provedor+ambiente)
   if (url.pathname === "/api/admin/integrations" && method === "POST") {
     if (!requireAdmin(req, res, context)) return true;
     const body = await readBody(req);
@@ -104,6 +110,7 @@ export async function handleIntegrationsRoutes(req, res, context) {
           ]
         );
       const row = integration.rows[0];
+      // Credenciais só são gravadas se enviadas; sempre criptografadas e com versão mascarada para exibição
       for (const key of ["app_key", "app_secret"]) {
         if (body[key]) {
           const credential = await client.query(
@@ -134,6 +141,7 @@ export async function handleIntegrationsRoutes(req, res, context) {
     return send(res, 200, { ok: true, integration: sanitizeIntegration(result) }), true;
   }
 
+  // Testa a conexão com o OMIE usando as credenciais salvas e atualiza o status da integração
   if (url.pathname === "/api/admin/integrations/test" && method === "POST") {
     if (!requireAdmin(req, res, context)) return true;
     const body = await readBody(req);
@@ -186,6 +194,7 @@ export async function handleIntegrationsRoutes(req, res, context) {
     }
   }
 
+  // Lista os últimos jobs de sincronização enfileirados para integrações
   if (url.pathname === "/api/admin/integrations/jobs") {
     if (!requireAdmin(req, res, context)) return true;
     const jobs = await query(
@@ -196,6 +205,7 @@ export async function handleIntegrationsRoutes(req, res, context) {
     return send(res, 200, { jobs }), true;
   }
 
+  // Dispara uma sincronização manual: enfileira o job e já tenta processá-lo em seguida
   if (url.pathname === "/api/admin/integrations/sync" && method === "POST") {
     if (!requireAdmin(req, res, context)) return true;
     const body = await readBody(req);
@@ -211,12 +221,14 @@ export async function handleIntegrationsRoutes(req, res, context) {
     return send(res, 200, { ok: true, job: processed || job }), true;
   }
 
+  // Processa manualmente o próximo job pendente na fila de integrações
   if (url.pathname === "/api/admin/integrations/jobs/process-next" && method === "POST") {
     if (!requireAdmin(req, res, context)) return true;
     const job = await tx((client) => processNextIntegrationJob(client));
     return send(res, 200, { ok: true, job }), true;
   }
 
+  // Processa manualmente um job específico pelo id
   if (url.pathname === "/api/admin/integrations/jobs/process" && method === "POST") {
     if (!requireAdmin(req, res, context)) return true;
     const body = await readBody(req);
@@ -228,6 +240,7 @@ export async function handleIntegrationsRoutes(req, res, context) {
     return send(res, 200, { ok: true, job }), true;
   }
 
+  // Mapeamento entre PDVs internos e locais de estoque no OMIE
   if (url.pathname === "/api/admin/integrations/location-mappings") {
     if (!requireAdmin(req, res, context)) return true;
     if (method === "GET") {
@@ -260,6 +273,7 @@ export async function handleIntegrationsRoutes(req, res, context) {
     }
   }
 
+  // Lista divergências encontradas ao reconciliar o estoque local com o OMIE
   if (url.pathname === "/api/admin/integrations/reconciliations") {
     if (!requireAdmin(req, res, context)) return true;
     const divergences = await query(

@@ -1,8 +1,10 @@
-﻿export function send(res, status, data, headers = {}) {
+﻿// Envia uma resposta JSON padronizada com o status HTTP informado
+export function send(res, status, data, headers = {}) {
   res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", ...headers });
   res.end(JSON.stringify(data));
 }
 
+// Lê e faz parse do corpo JSON da requisição, limitando o tamanho para evitar payloads excessivos
 export function readBody(req) {
   return new Promise((resolve, reject) => {
     let body = "";
@@ -27,15 +29,18 @@ export function readBody(req) {
   });
 }
 
+// Remove espaços nas pontas e limita o tamanho de um texto vindo do cliente
 export function normalizeText(value, max = 120) {
   return String(value || "").trim().slice(0, max);
 }
 
+// Normaliza uma lista de categorias: maiúsculas, sem vazios e sem duplicadas
 export function normalizeCategories(values) {
   if (!Array.isArray(values)) return [];
   return [...new Set(values.map((value) => normalizeText(value, 120).toUpperCase()).filter(Boolean))];
 }
 
+// Aceita categorias como array ou string separada por ; , | e normaliza
 export function normalizeCategoryList(value) {
   const values = Array.isArray(value) ? value : String(value || "").split(/[;,|]/);
   return normalizeCategories(values);

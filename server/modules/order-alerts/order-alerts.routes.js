@@ -31,6 +31,7 @@ const allowedIntervals = new Set([3, 5, 10, 15, 30]);
 
 let schemaReady = null;
 
+// Cria/atualiza (uma única vez, cacheado em memória) as tabelas de preferências e sons de alerta
 function ensureOrderAlertTables() {
   schemaReady ||= tx(async (client) => {
     await client.query(`
@@ -82,10 +83,12 @@ function ensureOrderAlertTables() {
   return schemaReady;
 }
 
+// Gera a chave usada para persistir preferências de alerta por usuário (admin ou PDV)
 function userKey(user) {
   return user.role === "admin" ? `admin:${user.name || "Almoxarifado"}` : `pdv:${user.pdvId || user.name || "unknown"}`;
 }
 
+// Valida e aplica defaults nas preferências de alerta sonoro enviadas pelo cliente
 function normalizePreferences(body = {}) {
   const soundId = normalizeText(body.soundId || body.sound_id || defaultPreferences.soundId, 100) || defaultPreferences.soundId;
   const volume = Math.max(0, Math.min(100, asInt(body.volume ?? defaultPreferences.volume)));
@@ -103,6 +106,7 @@ function normalizePreferences(body = {}) {
   };
 }
 
+// Converte a linha do banco (snake_case) para o formato de preferências usado pelo front (camelCase)
 function mapPreferenceRow(row) {
   if (!row) return { ...defaultPreferences };
   return {
@@ -117,6 +121,7 @@ function mapPreferenceRow(row) {
   };
 }
 
+// Resumo dos pedidos pendentes (agrupados por código) usado para exibir alertas ao Almoxarifado
 async function pendingOrdersSummary() {
   const rows = await query(
     `SELECT
@@ -135,6 +140,7 @@ async function pendingOrdersSummary() {
   return rows;
 }
 
+// Total de pedidos distintos aguardando atendimento
 async function pendingOrdersCount() {
   const rows = await query(
     `SELECT COUNT(DISTINCT COALESCE(NULLIF(codigo_pedido, ''), id::text))::int AS pending
@@ -144,6 +150,7 @@ async function pendingOrdersCount() {
   return asInt(rows[0]?.pending);
 }
 
+// Lista os identificadores dos pedidos pendentes, usada pelo cliente para detectar novidades
 async function pendingOrderIds() {
   const rows = await query(
     `SELECT COALESCE(NULLIF(codigo_pedido, ''), id::text) AS "orderId"
@@ -155,9 +162,11 @@ async function pendingOrderIds() {
   return rows.map((row) => String(row.orderId)).filter(Boolean);
 }
 
+// Roteador dos alertas sonoros/visuais de novos pedidos exibidos para o Almoxarifado
 export async function handleOrderAlertRoutes(req, res, context) {
   const { method, url, user } = context;
 
+  // Conexão de eventos em tempo real (SSE) para notificar novos pedidos pendentes
   if (url.pathname === "/api/admin/order-alert-events") {
     if (user.role !== "admin") return send(res, 403, { error: "Acesso restrito ao Almoxarifado." }), true;
     handleOrderAlertEvents(req, res);
@@ -172,6 +181,7 @@ export async function handleOrderAlertRoutes(req, res, context) {
     return send(res, 200, { pending, pendingOrders, pendingOrderIds: ids }), true;
   }
 
+  // Consulta/atualiza as preferências pessoais de alerta (som, volume, repetição) do usuário logado
   if (url.pathname === "/api/user/order-alert-preferences") {
     if (user.role !== "admin") return send(res, 403, { error: "Alertas sonoros disponiveis apenas para o Almoxarifado." }), true;
     await ensureOrderAlertTables();
@@ -231,6 +241,7 @@ export async function handleOrderAlertRoutes(req, res, context) {
     }
   }
 
+  // Lista os sons disponíveis para uso como alerta
   if (url.pathname === "/api/admin/order-alert-sounds" && method === "GET") {
     if (user.role !== "admin") return send(res, 403, { error: "Acesso restrito ao Almoxarifado." }), true;
     await ensureOrderAlertTables();

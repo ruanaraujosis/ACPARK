@@ -4,14 +4,17 @@ import { stopAutoRefresh } from "../../ui/auto-refresh.js";
 import { toast } from "../../ui/notifications.js";
 import { esc } from "../../ui.js";
 
+// Callbacks injetados pelo app principal para evitar dependência circular com o roteador
 let loadBootstrapCallback = null;
 let routeCallback = null;
 
+// Registra as funções de bootstrap e roteamento usadas após o login
 export function configureAuth({ loadBootstrap, route }) {
   loadBootstrapCallback = loadBootstrap;
   routeCallback = route;
 }
 
+// Renderiza a tela de login (perfil PDV/Almoxarifado) e liga os eventos do formulário
 export async function renderLogin() {
   stopAutoRefresh();
   const publicPdvs = await request("/api/public/pdvs").catch(() => ({ pdvs: [] }));
@@ -52,10 +55,12 @@ export async function renderLogin() {
       </section>
     </main>`;
 
+  // Esconde o seletor de PDV quando o perfil escolhido é Almoxarifado (admin)
   document.querySelector("#profile").addEventListener("change", (event) => {
     document.querySelector("#pdv-field").style.display = event.target.value === "admin" ? "none" : "grid";
   });
 
+  // Alterna a visibilidade da senha digitada
   document.querySelector("#toggle-login-password").addEventListener("click", () => {
     const input = document.querySelector("#login-password");
     const button = document.querySelector("#toggle-login-password");
@@ -65,6 +70,7 @@ export async function renderLogin() {
     button.setAttribute("title", showing ? "Mostrar senha" : "Ocultar senha");
   });
 
+  // Envia as credenciais e, se aceitas, carrega os dados iniciais e navega por perfil
   document.querySelector("#login-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = Object.fromEntries(new FormData(event.currentTarget));
@@ -79,6 +85,7 @@ export async function renderLogin() {
   });
 }
 
+// Ponto de entrada da autenticação: tenta recuperar a sessão atual e decide entre app ou login
 export function initializeAuth(callbacks) {
   configureAuth(callbacks);
   return request("/api/auth/me")

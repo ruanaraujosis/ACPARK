@@ -1,9 +1,12 @@
 import { toast } from "../ui/notifications.js";
 
+// Chave no localStorage que lembra se o usuário já autorizou áudio neste navegador
 const activationKey = "acparkOrderAlertsAudioEnabled";
+// Limites de segurança para modos de repetição contínua (evita alerta tocando para sempre)
 const maxContinuousRuns = 30;
 const maxContinuousMs = 5 * 60 * 1000;
 
+// Sequências de notas (frequência em Hz + duração em segundos) para cada toque disponível
 const soundProfiles = {
   default: [{ frequency: 880, duration: 0.16 }, { frequency: 1175, duration: 0.2 }],
   bell: [{ frequency: 1046, duration: 0.28 }],
@@ -17,6 +20,7 @@ const soundProfiles = {
   "soft-continuous": [{ frequency: 587, duration: 0.2 }, { frequency: 740, duration: 0.24 }]
 };
 
+// Mapeia cada modo de repetição escolhido pelo usuário para nº de repetições ou duração-limite
 const repeatModeConfig = {
   once: { repetitions: 1 },
   two_times: { repetitions: 2 },
@@ -26,6 +30,8 @@ const repeatModeConfig = {
   until_service_start: { untilStopped: true }
 };
 
+// Estado do gerenciador de alertas: fila de pedidos aguardando som, alerta tocando no momento
+// e o contexto de áudio compartilhado (Web Audio API)
 const alertState = {
   queue: [],
   activeOrderIds: new Set(),
@@ -40,6 +46,7 @@ const alertState = {
   blockedToastShown: false
 };
 
+// Espera "ms" milissegundos, mas de um jeito que pode ser interrompido por clearAlertTimer()
 function delay(ms) {
   return new Promise((resolve) => {
     alertState.timerResolve = resolve;
@@ -51,6 +58,7 @@ function delay(ms) {
   });
 }
 
+// Cancela o timer de espera atual e resolve a Promise pendente imediatamente (usado ao parar o alerta)
 function clearAlertTimer() {
   if (alertState.timer) clearTimeout(alertState.timer);
   alertState.timer = null;
@@ -59,6 +67,7 @@ function clearAlertTimer() {
   resolve?.();
 }
 
+// Cria (uma vez) e reaproveita o AudioContext do navegador para tocar os toques
 function ensureAudioContext() {
   const AudioCtx = window.AudioContext || window.webkitAudioContext;
   if (!AudioCtx) return null;
@@ -66,6 +75,7 @@ function ensureAudioContext() {
   return alertState.audioContext;
 }
 
+// Registra um nó de áudio ativo para que possa ser interrompido caso o alerta seja cancelado
 function trackAudioNode(node) {
   alertState.activeNodes.add(node);
   node.addEventListener("ended", () => {
@@ -78,6 +88,7 @@ function trackAudioNode(node) {
   }, { once: true });
 }
 
+// Interrompe imediatamente todos os osciladores/nós de áudio tocando no momento
 function stopActiveAudioNodes() {
   for (const node of alertState.activeNodes) {
     try {
@@ -92,10 +103,13 @@ function stopActiveAudioNodes() {
   alertState.activeNodes.clear();
 }
 
+// Indica se o usuário já desbloqueou o áudio de alerta neste navegador
 export function audioIsActivated() {
   return localStorage.getItem(activationKey) === "true";
 }
 
+// Desbloqueia o áudio (necessário por política dos navegadores: exige interação do usuário)
+// tocando um pulso inaudível; em caso de sucesso, libera a fila de alertas pendentes
 export async function activateAudioAlerts() {
   const ctx = ensureAudioContext();
   if (!ctx) {
@@ -120,6 +134,7 @@ export async function activateAudioAlerts() {
   }
 }
 
+// Toca um som muito curto e quase silencioso apenas para "destravar" o áudio no navegador
 async function playUnlockPulse(ctx) {
   const oscillator = ctx.createOscillator();
   const gain = ctx.createGain();
@@ -136,6 +151,7 @@ async function playUnlockPulse(ctx) {
   });
 }
 
+// Aplica valores padrão e limites válidos às preferências de alerta sonoro do usuário
 function normalizePreferences(preferences = {}) {
   return {
     enabled: preferences.enabled !== false,
@@ -150,6 +166,8 @@ function normalizePreferences(preferences = {}) {
   };
 }
 
+// Toca uma sequência de notas (perfil de som) usando osciladores Web Audio; retorna false se
+// o áudio não estiver ativado ou não for suportado
 async function playTone(soundId, volume) {
   if (!audioIsActivated()) return false;
   const ctx = ensureAudioContext();
@@ -180,6 +198,7 @@ async function playTone(soundId, volume) {
   return true;
 }
 
+// Pausa a fila de alertas e avisa o usuário que precisa clicar para ativar o áudio no navegador
 function pauseUntilAudioActivation() {
   clearAlertTimer();
   alertState.current = null;
@@ -191,6 +210,7 @@ function pauseUntilAudioActivation() {
   }
 }
 
+// Converte o modo de repetição das preferências em nº de repetições e duração máxima efetivos
 function repeatLimit(preferences) {
   const config = repeatModeConfig[preferences.repeatMode] || repeatModeConfig.three_times;
   if (config.repetitions) return { repetitions: config.repetitions, durationMs: null };
@@ -200,6 +220,8 @@ function repeatLimit(preferences) {
   };
 }
 
+// Processa a fila de alertas um de cada vez: toca o próximo pedido, repetindo conforme as
+// preferências, e ao terminar chama a si mesma recursivamente para seguir a fila
 async function drainQueue() {
   if (alertState.isPlaying) return;
   if (!audioIsActivated()) {
@@ -250,6 +272,7 @@ async function drainQueue() {
   }
 }
 
+// Adiciona um pedido à fila de alertas sonoros (ignora se já estiver na fila/tocando)
 export function enqueueOrderAlert({ orderId, preferences, shouldStop }) {
   if (!orderId || alertState.activeOrderIds.has(orderId)) return;
   const normalized = normalizePreferences(preferences);
@@ -259,6 +282,7 @@ export function enqueueOrderAlert({ orderId, preferences, shouldStop }) {
   drainQueue();
 }
 
+// Toca o alerta imediatamente com as preferências informadas, usado no botão "Testar alerta"
 export async function testOrderAlert(preferences = {}) {
   stopCurrentOrderAlert();
   const normalized = normalizePreferences(preferences);
@@ -288,6 +312,7 @@ export async function testOrderAlert(preferences = {}) {
   }
 }
 
+// Interrompe o alerta de um pedido específico (ou de todos, se orderId for omitido)
 export function stopCurrentOrderAlert(orderId = null) {
   if (orderId) {
     alertState.queue = alertState.queue.filter((item) => item.orderId !== orderId);
@@ -309,6 +334,7 @@ export function stopCurrentOrderAlert(orderId = null) {
   }
 }
 
+// Interrompe e limpa todos os alertas sonoros pendentes/tocando
 export function stopAllOrderAlerts() {
   stopCurrentOrderAlert();
 }

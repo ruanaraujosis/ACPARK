@@ -9,6 +9,7 @@ function hmac(key, value, encoding) {
   return crypto.createHmac("sha256", key).update(value).digest(encoding);
 }
 
+// Gera timestamp no formato exigido pela assinatura AWS4 (AmzDate/DateStamp)
 function amzTimestamp(date = new Date()) {
   const iso = date.toISOString().replace(/[:-]|\.\d{3}/g, "");
   return {
@@ -17,6 +18,7 @@ function amzTimestamp(date = new Date()) {
   };
 }
 
+// Codifica cada segmento da chave (path) do objeto para uso seguro em URL
 function encodeS3Key(key) {
   return String(key || "")
     .split("/")
@@ -24,6 +26,7 @@ function encodeS3Key(key) {
     .join("/");
 }
 
+// Valida e normaliza a URL do endpoint S3/R2/Supabase configurado
 function normalizeEndpoint(endpoint) {
   const value = String(endpoint || "").trim().replace(/\/+$/, "");
   if (!value) throw new StorageConfigurationError("STORAGE_ENDPOINT e obrigatorio para storage S3/R2/Supabase.");
@@ -36,6 +39,7 @@ function requireValue(value, name) {
   return normalized;
 }
 
+// Remove credenciais e assinaturas sensiveis das mensagens de erro do storage
 function sanitizeStorageError(value) {
   return String(value || "")
     .replace(/AWS4-HMAC-SHA256\s+[A-Za-z0-9=,/\s:+_-]+/gi, "AWS4-HMAC-SHA256 [removido]")
@@ -51,6 +55,7 @@ async function storageErrorMessage(response) {
   return detail ? `: ${detail}` : "";
 }
 
+// Adaptador de storage compativel com S3 (usado tambem para R2/Supabase via S3 API)
 export class S3StorageAdapter {
   constructor(config = {}) {
     this.endpoint = normalizeEndpoint(config.endpoint);
@@ -60,11 +65,13 @@ export class S3StorageAdapter {
     this.secretKey = requireValue(config.secretKey, "STORAGE_SECRET_KEY");
   }
 
+  // Monta a URL completa do objeto dentro do bucket
   objectUrl(key) {
     const encodedKey = encodeS3Key(key);
     return new URL(`${this.endpoint.pathname.replace(/\/+$/, "")}/${encodeURIComponent(this.bucket)}/${encodedKey}`, this.endpoint);
   }
 
+  // Constroi cabecalhos e assinatura AWS Signature V4 para a requisicao
   signedHeaders({ method, key, body = Buffer.alloc(0), contentType = "application/octet-stream" }) {
     const url = this.objectUrl(key);
     const { amzDate, dateStamp } = amzTimestamp();
@@ -109,6 +116,7 @@ export class S3StorageAdapter {
     };
   }
 
+  // Executa a requisicao assinada contra o endpoint S3 e trata erros de resposta
   async request({ method, key, body, contentType }) {
     const payload = body ? Buffer.from(body) : Buffer.alloc(0);
     const signed = this.signedHeaders({ method, key, body: payload, contentType });

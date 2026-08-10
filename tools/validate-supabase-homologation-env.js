@@ -1,8 +1,12 @@
+// Script: valida se o ambiente de homologação está corretamente configurado
+// (variáveis presentes, não aponta para produção, migrations existem e conexão funciona)
+// antes de permitir aplicar as migrations de hardening
 import fs from "node:fs";
 import path from "node:path";
 import pg from "pg";
 
 const PRODUCTION_PROJECT_REF = "iwlnjdyfloeplyokgfyx";
+// Migrations de hardening que devem existir em server/migrations
 const MIGRATIONS = [
   "20260729_001_security_inventory.sql",
   "20260729_002_enable_rls_internal_tables.sql",
@@ -14,11 +18,13 @@ const MIGRATIONS = [
   "20260729_008_archive_orion_table.sql"
 ];
 
+// Carrega variáveis de ambiente do arquivo local de homologação, se existir
 loadEnv(".env.homologation.local");
 
 const databaseUrl = process.env.HOMOLOGATION_DATABASE_URL || process.env.DATABASE_URL || "";
 const supabaseUrl = process.env.HOMOLOGATION_SUPABASE_URL || process.env.SUPABASE_URL || "";
 const serviceRoleKey = process.env.HOMOLOGATION_SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+// Escape hatch explícito para permitir rodar contra produção (uso excepcional)
 const allowProduction = process.env.ALLOW_PRODUCTION_SUPABASE_HARDENING === "true";
 
 const checks = [];
@@ -34,6 +40,7 @@ for (const migration of MIGRATIONS) {
   addCheck(`Migracao encontrada: ${migration}`, fs.existsSync(path.join("server", "migrations", migration)));
 }
 
+// Interrompe cedo se qualquer verificação estática já falhou, sem tentar conectar ao banco
 if (checks.some((check) => !check.ok)) {
   printChecks();
   console.error("\nHomologacao bloqueada: corrija os itens acima antes de aplicar migracoes.");
@@ -54,6 +61,7 @@ const pool = new pg.Pool({
 });
 
 try {
+  // Testa a conexão real e reporta qual papel/privilégios ela usa
   const { rows } = await pool.query(`
     select
       current_user,
@@ -83,16 +91,19 @@ if (checks.some((check) => !check.ok)) {
 
 console.log("\nAmbiente de homologacao validado. Aplique as migracoes uma por vez e rode npm run test:sequential apos cada etapa.");
 
+// Registra o resultado de uma verificação individual
 function addCheck(name, ok) {
   checks.push({ name, ok: Boolean(ok) });
 }
 
+// Imprime todas as verificações com status OK/FALHA
 function printChecks() {
   for (const check of checks) {
     console.log(`${check.ok ? "OK" : "FALHA"} - ${check.name}`);
   }
 }
 
+// Lê um arquivo .env simples e preenche process.env sem sobrescrever valores já definidos
 function loadEnv(file) {
   const full = path.resolve(file);
   if (!fs.existsSync(full)) return;

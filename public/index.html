@@ -4,16 +4,21 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>ACPark Gest&atilde;o</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@600;700;800;900&family=Poppins:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-    <link rel="stylesheet" href="/styles.css?v=20260723-02" />
+    <!-- Fontes Montserrat/Poppins hospedadas localmente (sem depender do Google Fonts CDN) -->
+    <link href="/fonts/fonts.css?v=20260804-local-01" rel="stylesheet" />
+    <!-- Tailwind hospedado localmente (era CDN): usado para utilitários rápidos junto do CSS próprio -->
+    <script src="/vendor/tailwind.js?v=20260804-local-01"></script>
+    <!-- Biblioteca para leitura/geração de planilhas (import/export XLSX), hospedada localmente (era CDN) -->
+    <script src="/vendor/xlsx.full.min.js?v=20260804-local-01"></script>
+    <!-- Estilos próprios da aplicação -->
+    <link rel="stylesheet" href="/styles.css?v=20260806-print-01" />
   </head>
   <body>
+    <!-- Raiz onde a aplicação é montada dinamicamente via JS -->
     <div id="app"></div>
+    <!-- Contêiner para notificações (toasts) exibidas por cima da UI -->
     <div id="toast-root" class="toast-container" aria-live="polite" aria-atomic="true"></div>
-    <script type="module" src="/app.js?v=20260723-02"></script>
+    <!-- Ponto de entrada da aplicação (módulo ES) -->
+    <script type="module" src="/app.js?v=20260806-print-01"></script>
   </body>
 </html>

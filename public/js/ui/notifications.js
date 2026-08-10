@@ -1,3 +1,4 @@
+// Exibe uma notificação temporária (toast) no canto da tela; some sozinha após 3.2s
 export function toast(message, type = "ok") {
   let root = document.querySelector("#toast-root");
   if (!root) {

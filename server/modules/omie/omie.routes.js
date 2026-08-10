@@ -2,9 +2,11 @@ import { asInt, query, tx } from "../../db.js";
 import { normalizeText, readBody, send } from "../../utils/http.js";
 import { processNextOmieJob } from "../../services/omie/omie.movements.js";
 
+// Roteador administrativo para acompanhar e reprocessar jobs de integração com o OMIE
 export async function handleOmieRoutes(req, res, context) {
   const { method, requireUser, url, user } = context;
 
+  // Lista os jobs OMIE com filtros de status, tipo de entidade e período
   if (url.pathname === "/api/admin/omie/jobs") {
     if (!requireUser(req, res, "admin")) return true;
     if (method !== "GET") return false;
@@ -31,6 +33,7 @@ export async function handleOmieRoutes(req, res, context) {
     return send(res, 200, { jobs: rows }), true;
   }
 
+  // Força um job com falha a voltar para a fila de reprocessamento (jobs concluídos ficam bloqueados)
   if (url.pathname === "/api/admin/omie/reprocess" && method === "POST") {
     if (!requireUser(req, res, "admin")) return true;
     const body = await readBody(req);
@@ -44,6 +47,7 @@ export async function handleOmieRoutes(req, res, context) {
       const job = current.rows[0];
       if (!job) throw new Error("Job OMIE não encontrado.");
       if (job.status === "SUCCESS") {
+        // Evita reverter um job já concluído com sucesso, pois exigiria estorno manual no OMIE
         const error = new Error("Integrações concluídas não podem ser reprocessadas sem fluxo de estorno.");
         error.statusCode = 400;
         throw error;
@@ -62,6 +66,7 @@ export async function handleOmieRoutes(req, res, context) {
     return send(res, 200, { ok: true, job: result }), true;
   }
 
+  // Processa manualmente o próximo job pendente da fila OMIE
   if (url.pathname === "/api/admin/omie/process-next" && method === "POST") {
     if (!requireUser(req, res, "admin")) return true;
     const result = await tx((client) => processNextOmieJob(client));

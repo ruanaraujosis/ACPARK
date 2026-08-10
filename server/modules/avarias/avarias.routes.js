@@ -8,6 +8,7 @@ let avariaIdempotencyReady = null;
 
 const OMIE_DISABLED_STATUS = "Integração desativada";
 
+// Garante colunas adicionais usadas pelo fluxo manual de avarias (cacheado em memória)
 function ensureAvariaColumns() {
   avariaColumnsReady ||= tx(async (client) => {
     await client.query("ALTER TABLE devolucao_avaria_itens ADD COLUMN IF NOT EXISTS retirada_assinatura TEXT");
@@ -19,6 +20,7 @@ function ensureAvariaColumns() {
   return avariaColumnsReady;
 }
 
+// Cria a tabela de controle de idempotência das operações de avaria (cacheado em memória)
 function ensureAvariaIdempotencyTable() {
   avariaIdempotencyReady ||= tx(async (client) => {
     await client.query(`
@@ -89,6 +91,7 @@ const motivosAvaria = [
   "Outro motivo"
 ];
 
+// Normaliza fotos recebidas em diversos formatos (array, JSON string, lista separada) para data URLs válidas
 function parsePhotos(value) {
   const normalizePhoto = (item) => {
     const raw = typeof item === "string" ? item : item?.data || "";
@@ -110,6 +113,7 @@ function parsePhotos(value) {
     .slice(0, 12);
 }
 
+// Extrai a lista de itens de uma devolução, aceitando array direto ou JSON serializado
 function parseItems(body) {
   if (Array.isArray(body.produtos)) return body.produtos;
   if (Array.isArray(body.items)) return body.items;
@@ -125,12 +129,14 @@ function parseItems(body) {
   }
 }
 
+// Lê o corpo bruto da requisição (usado para upload multipart de fotos)
 async function readRawBody(req) {
   const chunks = [];
   for await (const chunk of req) chunks.push(Buffer.from(chunk));
   return Buffer.concat(chunks);
 }
 
+// Parser simples de multipart/form-data (sem dependência externa) para extrair campos e arquivos
 function parseMultipart(req, buffer) {
   const contentType = req.headers["content-type"] || "";
   const boundaryMatch = contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/i);
@@ -161,6 +167,7 @@ function parseMultipart(req, buffer) {
   return { fields, files };
 }
 
+// Monta o payload público de uma foto, incluindo URL assinada de acesso
 function photoJson(row, storage = getStorageService()) {
   return {
     id: row.id,
@@ -176,6 +183,7 @@ function photoJson(row, storage = getStorageService()) {
   };
 }
 
+// Admin acessa qualquer foto; PDV só acessa fotos próprias ou vinculadas a devoluções do seu PDV
 async function userCanAccessPhoto(client, user, photo) {
   if (user.role === "admin") return true;
   if (user.role !== "pdv") return false;
@@ -185,6 +193,7 @@ async function userCanAccessPhoto(client, user, photo) {
   return Boolean(allowed.rows[0]);
 }
 
+// Garante que as fotos temporárias informadas existam, pertençam ao PDV e ainda não estejam vinculadas a um item
 async function assertPhotoIdsAvailable(client, { photoIds, pdvId }) {
   const uniqueIds = [...new Set((photoIds || []).map(asInt).filter(Boolean))];
   if (!uniqueIds.length) return;
@@ -205,6 +214,7 @@ async function assertPhotoIdsAvailable(client, { photoIds, pdvId }) {
   }
 }
 
+// Ordena chaves de objetos e remove campos de idempotência para gerar um hash estável do payload
 function stableValue(value) {
   if (Array.isArray(value)) return value.map(stableValue);
   if (value && typeof value === "object") {
@@ -219,6 +229,7 @@ function stableValue(value) {
   return value;
 }
 
+// Hash SHA-256 do payload normalizado, usado para detectar reuso de idempotency-key com dados diferentes
 function hashPayload(payload) {
   return crypto
     .createHash("sha256")
@@ -226,6 +237,7 @@ function hashPayload(payload) {
     .digest("hex");
 }
 
+// Lê a chave de idempotência do header ou do corpo da requisição
 function normalizeIdempotencyKey(req, body = {}) {
   return normalizeText(
     req.headers["idempotency-key"] || req.headers["x-idempotency-key"] || body.idempotencyKey || body.idempotency_key,
@@ -233,6 +245,7 @@ function normalizeIdempotencyKey(req, body = {}) {
   );
 }
 
+// Exige uma chave de idempotência válida; lança erro 400 se ausente
 function requireIdempotencyKey(req, body) {
   const key = normalizeIdempotencyKey(req, body);
   if (!key) {
@@ -243,6 +256,7 @@ function requireIdempotencyKey(req, body) {
   return key;
 }
 
+// Define o escopo (papel, nome, pdv) usado para isolar chaves de idempotência entre usuários
 function idempotencyUserScope(user) {
   return {
     role: normalizeText(user?.role, 40) || "unknown",
@@ -251,11 +265,14 @@ function idempotencyUserScope(user) {
   };
 }
 
+// Registra o início de uma operação idempotente; se a chave já foi usada, retorna a resposta anterior
+// (repeated=true) em vez de repetir o efeito colateral, ou bloqueia se ainda estiver em processamento
 async function beginIdempotentOperation(client, { req, body, user, operationType, devolucaoId = 0 }) {
   await ensureAvariaIdempotencyTable();
   const idempotencyKey = requireIdempotencyKey(req, body);
   const requestHash = hashPayload(body);
   const scope = idempotencyUserScope(user);
+  // Tenta reservar a chave; se já existir, cai no fluxo de reconsulta abaixo
   const inserted = await client.query(
     `INSERT INTO devolucao_idempotencia
        (idempotency_key, operation_type, user_role, user_name, pdv_id, devolucao_id, request_hash, processing_status)
@@ -280,6 +297,7 @@ async function beginIdempotentOperation(client, { req, body, user, operationType
     throw error;
   }
   if (row.request_hash !== requestHash) {
+    // Mesma chave de idempotência reaproveitada com payload diferente: não é seguro reexecutar
     const error = new Error("Esta chave de operação já foi usada com dados diferentes.");
     error.statusCode = 409;
     throw error;
@@ -296,6 +314,7 @@ async function beginIdempotentOperation(client, { req, body, user, operationType
   throw error;
 }
 
+// Marca a operação idempotente como concluída, salvando a resposta para futuras repetições da mesma chave
 async function completeIdempotentOperation(client, operation, responseStatus, responseBody) {
   if (!operation?.id) return;
   await client.query(
@@ -309,6 +328,7 @@ async function completeIdempotentOperation(client, operation, responseStatus, re
   );
 }
 
+// Mapeia os muitos status históricos/alternativos de avaria para os status oficiais atuais
 function normalizeDamageStatus(status) {
   if (["Cancelado", "Cancelada"].includes(status)) return "Cancelado";
   if (["Pendente", "Enviada ao almoxarifado", "Enviar para o Almoxarifado", "Aguardando Produto", "Aguardando recebimento físico", "Aguardando entrega física", "Aguardando Entrega Física"].includes(status)) return "Aguardando Produto";
@@ -322,6 +342,7 @@ function normalizeDamageStatus(status) {
 
 const finalDamageStatuses = ["Cancelado", "Cancelada", "Finalizado", "Finalizada", "Recusado", "Recusada"];
 
+// Trecho SQL reutilizável que compara produto/lote/validade para detectar devoluções duplicadas
 function duplicateMatchClause(alias = "i") {
   return `
     ${alias}.sku_produto = $2
@@ -330,6 +351,8 @@ function duplicateMatchClause(alias = "i") {
   `;
 }
 
+// Bloqueia (via advisory lock) e valida que não existe outra devolução ativa para o mesmo
+// produto/lote/validade neste PDV, evitando solicitações duplicadas em corridas concorrentes
 async function assertNoActiveDuplicate(client, { pdvId, sku, lote = "", dataValidade = "", currentDevolucaoId = 0, usuario = "", origem = "Sistema" }) {
   const lockKey = `${pdvId}|${sku}|${lote || ""}|${dataValidade || ""}`;
   await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [lockKey]);
@@ -389,6 +412,7 @@ async function assertNoActiveDuplicate(client, { pdvId, sku, lote = "", dataVali
   }
 }
 
+// Define para quais status uma devolução finalizada/recusada pode retornar (fluxo de estorno)
 function statusTransitionOptions(status) {
   const current = normalizeDamageStatus(status);
   if (current === "Finalizado" || current === "Recusado") return ["Verificação"];
@@ -396,6 +420,7 @@ function statusTransitionOptions(status) {
   return [];
 }
 
+// Status simplificado de um item de devolução, exibido ao PDV
 function itemVisibleStatus(item) {
   if (item.status_item === "Aguardando retirada pelo ponto") return "Aguardando retirada pelo ponto";
   if (item.status_item === "Pendente") return "Pendente";
@@ -404,6 +429,7 @@ function itemVisibleStatus(item) {
   return normalizeDamageStatus(item.status_item);
 }
 
+// Grava uma linha no histórico de auditoria da devolução de avaria
 async function audit(client, devolucaoId, { usuario, acao, statusAnterior, novoStatus, quantidade, observacao, origem }) {
   await client.query(
     `INSERT INTO devolucao_avaria_historico
@@ -422,6 +448,7 @@ async function audit(client, devolucaoId, { usuario, acao, statusAnterior, novoS
   );
 }
 
+// Exclui definitivamente devoluções de avaria e todos os registros dependentes (fotos, histórico, itens)
 async function deleteDamageReturns(client, ids = []) {
   const validIds = [...new Set(ids.map(asInt).filter(Boolean))];
   if (!validIds.length) return 0;
@@ -436,6 +463,7 @@ async function deleteDamageReturns(client, ids = []) {
   return result.rowCount;
 }
 
+// Confirma a senha do almoxarifado para ações sensíveis (ex: alterar devolução já finalizada); audita tentativas inválidas
 async function requireAdminPassword(client, devolucaoId, password, usuario, acao) {
   const config = await client.query("SELECT valor FROM configuracoes WHERE chave = 'senha_almoxarifado'");
   if (!password || !config.rows[0] || !verifyPassword(password, config.rows[0].valor)) {
@@ -451,6 +479,7 @@ async function requireAdminPassword(client, devolucaoId, password, usuario, acao
   }
 }
 
+// Lista devoluções de avaria com seus itens agregados em JSON, filtráveis por PDV/status/período
 async function listDevolucoes({ pdvId = 0, status = "", from = "", to = "" } = {}) {
   const allowedStatus = officialAvariaStatuses.includes(status) ? status : "";
   return query(
@@ -534,10 +563,12 @@ async function listDevolucoes({ pdvId = 0, status = "", from = "", to = "" } = {
   );
 }
 
+// Roteador do módulo de avarias (devoluções de produto com avaria/vencimento)
 export async function handleAvariasRoutes(req, res, context) {
   await ensureAvariaColumns();
   const { method, requireUser, url, user } = context;
 
+  // Serve o binário de uma foto de avaria, validando permissão de acesso antes
   if (url.pathname.startsWith("/api/avarias/fotos/") && method === "GET") {
     const photoId = asInt(url.pathname.split("/").pop());
     if (!photoId) return send(res, 404, { error: "Foto não encontrada." }), true;
@@ -556,6 +587,7 @@ export async function handleAvariasRoutes(req, res, context) {
     return true;
   }
 
+  // Upload de fotos temporárias (antes da devolução ser criada), vinculadas por draftId+itemTempId
   if (url.pathname === "/api/pdv/avarias/fotos/temp" && method === "POST") {
     if (user.role !== "pdv") return send(res, 403, { error: "Entre como PDV para anexar fotos." }), true;
     const raw = await readRawBody(req);
@@ -623,6 +655,7 @@ export async function handleAvariasRoutes(req, res, context) {
     return send(res, 201, { ok: true, photos: savedPhotos }), true;
   }
 
+  // Listagem e criação de devoluções de avaria pelo PDV
   if (url.pathname === "/api/pdv/avarias") {
     if (user.role !== "pdv") return send(res, 403, { error: "Entre como PDV para registrar devoluções de avaria." }), true;
 
@@ -642,6 +675,7 @@ export async function handleAvariasRoutes(req, res, context) {
         return send(res, 400, { error: "Identificador da operação ausente. Atualize a página e tente novamente." }), true;
       }
       const itemPayloads = parseItems(body);
+      // Fluxo multi-item: uma devolução pode agrupar vários produtos em uma única solicitação
       if (itemPayloads.length) {
         const usuarioSolicitante = normalizeText(body.usuario_solicitante || user.name, 120).toUpperCase();
         if (!usuarioSolicitante) return send(res, 400, { error: "Informe o usuário responsável." }), true;
@@ -704,6 +738,7 @@ export async function handleAvariasRoutes(req, res, context) {
               payload: { ...operation.responseBody, repeated: true }
             };
           }
+          // Valida saldo suficiente no PDV para cada produto antes de reservar a devolução
           const totalsBySku = normalizedItems.reduce((acc, item) => {
             acc[item.sku] = (acc[item.sku] || 0) + item.quantidade;
             return acc;
@@ -737,6 +772,7 @@ export async function handleAvariasRoutes(req, res, context) {
             });
           }
 
+          // A devolução "pai" guarda o primeiro item por compatibilidade; os demais ficam em devolucao_avaria_itens
           const first = normalizedItems[0];
           const totalQuantidade = normalizedItems.reduce((sum, item) => sum + item.quantidade, 0);
           const inserted = await client.query(
@@ -822,6 +858,7 @@ export async function handleAvariasRoutes(req, res, context) {
         });
         return send(res, result.status, result.payload), true;
       }
+      // Fluxo legado de item único (mantido para compatibilidade com clientes antigos)
       const sku = normalizeText(body.sku, 60);
       const quantidade = asInt(body.quantidade);
       const unidade = normalizeText(body.unidade_medida || "UN", 30).toUpperCase();
@@ -961,6 +998,7 @@ export async function handleAvariasRoutes(req, res, context) {
     }
   }
 
+  // PDV cancela uma devolução ainda não recebida pelo almoxarifado
   if (url.pathname === "/api/pdv/avarias/cancel" && method === "POST") {
     if (user.role !== "pdv") return send(res, 403, { error: "Entre como PDV para cancelar devoluções." }), true;
     const body = await readBody(req);
@@ -1027,12 +1065,14 @@ export async function handleAvariasRoutes(req, res, context) {
     return send(res, result.status, result.payload), true;
   }
 
+  // Listagem administrativa e exclusão de devoluções de avaria
   if (url.pathname === "/api/admin/avarias") {
     if (!requireUser(req, res, "admin")) return true;
     if (method === "DELETE") {
       const body = await readBody(req);
       const id = asInt(body.id);
       const clearStatus = normalizeDamageStatus(normalizeText(body.status || body.clearStatus, 80));
+      // Limpeza em massa: só permitida para devoluções já canceladas
       if (body.all || body.clearAll) {
         if (clearStatus !== "Cancelado") {
           return send(res, 400, { error: "A limpeza geral só é permitida para devoluções canceladas." }), true;
@@ -1057,6 +1097,7 @@ export async function handleAvariasRoutes(req, res, context) {
           throw error;
         }
         const normalizedStatus = normalizeDamageStatus(row.status);
+        // Só pode excluir individualmente se ainda não avançou no fluxo de aprovação
         if (!["Cancelado", "Aguardando Produto"].includes(normalizedStatus)) {
           const error = new Error("Esta devolução só pode ser excluída nos status Cancelado ou Aguardando Produto.");
           error.statusCode = 400;
@@ -1086,6 +1127,7 @@ export async function handleAvariasRoutes(req, res, context) {
     }
   }
 
+  // Máquina de estados do fluxo de aprovação de avaria: cada `action` representa uma transição
   if (url.pathname === "/api/admin/avarias/flow" && method === "POST") {
     if (!requireUser(req, res, "admin")) return true;
     const body = await readBody(req);
@@ -1132,6 +1174,7 @@ export async function handleAvariasRoutes(req, res, context) {
         throw error;
       }
 
+      // Troca manual de status (ex: mover para Verificação), exigindo senha admin em casos sensíveis
       if (action === "change_status") {
         const currentStatus = normalizeDamageStatus(row.status);
         const nextStatus = normalizeDamageStatus(normalizeText(body.status, 80));
@@ -1219,12 +1262,14 @@ export async function handleAvariasRoutes(req, res, context) {
         return finish();
       }
 
+      // Ações desativadas: o recebimento físico agora exige assinatura via ação "receive"
       if (action === "start_receiving" || action === "awaiting") {
         const error = new Error("Use a coleta de assinatura para mover a devolução para Em Aprovação.");
         error.statusCode = 400;
         throw error;
       }
 
+      // Confirma o recebimento físico do produto no almoxarifado, com assinatura do responsável
       if (action === "receive") {
         const currentStatus = normalizeDamageStatus(row.status);
         const recebida = asInt(body.quantidade_recebida);
@@ -1287,6 +1332,7 @@ export async function handleAvariasRoutes(req, res, context) {
         return finish();
       }
 
+      // Conferência do almoxarifado: aprova/recusa quantidades por item (ou recusa tudo de uma vez)
       if (action === "conference" || action === "refuse") {
         const currentStatus = normalizeDamageStatus(row.status);
         const recebida = asInt(row.quantidade_recebida);
@@ -1305,6 +1351,7 @@ export async function handleAvariasRoutes(req, res, context) {
           throw error;
         }
         const conferenceItems = parseItems(body);
+        // Conferência por item (multi-produto): cada item recebe sua própria decisão de aprovação/recusa
         if (conferenceItems.length) {
           const existing = await client.query("SELECT * FROM devolucao_avaria_itens WHERE devolucao_id = $1 ORDER BY id FOR UPDATE", [id]);
           const existingById = new Map(existing.rows.map((item) => [String(item.id), item]));
@@ -1434,6 +1481,7 @@ export async function handleAvariasRoutes(req, res, context) {
         return finish();
       }
 
+      // Confirma, com assinatura, a devolução física ao PDV de um item recusado (sem baixa de estoque)
       if (action === "withdraw_refused") {
         const itemId = asInt(body.itemId);
         const responsavel = normalizeText(body.retirada_responsavel, 160).toUpperCase();
@@ -1489,6 +1537,7 @@ export async function handleAvariasRoutes(req, res, context) {
         return finish();
       }
 
+      // Mesmo fluxo de devolução física ao PDV, mas para todos os itens recusados pendentes de uma vez
       if (action === "withdraw_refused_all") {
         const responsavel = normalizeText(body.retirada_responsavel, 160).toUpperCase();
         const assinatura = String(body.retirada_assinatura || "");
@@ -1541,6 +1590,8 @@ export async function handleAvariasRoutes(req, res, context) {
         return finish();
       }
 
+      // Finaliza a devolução: dá baixa definitiva no estoque do PDV pela quantidade aprovada
+      // (integração com o OMIE está desativada nesta etapa, a baixa é só manual/local)
       if (action === "finalize" || action === "reprocess") {
         const currentStatus = normalizeDamageStatus(row.status);
         if (!["Em Aprovação", "Aprovação Parcial", "Verificação"].includes(currentStatus) && !["Aprovada", "Aprovada parcialmente", "Aguardando integração com o OMIE"].includes(row.status)) {
@@ -1552,6 +1603,7 @@ export async function handleAvariasRoutes(req, res, context) {
         const aprovado = asInt(row.quantidade_aprovada);
         if (aprovado <= 0) throw new Error("Não há quantidade aprovada para finalizar como avaria.");
         const itemRows = await client.query("SELECT * FROM devolucao_avaria_itens WHERE devolucao_id = $1 ORDER BY id FOR UPDATE", [id]);
+        // Finalização por item: cada item já decidido dá baixa apenas do delta ainda não processado
         if (itemRows.rows.length) {
           const pendingAnalysis = itemRows.rows.filter((item) => {
             const requested = asInt(item.quantidade);
@@ -1653,6 +1705,7 @@ export async function handleAvariasRoutes(req, res, context) {
           });
           return finish();
         }
+        // Fluxo legado de item único: calcula o delta ainda não baixado para evitar dupla baixa
         const alreadyProcessed = asInt(row.manual_quantidade_processada ?? row.omie_quantidade_processada);
         const delta = aprovado - alreadyProcessed;
         if (currentStatus !== "Verificação" && normalizeDamageStatus(row.status) === "Finalizado") {
@@ -1727,6 +1780,7 @@ export async function handleAvariasRoutes(req, res, context) {
         return finish();
       }
 
+      // Estorna uma devolução finalizada/recusada de volta para Verificação (exige senha admin)
       if (action === "reverse_to_verification") {
         const reason = normalizeText(body.motivo_estorno, 700);
         if (!["Finalizado", "Recusado"].includes(normalizeDamageStatus(row.status))) throw new Error("Somente devoluções finalizadas ou recusadas podem ser enviadas para verificação.");

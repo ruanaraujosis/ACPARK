@@ -1,9 +1,11 @@
 import { query, tx, asInt } from "../../db.js";
 import { readBody, send } from "../../utils/http.js";
 
+// Roteador das rotas de estoque; retorna true quando a rota foi tratada
 export async function handleEstoqueRoutes(req, res, context) {
   const { method, requireUser, url, user } = context;
 
+  // Lista os produtos liberados e ativos disponíveis para um PDV consultar/pedir
   if (url.pathname === "/api/pdv/products") {
     const pdvId = user.role === "pdv" ? user.pdvId : asInt(url.searchParams.get("pdvId"));
     const rows = await query(
@@ -23,6 +25,7 @@ export async function handleEstoqueRoutes(req, res, context) {
     return true;
   }
 
+  // Tela do almoxarifado para consultar/editar estoque mínimo, máximo e quantidade por PDV
   if (url.pathname === "/api/admin/stock") {
     if (!requireUser(req, res, "admin")) return true;
     const pdvId = asInt(url.searchParams.get("pdvId"));
@@ -57,6 +60,7 @@ export async function handleEstoqueRoutes(req, res, context) {
       const categorias = categoryRows.map((row) => row.categoria);
       await tx(async (client) => {
         for (const item of items) {
+          // Um produto só fica permitido no PDV se pertencer a alguma categoria liberada para o PDV
           const product = await client.query("SELECT categoria FROM produto_categorias WHERE sku_produto = $1", [item.sku]);
           const permitido = product.rows.some((row) => categorias.includes(row.categoria));
           await client.query(

@@ -1,3 +1,4 @@
+// Converte data no formato brasileiro dd/mm/aaaa da OMIE para timestamp SQL
 function parseBrazilianDate(value) {
   const text = String(value || "").trim();
   const match = text.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
@@ -5,11 +6,13 @@ function parseBrazilianDate(value) {
   return `${match[3]}-${match[2]}-${match[1]} 00:00:00`;
 }
 
+// Converte quantidade numerica da OMIE (que usa virgula decimal) para Number
 function parseQuantity(value) {
   const number = Number(String(value ?? 0).replace(",", "."));
   return Number.isFinite(number) ? number : 0;
 }
 
+// Mapeia o produto retornado pela OMIE para o formato interno usado pelo MyEstoque
 export function mapOmieProduct(product = {}) {
   return {
     externalId: String(product.codigo_produto || product.id_prod || ""),
@@ -30,6 +33,7 @@ export function mapOmieProduct(product = {}) {
   };
 }
 
+// Mapeia o saldo de estoque por local retornado pela OMIE
 export function mapOmieStock(stock = {}) {
   return {
     productExternalId: String(stock.codigo_produto || stock.id_prod || ""),
@@ -39,6 +43,8 @@ export function mapOmieStock(stock = {}) {
   };
 }
 
+// Classifica a origem do movimento (ACPARK/ORION venda, cancelamento, devolucao ou OMIE)
+// com base em texto de referencia/operacao; exige evidencia explicita, senao fica nao identificado
 export function classifyOrigin(movement = {}) {
   const text = `${movement.referencia || ""} ${movement.origem || ""} ${movement.operacao || ""}`.toUpperCase();
   if (movement.cancelamento === "S" || text.includes("CANCEL")) return "ORION_CANCELAMENTO";
@@ -48,6 +54,7 @@ export function classifyOrigin(movement = {}) {
   return "ORIGEM_NAO_IDENTIFICADA";
 }
 
+// Mapeia um movimento de estoque da OMIE, classificando entrada/saida e origem
 export function mapOmieMovement(movement = {}) {
   const type = String(movement.tipo_movimento || movement.tipo || "").toUpperCase();
   return {

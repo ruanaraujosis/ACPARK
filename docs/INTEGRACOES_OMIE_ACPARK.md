@@ -132,7 +132,7 @@ Em servidor Node contínuo, o timer interno roda a cada 5 segundos por padrão. 
 
 Variáveis:
 
-- `OMIE_AUTO_SCHEDULER=true`
+- `OMIE_SCHEDULER_ENABLED=true`
 - `OMIE_SCHEDULER_TICK_MS=5000`
 - `CRON_SECRET=...`
 

@@ -1,4 +1,4 @@
-﻿import "dotenv/config";
+﻿import "./env.js";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
@@ -20,8 +20,15 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
 const publicDir = path.join(rootDir, "public");
 const port = Number(process.env.PORT || 5173);
+// Em produção exige JWT_SECRET real: com o valor padrão qualquer um que conheça
+// essa string (ela está no repositório) conseguiria forjar um cookie de admin.
+if (process.env.NODE_ENV === "production" && (!process.env.JWT_SECRET || process.env.JWT_SECRET === "dev-only-change-me")) {
+  throw new Error("JWT_SECRET obrigatorio em producao.");
+}
 const jwtSecret = process.env.JWT_SECRET || "dev-only-change-me";
-const secureCookies = process.env.NODE_ENV === "production" || Boolean(process.env.VERCEL);
+// Cookie seguro (HTTPS) só quando estamos na Vercel ou quando explicitamente forçado (ex: LAN atrás de HTTPS)
+// NODE_ENV=production sozinho NÃO ativa mais isso: em rede local sobre HTTP puro, secure=true faria o navegador nunca enviar o cookie
+const secureCookies = Boolean(process.env.VERCEL) || process.env.FORCE_SECURE_COOKIES === "true";
 const sessionCookieOptions = { path: "/", httpOnly: true, sameSite: "lax", secure: secureCookies };
 const autoSyncSchema = !process.env.VERCEL || process.env.SCHEMA_SYNC === "true";
 
@@ -29,10 +36,17 @@ const mime = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
-  ".json": "application/json; charset=utf-8"
+  ".json": "application/json; charset=utf-8",
+  ".woff2": "font/woff2",
+  ".png": "image/png",
+  ".svg": "image/svg+xml",
+  ".ico": "image/x-icon",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg"
 };
 
 
+// Decodifica e valida o cookie de sessão (JWT); retorna null se ausente ou inválido
 function sessionFrom(req) {
   const cookies = parseCookie(req.headers.cookie || "");
   if (!cookies.session) return null;
@@ -43,6 +57,7 @@ function sessionFrom(req) {
   }
 }
 
+// Exige usuário autenticado (e, opcionalmente, um perfil específico); já envia a resposta de erro
 function requireUser(req, res, role = null) {
   const user = sessionFrom(req);
   if (!user) {
@@ -56,11 +71,13 @@ function requireUser(req, res, role = null) {
   return user;
 }
 
+// Aplica o schema.sql no banco (idempotente); usado para manter a estrutura sincronizada
 async function ensureSchema() {
   const schema = fs.readFileSync(path.join(__dirname, "schema.sql"), "utf8");
   await pool.query(schema);
 }
 
+// Gera pedidos automáticos (prefixo AUTO-) quando o estoque de um PDV cai no mínimo configurado
 async function processAutoOrders() {
   await tx(async (client) => {
     const lows = await client.query(
@@ -83,6 +100,7 @@ async function processAutoOrders() {
       );
       if (exists.rowCount) continue;
 
+      // Evita duplicar pedido automático já pendente/em andamento para o mesmo produto no PDV
       await client.query(
         `INSERT INTO pedidos
           (codigo_pedido, solicitante, pdv_id, sku_produto, quantidade_solicitada, quantidade_liberada, status, observacao)
@@ -93,6 +111,33 @@ async function processAutoOrders() {
   });
 }
 
+// Limite de tentativas de login por IP: protege contra forca bruta de senha
+const LOGIN_MAX_ATTEMPTS = 8;
+const LOGIN_WINDOW_MS = 5 * 60 * 1000;
+const loginAttempts = new Map();
+
+// Verifica se o IP estourou o limite de tentativas de login na janela atual
+function isLoginRateLimited(ip) {
+  const entry = loginAttempts.get(ip);
+  if (!entry) return false;
+  if (Date.now() - entry.firstAttemptAt > LOGIN_WINDOW_MS) {
+    loginAttempts.delete(ip);
+    return false;
+  }
+  return entry.count >= LOGIN_MAX_ATTEMPTS;
+}
+
+// Registra uma tentativa de login falha para o IP
+function registerLoginFailure(ip) {
+  const entry = loginAttempts.get(ip);
+  if (!entry || Date.now() - entry.firstAttemptAt > LOGIN_WINDOW_MS) {
+    loginAttempts.set(ip, { count: 1, firstAttemptAt: Date.now() });
+    return;
+  }
+  entry.count += 1;
+}
+
+// Roteador principal das rotas /api/*; delega para os handlers de cada módulo
 async function api(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const method = req.method || "GET";
@@ -107,14 +152,22 @@ async function api(req, res) {
     });
   }
 
+  // Login por perfil: admin usa senha única do almoxarifado; PDV usa senha própria do ponto
   if (url.pathname === "/api/auth/login" && method === "POST") {
+    const ip = req.socket.remoteAddress || "desconhecido";
+    if (isLoginRateLimited(ip)) {
+      return send(res, 429, { error: "Muitas tentativas de login. Aguarde alguns minutos e tente novamente." });
+    }
     const body = await readBody(req);
     const profile = body.profile === "admin" ? "admin" : "pdv";
     const password = normalizeText(body.password, 120);
 
     if (profile === "admin") {
       const rows = await query("SELECT valor FROM configuracoes WHERE chave = 'senha_almoxarifado'");
-      if (!rows[0] || !verifyPassword(password, rows[0].valor)) return send(res, 401, { error: "Senha incorreta." });
+      if (!rows[0] || !verifyPassword(password, rows[0].valor)) {
+        registerLoginFailure(ip);
+        return send(res, 401, { error: "Senha incorreta." });
+      }
       const token = jwt.sign({ role: "admin", name: "Almoxarifado" }, jwtSecret, { expiresIn: "8h" });
       return send(res, 200, { user: { role: "admin", name: "Almoxarifado" } }, {
         "Set-Cookie": serializeCookie("session", token, { ...sessionCookieOptions, maxAge: 60 * 60 * 8 })
@@ -123,20 +176,30 @@ async function api(req, res) {
 
     const pdvId = asInt(body.pdvId);
     const rows = await query("SELECT id, nome, senha FROM pdvs WHERE id = $1", [pdvId]);
-    if (!rows[0] || !verifyPassword(password, rows[0].senha)) return send(res, 401, { error: "Senha incorreta." });
+    if (!rows[0] || !verifyPassword(password, rows[0].senha)) {
+      registerLoginFailure(ip);
+      return send(res, 401, { error: "Senha incorreta." });
+    }
     const token = jwt.sign({ role: "pdv", pdvId: rows[0].id, name: rows[0].nome }, jwtSecret, { expiresIn: "8h" });
     return send(res, 200, { user: { role: "pdv", pdvId: rows[0].id, name: rows[0].nome } }, {
       "Set-Cookie": serializeCookie("session", token, { ...sessionCookieOptions, maxAge: 60 * 60 * 8 })
     });
   }
 
+  // Lista pública de PDVs (sem autenticação) para popular a tela de login
   if (url.pathname === "/api/public/pdvs") {
     return send(res, 200, { pdvs: await query("SELECT id, nome FROM pdvs ORDER BY nome") });
   }
 
+  // Endpoint chamado por cron externo para disparar o tick de sincronização OMIE.
+  // Fica desabilitado quando CRON_SECRET não está configurado — antes, sem o segredo
+  // a checagem era pulada e qualquer um na rede podia disparar a sincronização.
   if (url.pathname === "/api/cron/omie-sync") {
     const cronSecret = process.env.CRON_SECRET;
-    if (cronSecret && req.headers.authorization !== `Bearer ${cronSecret}`) {
+    if (!cronSecret) {
+      return send(res, 404, { error: "Rota de cron desabilitada." });
+    }
+    if (req.headers.authorization !== `Bearer ${cronSecret}`) {
       return send(res, 401, { error: "Cron nao autorizado." });
     }
     const result = await runOmieSchedulerTick();
@@ -145,13 +208,16 @@ async function api(req, res) {
 
   if (await handleIntegrationWebhookRoutes(req, res, { method, requireUser, url })) return;
 
+  // Todas as rotas abaixo exigem sessão autenticada
   const user = requireUser(req, res);
   if (!user) return;
 
+  // Verifica reposição automática por estoque mínimo a cada chamada autenticada
   await processAutoOrders();
 
+  // Dados iniciais carregados ao abrir a aplicação (PDVs, produtos e categorias)
   if (url.pathname === "/api/bootstrap") {
-    const [pdvs, products, categories, configRows] = await Promise.all([
+    const [pdvs, products, categories] = await Promise.all([
       query(`
         SELECT p.id, p.nome, p.codigo_orion, p.is_cozinha, p.categoria,
                COALESCE(ARRAY(
@@ -172,24 +238,12 @@ async function api(req, res) {
         LEFT JOIN produto_categorias pc ON pc.sku_produto = p.sku
         GROUP BY p.sku, p.nome, p.qtd_total, p.ativo, p.origem
         ORDER BY p.nome`),
-      query("SELECT nome FROM categorias ORDER BY nome"),
-      user.role === "admin"
-        ? query(`
-            SELECT chave, valor
-            FROM configuracoes
-            WHERE chave IN (
-              'omie_app_key',
-              'omie_app_secret'
-            )`)
-        : []
+      query("SELECT nome FROM categorias ORDER BY nome")
     ]);
-    const config = {};
-    for (const row of configRows) {
-      config[row.chave] = row.valor;
-    }
-    return send(res, 200, { pdvs, products, categories, user, config });
+    return send(res, 200, { pdvs, products, categories, user });
   }
 
+  // Delega para os roteadores de cada módulo; cada um retorna true se tratou a rota
   if (await handleEstoqueRoutes(req, res, { method, requireUser, url, user })) return;
   if (await handlePedidosRoutes(req, res, { method, requireUser, url, user })) return;
   if (await handleAvariasRoutes(req, res, { method, requireUser, url, user })) return;
@@ -197,6 +251,7 @@ async function api(req, res) {
   if (await handleIntegrationsRoutes(req, res, { method, requireUser, url, user })) return;
   if (await handleOrderAlertRoutes(req, res, { method, url, user })) return;
 
+  // CRUD de produtos manuais; produtos de origem OMIE não podem ser criados/editados/excluídos aqui
   if (url.pathname === "/api/admin/products") {
     if (!requireUser(req, res, "admin")) return;
     if (method === "GET") {
@@ -219,6 +274,7 @@ async function api(req, res) {
         ? [...new Set(body.categorias.map((item) => normalizeText(item, 120).toUpperCase()).filter(Boolean))]
         : [];
       if (!sku || !nome) return send(res, 400, { error: "SKU e nome são obrigatórios." });
+      // Upsert só é aplicado se o produto existente também for de origem manual (protege itens do OMIE)
       const inserted = await tx(async (client) => {
         const result = await client.query(
           `INSERT INTO produtos (sku, nome, qtd_total, estoque_central, ativo, categoria, origem)
@@ -249,6 +305,7 @@ async function api(req, res) {
       if (!inserted[0]) return send(res, 400, { error: "Este SKU pertence a um produto integrado ao OMIE." });
       return send(res, 200, { ok: true });
     }
+    // Edita um produto manual; falha se o SKU pertencer a um produto sincronizado do OMIE
     if (method === "PATCH") {
       const sku = normalizeText(body.sku, 60);
       const categorias = Array.isArray(body.categorias)
@@ -273,6 +330,7 @@ async function api(req, res) {
         return result.rows;
       });
       if (!updated[0]) return send(res, 400, { error: "Produto integrado ao OMIE não pode ser editado aqui." });
+      // Desativar bloqueia o produto em todos os PDVs; reativar recalcula a liberação por categoria
       if (!body.ativo) await query("UPDATE estoque_pdv SET permitido = FALSE WHERE sku_produto = $1", [sku]);
       if (body.ativo) {
         const pdvs = await query("SELECT id FROM pdvs");
@@ -282,6 +340,7 @@ async function api(req, res) {
       }
       return send(res, 200, { ok: true });
     }
+    // Exclui um produto manual e seus vínculos (pedidos e estoque por PDV)
     if (method === "DELETE") {
       const sku = normalizeText(body.sku, 60);
       const deleted = await tx(async (client) => {
@@ -297,6 +356,7 @@ async function api(req, res) {
     }
   }
 
+  // Importação em lote de produtos (usada pela sincronização OMIE e por upload manual), limitada a 2000 itens
   if (url.pathname === "/api/admin/products/import" && method === "POST") {
     if (!requireUser(req, res, "admin")) return;
     const body = await readBody(req);
@@ -350,6 +410,7 @@ async function api(req, res) {
     return send(res, 200, { ok: true, imported });
   }
 
+  // CRUD de pontos de venda (PDVs)
   if (url.pathname === "/api/admin/pdvs") {
     if (!requireUser(req, res, "admin")) return;
     const body = method === "GET" ? {} : await readBody(req);
@@ -380,6 +441,7 @@ async function api(req, res) {
         [nome, hashPassword(senha), normalizeText(body.codigo_orion, 60) || null, false, categoria]
       );
       const pdvId = pdv[0]?.id;
+      // Novo PDV: associa categorias e já libera os produtos correspondentes no estoque
       if (pdvId) {
         for (const category of categorias) {
           await query(
@@ -401,6 +463,7 @@ async function api(req, res) {
       }
       return send(res, 200, { ok: true });
     }
+    // Edita um PDV; senha só é alterada se enviada, e categorias são substituídas por completo
     if (method === "PATCH") {
       const pdvId = asInt(body.id);
       const categorias = normalizeCategories(body.categorias);
@@ -443,6 +506,7 @@ async function api(req, res) {
     }
   }
 
+  // CRUD de categorias de produto (usadas para liberar produtos por PDV)
   if (url.pathname === "/api/admin/categories") {
     if (!requireUser(req, res, "admin")) return;
     if (method === "GET") {
@@ -478,6 +542,7 @@ async function api(req, res) {
       );
       return send(res, 200, { ok: true });
     }
+    // Renomeia uma categoria propagando o novo nome para produtos, PDVs e tabelas de vínculo
     if (method === "PATCH") {
       const atual = normalizeText(body.atual, 120).toUpperCase();
       const nome = normalizeText(body.nome, 120).toUpperCase();
@@ -491,6 +556,7 @@ async function api(req, res) {
       });
       return send(res, 200, { ok: true });
     }
+    // Remove a categoria e limpa suas referências em produtos e PDVs
     if (method === "DELETE") {
       const nome = normalizeText(body.nome, 120).toUpperCase();
       if (!nome) return send(res, 400, { error: "Nome da categoria e obrigatorio." });
@@ -505,6 +571,7 @@ async function api(req, res) {
     }
   }
 
+  // Associa/remove categoria em lote para um ou mais produtos, ressincronizando a liberação por PDV
   if (url.pathname === "/api/admin/category-products" && method === "POST") {
     if (!requireUser(req, res, "admin")) return;
     const body = await readBody(req);
@@ -567,6 +634,7 @@ async function api(req, res) {
     return send(res, 200, { ok: true, total: skus.length });
   }
 
+  // Painel gerencial: ranking de saídas por produto ou por PDV, tendência mensal e estatísticas
   if (url.pathname === "/api/admin/dashboard") {
     if (!requireUser(req, res, "admin")) return;
     const from = url.searchParams.get("from");
@@ -663,6 +731,7 @@ async function api(req, res) {
     return send(res, 200, { ranking: rows, rankingType, stats, selectedProduct: selectedProduct[0] || null, productTrend });
   }
 
+  // Atualiza a senha do almoxarifado e/ou as credenciais do OMIE
   if (url.pathname === "/api/admin/config" && method === "POST") {
     if (!requireUser(req, res, "admin")) return;
     const body = await readBody(req);
@@ -683,25 +752,20 @@ async function api(req, res) {
         [hashPassword(nextPassword)]
       );
     }
-    for (const key of ["omie_app_key", "omie_app_secret"]) {
-      if (body[key] !== undefined) {
-        await query(
-          `INSERT INTO configuracoes (chave, valor) VALUES ($1, $2)
-           ON CONFLICT (chave) DO UPDATE SET valor = EXCLUDED.valor`,
-          [key, normalizeText(body[key], 300)]
-        );
-      }
-    }
+    // Credenciais do OMIE nao sao mais gravadas em texto puro aqui: use a tela de
+    // Integracoes (/api/admin/integrations), que criptografa com AES-256-GCM antes de persistir.
     return send(res, 200, { ok: true });
   }
 
   return send(res, 404, { error: "Rota não encontrada." });
 }
 
+// Serve arquivos estáticos de /public; cai para index.html (SPA) quando o arquivo não existe
 function serveStatic(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const requested = url.pathname === "/" ? "/index.html" : decodeURIComponent(url.pathname);
   const file = path.normalize(path.join(publicDir, requested));
+  // Impede path traversal para fora da pasta public
   if (!file.startsWith(publicDir)) {
     res.writeHead(403);
     return res.end("Forbidden");
@@ -725,11 +789,13 @@ function serveStatic(req, res) {
 
 let schemaReady;
 
+// Garante que o schema seja aplicado apenas uma vez por processo (cacheado em memória)
 function ensureSchemaOnce() {
   schemaReady ||= ensureSchema();
   return schemaReady;
 }
 
+// Ponto de entrada HTTP: healthcheck, sincronização de schema, API e arquivos estáticos
 export async function handler(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
   if (url.pathname === "/api/health") {
@@ -741,6 +807,7 @@ export async function handler(req, res) {
     }
   }
 
+  // Em produção na Vercel, a sincronização de schema só roda se SCHEMA_SYNC=true (evita custo em toda invocação)
   if (autoSyncSchema) {
     await ensureSchemaOnce();
   }
@@ -761,6 +828,7 @@ export async function handler(req, res) {
 
 export default handler;
 
+// Fora da Vercel, sobe um servidor HTTP tradicional e inicia o agendador de sincronização OMIE
 if (!process.env.VERCEL) {
   http.createServer((req, res) => {
     handler(req, res).catch((error) => {

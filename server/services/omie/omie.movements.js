@@ -1,6 +1,7 @@
 import { callOmie } from "./omie.client.js";
 import { getOmieConfig, OMIE_LOCAL_STATUSES } from "./omie.config.js";
 
+// Tipos de movimentacao de estoque enviados ao OMIE
 export const OMIE_MOVEMENT_TYPES = Object.freeze({
   DAMAGE_LOSS: "BAIXA_AVARIA",
   DAMAGE_EXPIRED: "BAIXA_VENCIMENTO",
@@ -11,6 +12,7 @@ export const OMIE_MOVEMENT_TYPES = Object.freeze({
   ORDER_RELEASE: "LIBERACAO_PDV"
 });
 
+// Mapeia o motivo da avaria (texto livre da UI) para o tipo de movimento OMIE correspondente
 export function movementTypeForDamageReason(reason = "") {
   if (reason === "Produto vencido") return OMIE_MOVEMENT_TYPES.DAMAGE_EXPIRED;
   if (reason === "Produto danificado" || reason === "Embalagem violada" || reason === "Quebra") return OMIE_MOVEMENT_TYPES.DAMAGE_DAMAGED;
@@ -18,6 +20,7 @@ export function movementTypeForDamageReason(reason = "") {
   return OMIE_MOVEMENT_TYPES.DAMAGE_LOSS;
 }
 
+// Gera uma chave idempotente para a operacao, evitando duplicar o mesmo ajuste no OMIE
 export function buildDamageOperationKey({ devolucaoId, itemId, sku, movementType, version }) {
   return `AVARIA-${devolucaoId}-ITEM-${itemId || sku}-${movementType}-V${version}`;
 }
@@ -26,12 +29,14 @@ function pad2(value) {
   return String(value).padStart(2, "0");
 }
 
+// Formata a data no padrao dd/mm/aaaa exigido pela API do OMIE
 export function formatOmieDate(value = new Date()) {
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) return formatOmieDate(new Date());
   return `${pad2(date.getDate())}/${pad2(date.getMonth() + 1)}/${date.getFullYear()}`;
 }
 
+// Converte a quantidade para o formato decimal com virgula esperado pelo OMIE
 export function normalizeOmieQuantity(value) {
   const quantity = Number(String(value || 0).replace(",", "."));
   if (!Number.isFinite(quantity) || quantity <= 0) {
@@ -40,6 +45,7 @@ export function normalizeOmieQuantity(value) {
   return String(quantity).replace(".", ",");
 }
 
+// Monta o payload de ajuste de estoque no formato aceito pela API do OMIE
 export function buildOmieStockAdjustmentPayload({
   operationKey,
   productExternalId,
@@ -71,6 +77,7 @@ export function buildOmieStockAdjustmentPayload({
   return payload;
 }
 
+// Insere um job de integracao pendente na fila (ignora se a chave de operacao ja existir)
 export async function createOmieJob(client, {
   operationKey,
   entityType,
@@ -99,8 +106,10 @@ export async function createOmieJob(client, {
   );
 }
 
+// Pega o proximo job pendente da fila (com lock) e tenta enviar o ajuste de estoque ao OMIE
 export async function processNextOmieJob(client, { fetchImpl = fetch, env = process.env } = {}) {
   const config = getOmieConfig(env);
+  // SKIP LOCKED evita que workers concorrentes peguem o mesmo job
   const jobResult = await client.query(
     `SELECT *
      FROM omie_jobs
@@ -112,6 +121,7 @@ export async function processNextOmieJob(client, { fetchImpl = fetch, env = proc
   const job = jobResult.rows[0];
   if (!job) return null;
 
+  // Integracao desligada: marca para nova tentativa futura em vez de falhar definitivamente
   if (!config.configured) {
     await client.query(
       `UPDATE omie_jobs
@@ -137,6 +147,7 @@ export async function processNextOmieJob(client, { fetchImpl = fetch, env = proc
 
   try {
     const payload = typeof job.payload === "string" ? JSON.parse(job.payload) : job.payload;
+    // Chama a API de ajuste de estoque do OMIE
     const response = await callOmie("/estoque/ajuste/", {
       call: "IncluirAjusteEstoque",
       param: [payload]
@@ -156,6 +167,7 @@ export async function processNextOmieJob(client, { fetchImpl = fetch, env = proc
     await updateEntityOmieStatus(client, job, OMIE_LOCAL_STATUSES.SUCCESS, String(externalId), null);
     return { ...job, status: "SUCCESS", external_id: String(externalId) };
   } catch (error) {
+    // Erros retentaveis voltam para a fila; os demais sao marcados como falha definitiva
     const status = error.retryable ? "RETRY_REQUIRED" : "FAILED";
     await client.query(
       `UPDATE omie_jobs
@@ -170,6 +182,7 @@ export async function processNextOmieJob(client, { fetchImpl = fetch, env = proc
   }
 }
 
+// Reflete o resultado da integracao no registro de origem (hoje, apenas avarias)
 async function updateEntityOmieStatus(client, job, status, externalId, errorMessage) {
   if (job.entity_type !== "AVARIA") return;
   await client.query(

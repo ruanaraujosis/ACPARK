@@ -92,10 +92,15 @@ test("sincronizacao de leitura nao possui chamadas de escrita no OMIE", () => {
   assert.match(syncSource, /SYNC_OMIE_STOCK/);
   assert.match(syncSource, /SYNC_OMIE_MOVEMENTS/);
   assert.match(syncSource, /RECONCILE_OMIE_STOCK/);
+  assert.match(syncSource, /ultima_sincronizacao = CURRENT_TIMESTAMP/);
   assert.doesNotMatch(syncSource, /IncluirMovimentoEstoque|AlterarProduto|IncluirProduto|ExcluirProduto/);
   assert.doesNotMatch(routesSource, /callOmie\(|OMIE_APP_KEY|OMIE_APP_SECRET/);
   assert.match(productsSource, /ListarProdutos/);
   assert.match(productsSource, /produto_servico_cadastro/);
+  assert.match(productsSource, /sem_filtros_opcionais/);
+  assert.match(productsSource, /somente_importados_api/);
+  assert.match(productsSource, /OMIE respondeu a listagem de produtos, mas nao retornou produtos/);
+  assert.match(syncSource, /CONCLUIDO_COM_ALERTAS/);
   assert.doesNotMatch(productsSource, /IncluirMovimentoEstoque|AlterarProduto|IncluirProduto|ExcluirProduto/);
 });
 
@@ -104,6 +109,8 @@ test("schema e interface possuem leitura, mapeamento e reconciliacao sem ativar 
   assert.match(schemaSource, /CREATE TABLE IF NOT EXISTS stock_reconciliation_items/);
   assert.match(schemaSource, /stock_mode TEXT NOT NULL DEFAULT 'MANUAL'/);
   assert.match(appSource, /Mapeamento PDV x local OMIE/);
+  assert.match(appSource, /formatIntegrationJobResult/);
+  assert.match(appSource, /recebidos/);
   assert.match(appSource, /Divergências de reconciliação/);
 });
 

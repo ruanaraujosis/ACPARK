@@ -4,6 +4,8 @@ import { mapOmieProduct } from "./omie.mappers.js";
 const PRODUCTS_ENDPOINT = "/geral/produtos/";
 const PRODUCTS_CALL = "ListarProdutos";
 const PRODUCT_LIST_FIELDS = ["produto_servico_cadastro"];
+// Modos alternativos de consulta, tentados em ordem ate um retornar produtos
+// (algumas contas OMIE exigem/proibem certos filtros para listar produtos)
 const PRODUCT_QUERY_MODES = [
   {
     mode: "padrao",
@@ -19,6 +21,7 @@ const PRODUCT_QUERY_MODES = [
   }
 ];
 
+// Converte para inteiro positivo, usando fallback quando invalido
 function asPositiveInt(value, fallback) {
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
@@ -32,6 +35,7 @@ function normalizeName(value) {
   return String(value || "").trim().toUpperCase().slice(0, 160);
 }
 
+// Verifica se uma coluna existe no schema (usado para compatibilidade entre versoes do banco)
 async function hasColumn(client, tableName, columnName) {
   const result = await client.query(
     `SELECT 1
@@ -45,11 +49,13 @@ async function hasColumn(client, tableName, columnName) {
   return result.rowCount > 0;
 }
 
+// Descobre o nome da coluna de SKU no mapeamento (sku_produto novo ou sku_acpark legado)
 async function getMappingSkuColumn(client) {
   if (await hasColumn(client, "product_integration_mappings", "sku_produto")) return "sku_produto";
   return "sku_acpark";
 }
 
+// Cria ou atualiza o produto local a partir dos dados da OMIE e sincroniza o mapeamento de integracao
 async function upsertOmieProduct(client, integrationId, mapped) {
   const sku = normalizeSku(mapped.sku || mapped.externalId);
   const name = normalizeName(mapped.name);
@@ -146,6 +152,7 @@ async function upsertOmieProduct(client, integrationId, mapped) {
   return existing.rows[0] ? "updated" : "created";
 }
 
+// Faz uma chamada minima de teste para validar credenciais/conexao sem importar produtos
 export async function testOmieProductsConnection({ loaded, fetchImpl }) {
   const response = await omieRequestWithConfig({
     loaded,
@@ -170,6 +177,7 @@ export async function testOmieProductsConnection({ loaded, fetchImpl }) {
   };
 }
 
+// Extrai a lista de produtos da resposta OMIE, procurando pelos campos de array conhecidos
 function getOmieProductsFromResponse(data = {}) {
   for (const field of PRODUCT_LIST_FIELDS) {
     if (Array.isArray(data?.[field])) return data[field];
@@ -177,6 +185,7 @@ function getOmieProductsFromResponse(data = {}) {
   return [];
 }
 
+// Resume a resposta da OMIE para diagnostico, sem expor campos sensiveis (secret/token/key)
 function describeOmieResponse(data = {}) {
   return {
     page: data?.pagina || 1,
@@ -190,6 +199,8 @@ function describeOmieResponse(data = {}) {
   };
 }
 
+// Sincroniza produtos da OMIE em lote: pagina pelos resultados, tentando cada modo de consulta
+// ate encontrar produtos, e faz upsert de cada item recebido
 export async function syncOmieProducts(client, { loaded, payload = {}, fetchImpl }) {
   const pageSize = Math.min(asPositiveInt(payload.pageSize || payload.registros_por_pagina, 100), 500);
   const firstPage = asPositiveInt(payload.pageStart || payload.pagina, 1);
@@ -212,6 +223,7 @@ export async function syncOmieProducts(client, { loaded, payload = {}, fetchImpl
   for (let processed = 0; processed < maxPages; processed += 1) {
     let selectedResponse = null;
     let selectedProducts = [];
+    // Tenta cada modo de consulta ate um retornar produtos; guarda diagnostico de todos
     for (const queryMode of PRODUCT_QUERY_MODES) {
       const response = await omieRequestWithConfig({
         loaded,
@@ -259,6 +271,7 @@ export async function syncOmieProducts(client, { loaded, payload = {}, fetchImpl
     summary.next_page = page + 1;
   }
   if (!summary.received) {
+    // Nenhum modo de consulta retornou produtos: sinaliza alerta em vez de erro
     summary.warning = "OMIE respondeu a listagem de produtos, mas nao retornou produtos para importar.";
   }
 

@@ -1,8 +1,12 @@
+// Script: aplica UMA migration de hardening (RLS/políticas) no banco de homologação
+// Uso: node tools/apply-supabase-hardening-migration.js <nome-da-migration>
+// Bloqueia execução caso as variáveis apontem para o projeto Supabase de produção
 import fs from "node:fs";
 import path from "node:path";
 import pg from "pg";
 
 const PRODUCTION_PROJECT_REF = "iwlnjdyfloeplyokgfyx";
+// Lista branca de migrations de hardening permitidas por este script
 const allowedMigrations = [
   "20260729_001_security_inventory.sql",
   "20260729_002_enable_rls_internal_tables.sql",
@@ -14,6 +18,7 @@ const allowedMigrations = [
   "20260729_008_archive_orion_table.sql"
 ];
 
+// Carrega variáveis de ambiente do arquivo local de homologação, se existir
 loadEnv(".env.homologation.local");
 
 const migrationName = process.argv[2] || "";
@@ -32,6 +37,7 @@ if (!databaseUrl || !supabaseUrl || !serviceRoleKey) {
   process.exit(1);
 }
 
+// Trava de segurança: nunca deixar este script rodar contra o projeto de produção
 if (databaseUrl.includes(PRODUCTION_PROJECT_REF) || supabaseUrl.includes(PRODUCTION_PROJECT_REF)) {
   console.error("Bloqueado: variaveis de homologacao apontam para o projeto Supabase de producao conhecido.");
   process.exit(1);
@@ -44,6 +50,7 @@ const sslmode = parsed.searchParams.get("sslmode");
 parsed.searchParams.delete("sslmode");
 const isLocal = ["localhost", "127.0.0.1", "::1"].includes(parsed.hostname.toLowerCase());
 
+// Pool com apenas 1 conexão: script roda uma migration por vez e encerra
 const pool = new pg.Pool({
   connectionString: parsed.toString(),
   ssl: sslmode !== "disable" && !isLocal ? { rejectUnauthorized: false } : undefined,
@@ -54,6 +61,7 @@ const pool = new pg.Pool({
 });
 
 try {
+  // Confere qual papel/privilégios a conexão está usando antes de aplicar a migration
   const role = await pool.query(`
     select current_user, session_user, rolsuper, rolbypassrls
     from pg_roles
@@ -75,6 +83,7 @@ try {
   await pool.end().catch(() => {});
 }
 
+// Lê um arquivo .env simples e preenche process.env sem sobrescrever valores já definidos
 function loadEnv(file) {
   const full = path.resolve(file);
   if (!fs.existsSync(full)) return;

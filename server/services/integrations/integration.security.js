@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 
 const ENCRYPTION_PREFIX = "enc:v1";
 
+// Deriva a chave de criptografia AES a partir da env; exige chave real em producao
 function getSecretKey(env = process.env) {
   const raw = env.INTEGRATION_ENCRYPTION_KEY || env.JWT_SECRET;
   if (env.NODE_ENV === "production" && (!raw || raw === "dev-only-change-me")) {
@@ -10,6 +11,7 @@ function getSecretKey(env = process.env) {
   return crypto.createHash("sha256").update(String(raw || "local-integration-secret")).digest();
 }
 
+// Criptografa uma credencial (ex: app_key/app_secret OMIE) com AES-256-GCM antes de persistir
 export function encryptSecret(value, env = process.env) {
   if (value === null || value === undefined || value === "") return "";
   const iv = crypto.randomBytes(12);
@@ -19,6 +21,7 @@ export function encryptSecret(value, env = process.env) {
   return [ENCRYPTION_PREFIX, iv.toString("base64url"), tag.toString("base64url"), encrypted.toString("base64url")].join(":");
 }
 
+// Reverte encryptSecret; valores nao criptografados (legado) sao retornados como estao
 export function decryptSecret(value, env = process.env) {
   if (!value || typeof value !== "string") return "";
   if (!value.startsWith(`${ENCRYPTION_PREFIX}:`)) return value;
@@ -31,6 +34,7 @@ export function decryptSecret(value, env = process.env) {
   ]).toString("utf8");
 }
 
+// Mascara um segredo para exibicao segura (ex: em telas de configuracao), preservando so as pontas
 export function maskSecret(value) {
   const text = String(value || "");
   if (!text) return "";
@@ -38,6 +42,7 @@ export function maskSecret(value) {
   return `${text.slice(0, 3)}***${text.slice(-3)}`;
 }
 
+// Monta a versao publica da integracao para API/UI, nunca expondo o valor real das credenciais
 export function sanitizeIntegration(integration = {}, credentials = []) {
   return {
     id: integration.id,

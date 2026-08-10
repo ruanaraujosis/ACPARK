@@ -1,11 +1,13 @@
 import { getOmieConfig } from "./omie.config.js";
 import { OmieConfigurationError, OmieRequestError, isRetryableOmieStatus } from "./omie.errors.js";
 
+// Faz uma chamada POST autenticada para a API do OMIE, com timeout e tratamento de erros
 export async function callOmie(endpoint, payload, { fetchImpl = fetch, env = process.env } = {}) {
   const config = getOmieConfig(env);
   if (!config.configured) throw new OmieConfigurationError();
 
   const controller = new AbortController();
+  // Aborta a requisicao se exceder o tempo limite configurado
   const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
   const started = Date.now();
   try {
@@ -20,6 +22,7 @@ export async function callOmie(endpoint, payload, { fetchImpl = fetch, env = pro
       signal: controller.signal
     });
     const data = await response.json().catch(() => ({}));
+    // OMIE pode retornar 200 com erro no corpo (faultstring/faultcode)
     if (!response.ok || data?.faultstring || data?.faultcode) {
       throw new OmieRequestError(data.faultstring || data.message || "Falha na comunicação com o OMIE.", {
         status: response.status,
@@ -32,6 +35,7 @@ export async function callOmie(endpoint, payload, { fetchImpl = fetch, env = pro
       elapsedMs: Date.now() - started
     };
   } catch (error) {
+    // Timeout do AbortController vira erro retentavel para o job processar novamente
     if (error.name === "AbortError") {
       throw new OmieRequestError("Tempo limite ao comunicar com o OMIE.", { status: 408, retryable: true });
     }

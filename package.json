@@ -12,6 +12,7 @@
     "build": "node -e \"console.log('No build required')\"",
     "test": "node tests/server-routes.test.js",
     "test:sequential": "node tools/run-tests-sequential.js",
+    "test:status": "node tools/e2e-status-pedidos.mjs",
     "homologation:check": "node tools/validate-supabase-homologation-env.js",
     "homologation:apply": "node tools/apply-supabase-hardening-migration.js",
     "security:check": "node tests/supabase-hardening.test.js",
@@ -27,6 +28,7 @@
     "bcryptjs": "2.4.3",
     "cookie": "0.6.0",
     "dotenv": "16.4.7",
+    "headroom-ai": "^0.22.4",
     "jsonwebtoken": "9.0.2",
     "pg": "8.13.1"
   },

@@ -6,6 +6,7 @@ function requireValue(value, name) {
   return normalized;
 }
 
+// Codifica cada segmento da chave (path) do objeto para uso seguro em URL
 function encodeStorageKey(key) {
   return String(key || "")
     .split("/")
@@ -13,6 +14,7 @@ function encodeStorageKey(key) {
     .join("/");
 }
 
+// Remove tokens e credenciais sensiveis das mensagens de erro do Supabase
 function sanitizeStorageError(value) {
   return String(value || "")
     .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [removido]")
@@ -27,6 +29,7 @@ async function storageErrorMessage(response) {
   return detail ? `: ${detail}` : "";
 }
 
+// Adaptador de storage para o Supabase Storage (API REST via bucket)
 export class SupabaseStorageAdapter {
   constructor(config = {}) {
     this.supabaseUrl = requireValue(config.supabaseUrl, "SUPABASE_URL");
@@ -34,6 +37,7 @@ export class SupabaseStorageAdapter {
     this.bucket = requireValue(config.bucket, "STORAGE_BUCKET");
   }
 
+  // Monta cabecalhos de autenticacao com a service role key
   headers(extra = {}) {
     return {
       apikey: this.serviceRoleKey,
@@ -42,6 +46,7 @@ export class SupabaseStorageAdapter {
     };
   }
 
+  // Monta a URL do objeto dentro do bucket configurado
   objectUrl(key) {
     return `${this.supabaseUrl}/storage/v1/object/${encodeURIComponent(this.bucket)}/${encodeStorageKey(key)}`;
   }
@@ -72,6 +77,7 @@ export class SupabaseStorageAdapter {
     return Buffer.from(await response.arrayBuffer());
   }
 
+  // Remove o objeto do bucket usando a API de exclusao em lote (prefixes)
   async deleteFile(key) {
     if (!key) return;
     const response = await fetch(`${this.supabaseUrl}/storage/v1/object/${encodeURIComponent(this.bucket)}`, {

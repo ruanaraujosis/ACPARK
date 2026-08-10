@@ -1,0 +1,50 @@
+{
+  "name": "myestoque-desktop",
+  "version": "1.0.0",
+  "description": "Aplicativo do MyEstoque para Almoxarifado e PDVs",
+  "main": "main.js",
+  "private": true,
+  "author": "Aguas Correntes Park",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --win --publish never"
+  },
+  "devDependencies": {
+    "electron": "^43.2.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "br.com.acpark.myestoque",
+    "productName": "MyEstoque",
+    "copyright": "Aguas Correntes Park",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "erro.html",
+      "config.html",
+      "icone.ico"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "icone.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "MyEstoque",
+      "installerLanguages": ["pt_BR"],
+      "language": "1046"
+    }
+  }
+}

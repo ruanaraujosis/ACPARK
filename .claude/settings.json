@@ -1,0 +1,18 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/verificar-testes-antes-do-commit.mjs\"",
+            "shell": "bash",
+            "timeout": 200,
+            "statusMessage": "Verificando testes antes do commit..."
+          }
+        ]
+      }
+    ]
+  }
+}

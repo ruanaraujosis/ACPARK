@@ -1,7 +1,9 @@
 import { request } from "../api/api-client.js";
+import { runAutoRefreshNow } from "../ui/auto-refresh.js";
 import { state } from "../state/app-state.js";
 import { toast } from "../ui/notifications.js";
 import { esc } from "../ui.js";
+import { uuid } from "../utils/uuid.js";
 import {
   activateAudioAlerts,
   audioIsActivated,
@@ -11,13 +13,16 @@ import {
   testOrderAlert
 } from "./audio-alert-manager.js";
 
+// Chaves de armazenamento (sessão/local) usadas para persistir estado dos alertas entre navegações e abas
 const storageKey = "acparkNotifiedOrderEvents";
 const viewedStorageKey = "acparkViewedOrderAlerts";
 const silencedStorageKey = "acparkSilencedOrderAlerts";
 const activeStorageKey = "acparkActiveOrderAlerts";
 const focusOrderKey = "acparkFocusReleaseOrder";
 const tabLockPrefix = "acparkOrderAlertLock:";
+// Nome do BroadcastChannel usado para sincronizar o estado dos alertas entre abas abertas
 const channelName = "acpark-order-alerts";
+// Preferências padrão de alerta sonoro/visual, usadas antes do usuário salvar as próprias
 const defaultPreferences = {
   enabled: true,
   soundId: "repetitive-alert",
@@ -29,7 +34,9 @@ const defaultPreferences = {
   stopOnServiceStart: true
 };
 
+// Conexão SSE com o servidor (canal preferencial de notificação em tempo real)
 let eventSource = null;
+// Timer do polling usado como alternativa quando SSE não está disponível/falha
 let fallbackTimer = null;
 let preferences = { ...defaultPreferences };
 let sounds = [];
@@ -37,17 +44,22 @@ let routeCallback = null;
 let refreshReleaseCallback = null;
 let lastPendingBaseline = null;
 let lastPendingIds = new Set();
+// IDs de eventos já processados nesta sessão, para não notificar o mesmo pedido duas vezes
 const notifiedEventIds = new Set(readStoredEvents());
+// IDs de pedidos/eventos já vistos ou silenciados pelo usuário (não devem tocar/aparecer de novo)
 const viewedAlertIds = new Set(readStoredList(viewedStorageKey));
 const silencedAlertIds = new Set(readStoredList(silencedStorageKey));
+// Alertas visuais atualmente exibidos na tela, indexados por orderId
 const activeAlerts = new Map(readStoredActiveAlerts().map((alert) => [alert.orderId, alert]));
-const tabId = crypto.randomUUID();
+// Identificador único desta aba, usado para coordenar qual aba toca o som quando há várias abertas
+const tabId = uuid();
 const broadcast = "BroadcastChannel" in window ? new BroadcastChannel(channelName) : null;
 
 function readStoredEvents() {
   return readStoredList(storageKey);
 }
 
+// Lê uma lista JSON salva no sessionStorage, retornando array vazio em caso de erro/ausência
 function readStoredList(key) {
   try {
     return JSON.parse(sessionStorage.getItem(key) || "[]");
@@ -56,6 +68,7 @@ function readStoredList(key) {
   }
 }
 
+// Adiciona um valor a um Set e persiste no sessionStorage, mantendo só os 160 mais recentes
 function rememberListValue(key, set, value) {
   if (!value) return;
   set.add(String(value));
@@ -63,6 +76,7 @@ function rememberListValue(key, set, value) {
   sessionStorage.setItem(key, JSON.stringify(values));
 }
 
+// Recupera os alertas visuais ativos salvos, descartando os com mais de 6 horas
 function readStoredActiveAlerts() {
   try {
     const alerts = JSON.parse(sessionStorage.getItem(activeStorageKey) || "[]");
@@ -74,6 +88,7 @@ function readStoredActiveAlerts() {
   }
 }
 
+// Salva os alertas visuais ativos no sessionStorage (mantém só os 20 mais recentes)
 function persistActiveAlerts() {
   const alerts = [...activeAlerts.values()].slice(-20).map((alert) => ({
     ...alert,
@@ -87,11 +102,14 @@ function rememberEvent(eventId) {
   rememberListValue(storageKey, notifiedEventIds, eventId);
 }
 
+// Um pedido/evento é considerado dispensado se já foi visualizado ou silenciado pelo usuário
 function isDismissed(orderId, eventId) {
   return viewedAlertIds.has(String(orderId)) || silencedAlertIds.has(String(orderId))
     || viewedAlertIds.has(String(eventId)) || silencedAlertIds.has(String(eventId));
 }
 
+// Usa um lock no localStorage para garantir que, com várias abas abertas, só uma delas toque
+// o som do mesmo evento (lock expira em 15s para não travar caso a aba feche)
 function canThisTabPlay(eventId) {
   if (!eventId) return true;
   const key = `${tabLockPrefix}${eventId}`;
@@ -106,6 +124,7 @@ function canThisTabPlay(eventId) {
   }
 }
 
+// Aplica valores padrão e limites válidos às preferências recebidas do servidor/formulário
 function normalizePreferences(next = {}) {
   return {
     ...defaultPreferences,
@@ -117,10 +136,12 @@ function normalizePreferences(next = {}) {
   };
 }
 
+// Extrai um identificador de pedido a partir de diferentes formatos de evento
 function orderIdFromEvent(event = {}) {
   return String(event.orderId || event.orderNumber || event.eventId || "");
 }
 
+// Cria (uma vez) o container fixo onde os cartões de alerta visual de pedido são exibidos
 function ensureOrderAlertContainer() {
   let root = document.querySelector("#order-alert-root");
   if (!root) {
@@ -134,6 +155,7 @@ function ensureOrderAlertContainer() {
   return root;
 }
 
+// Mostra/esconde o botão "Ativar áudio" conforme o perfil do usuário e se o áudio já foi liberado
 function updateActivationButton() {
   const button = document.querySelector("#order-alert-activate");
   if (!button) return;
@@ -141,6 +163,7 @@ function updateActivationButton() {
   button.classList.toggle("hidden", !shouldShow);
 }
 
+// Desbloqueia o áudio de alertas neste navegador/aba e retoma alertas ativos que estavam pausados
 export async function activateOrderAlertAudio() {
   const ok = await activateAudioAlerts();
   updateActivationButton();
@@ -151,6 +174,7 @@ export async function activateOrderAlertAudio() {
   return ok;
 }
 
+// Recoloca na fila de som os alertas visuais que já estavam ativos (ex: após ativar o áudio)
 function requeueActiveAudioAlerts() {
   activeAlerts.forEach((alert) => {
     if (isDismissed(alert.orderId, alert.eventId) || !canThisTabPlay(alert.eventId)) return;
@@ -162,12 +186,15 @@ function requeueActiveAudioAlerts() {
   });
 }
 
+// Remove o cartão de alerta visual da tela e do estado ativo
 function removeAlertCard(orderId) {
   document.querySelector(`[data-order-alert-card="${CSS.escape(String(orderId))}"]`)?.remove();
   activeAlerts.delete(String(orderId));
   persistActiveAlerts();
 }
 
+// Marca um alerta como encerrado (visualizado, silenciado ou atendimento iniciado), interrompe
+// o som, remove o cartão e avisa as outras abas via BroadcastChannel
 function markAlertStopped(orderId, eventId, reason) {
   const key = reason === "VIEWED" ? viewedStorageKey : silencedStorageKey;
   const set = reason === "VIEWED" ? viewedAlertIds : silencedAlertIds;
@@ -178,6 +205,7 @@ function markAlertStopped(orderId, eventId, reason) {
   broadcast?.postMessage({ type: "ORDER_ALERT_STOPPED", orderId, eventId, reason });
 }
 
+// Ação do botão "Visualizar": para o alerta e navega até a tela de Liberação focando o pedido
 function openReleaseAndStop(orderId, eventId, button = null) {
   if (button) {
     button.disabled = true;
@@ -189,6 +217,7 @@ function openReleaseAndStop(orderId, eventId, button = null) {
   routeCallback?.("release");
 }
 
+// Ação do botão "Silenciar": marca o alerta como silenciado sem abrir o pedido
 function silenceOrder(orderId, eventId, button = null) {
   if (button) {
     button.disabled = true;
@@ -197,6 +226,7 @@ function silenceOrder(orderId, eventId, button = null) {
   markAlertStopped(orderId, eventId, "SILENCED");
 }
 
+// Cria e exibe o cartão de notificação visual de um novo pedido, com ações "Visualizar"/"Silenciar"
 function showOrderToast(event) {
   if (!preferences.visualNotifications) return;
   const orderId = orderIdFromEvent(event);
@@ -241,6 +271,7 @@ function showOrderToast(event) {
   persistActiveAlerts();
 }
 
+// Exibe alertas visuais para pedidos pendentes trazidos por um snapshot (usado no polling/fallback)
 function showPendingSnapshotAlerts(snapshot = {}) {
   if (!preferences.visualNotifications || state.user?.role !== "admin") return;
   const orders = Array.isArray(snapshot.orders) ? snapshot.orders : [];
@@ -252,6 +283,7 @@ function showPendingSnapshotAlerts(snapshot = {}) {
   }
 }
 
+// Busca no servidor o resumo atual de pedidos pendentes de liberação
 async function fetchPendingSnapshot() {
   const summary = await request("/api/admin/order-alert-summary", { silentLoading: true });
   const ids = Array.isArray(summary.pendingOrderIds)
@@ -266,6 +298,7 @@ async function fetchPendingSnapshot() {
   };
 }
 
+// Atualiza apenas o contador/badge de pedidos pendentes (sem recarregar a tela de Liberação)
 async function refreshCountersOnly() {
   if (state.user?.role !== "admin") return null;
   try {
@@ -282,6 +315,7 @@ async function refreshCountersOnly() {
   }
 }
 
+// Atualiza os contadores e, se a tela de Liberação estiver aberta no momento, recarrega seus dados
 async function refreshReleaseIfOpen() {
   const snapshot = await refreshCountersOnly();
   if (state.currentView === "release") {
@@ -290,11 +324,15 @@ async function refreshReleaseIfOpen() {
   return snapshot;
 }
 
+// Condição usada pelo tocador de som para parar de repetir quando o pedido sai da lista de
+// pendentes (ou seja, o atendimento já começou), respeitando a preferência stopOnServiceStart
 function shouldStopByStatus(orderId) {
   if (!preferences.stopOnServiceStart || !orderId) return false;
   return !lastPendingIds.has(String(orderId));
 }
 
+// Encerra alertas de pedidos que saíram da lista de pendentes (atendimento iniciado) quando a
+// preferência stopOnServiceStart está ativa
 function reconcileActiveAlerts(pendingIds = new Set()) {
   for (const [orderId, alert] of activeAlerts.entries()) {
     if (!pendingIds.has(String(orderId)) && preferences.stopOnServiceStart) {
@@ -303,6 +341,8 @@ function reconcileActiveAlerts(pendingIds = new Set()) {
   }
 }
 
+// Processa um novo evento de pedido (vindo do SSE ou do polling de fallback): evita duplicados,
+// mostra o toast visual e enfileira o som (se esta aba tiver permissão para tocar)
 async function handleNewOrderEvent(event) {
   const orderId = orderIdFromEvent(event);
   const eventId = event.eventId || `${event.orderNumber || ""}:${event.createdAt || ""}`;
@@ -321,6 +361,8 @@ async function handleNewOrderEvent(event) {
   await refreshReleaseIfOpen();
 }
 
+// Alternativa ao SSE: consulta o servidor a cada 12s em busca de novos pedidos pendentes.
+// Usada quando o navegador não suporta EventSource ou a conexão SSE falha
 async function startFallbackPolling() {
   if (fallbackTimer || state.user?.role !== "admin") return;
   try {
@@ -364,6 +406,8 @@ async function startFallbackPolling() {
   }, 12000);
 }
 
+// Inicializa o sistema de alertas de novos pedidos para o Almoxarifado: carrega preferências,
+// mostra alertas já ativos, busca o snapshot inicial e abre a conexão SSE (com fallback para polling)
 export async function startOrderAlerts(options = {}) {
   if (state.user?.role !== "admin") {
     stopOrderAlerts();
@@ -401,6 +445,17 @@ export async function startOrderAlerts(options = {}) {
       toast("Novo pedido recebido.");
     }
   });
+  // Mudança de etapa: atualiza a tela na hora, sem esperar o ciclo de 12s do fallback
+  eventSource.addEventListener("ORDER_STATUS_CHANGED", (message) => {
+    let evento = {};
+    try {
+      evento = JSON.parse(message.data || "{}");
+    } catch {
+      evento = {};
+    }
+    window.dispatchEvent(new CustomEvent("order-status-changed", { detail: evento }));
+    runAutoRefreshNow();
+  });
   eventSource.onerror = () => {
     eventSource?.close();
     eventSource = null;
@@ -408,6 +463,7 @@ export async function startOrderAlerts(options = {}) {
   };
 }
 
+// Encerra completamente o sistema de alertas: fecha SSE/polling, para sons e limpa a UI
 export function stopOrderAlerts() {
   eventSource?.close();
   eventSource = null;
@@ -421,6 +477,7 @@ export function stopOrderAlerts() {
   persistActiveAlerts();
 }
 
+// Sincroniza entre abas: replica eventos já notificados e alertas encerrados em outras abas
 broadcast?.addEventListener("message", (event) => {
   if (event.data?.type === "order-alert-processed" && event.data.eventId) {
     rememberEvent(event.data.eventId);
@@ -439,6 +496,7 @@ broadcast?.addEventListener("message", (event) => {
   }
 });
 
+// Monta as <option> de toques disponíveis para o formulário de configurações de alerta
 function renderSoundOptions() {
   const soundOptions = sounds.length ? sounds : [
     { id: "repetitive-alert", displayName: "Alerta repetitivo" },
@@ -453,6 +511,7 @@ function renderSoundOptions() {
     .join("");
 }
 
+// Renderiza o formulário de configurações de alerta sonoro/visual (usado nas telas do Almoxarifado)
 export function renderOrderAlertSettings() {
   preferences = normalizePreferences(preferences);
   return `
@@ -517,6 +576,7 @@ export function renderOrderAlertSettings() {
     </form>`;
 }
 
+// Lê os valores do formulário de configurações e monta o payload a ser enviado à API
 function payloadFromForm(form) {
   return {
     enabled: form.enabled.checked,
@@ -530,6 +590,8 @@ function payloadFromForm(form) {
   };
 }
 
+// Liga os eventos do formulário de configurações: preview de volume, teste de som, restaurar
+// padrão e salvar as preferências no servidor
 export function bindOrderAlertSettings() {
   const form = document.querySelector("#order-alert-settings-form");
   if (!form) return;

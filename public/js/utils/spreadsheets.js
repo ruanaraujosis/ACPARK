@@ -1,4 +1,6 @@
-﻿function parseDelimited(text) {
+﻿// Faz o parse de um texto CSV/TSV genérico, detectando o delimitador (tab, ; ou ,)
+// e respeitando aspas (inclusive aspas duplicadas dentro de campo)
+function parseDelimited(text) {
   const firstLine = text.split(/\r?\n/, 1)[0] || "";
   const semicolons = (firstLine.match(/;/g) || []).length;
   const commas = (firstLine.match(/,/g) || []).length;
@@ -34,6 +36,7 @@
   return rows;
 }
 
+// Normaliza um cabe\u00e7alho de coluna para compara\u00e7\u00e3o: remove acentos, min\u00fasculas, s\u00f3 a-z0-9
 function normalizeHeader(value) {
   return String(value || "")
     .normalize("NFD")
@@ -42,21 +45,25 @@ function normalizeHeader(value) {
     .replace(/[^a-z0-9]/g, "");
 }
 
+// Interpreta valores de planilha como booleano (ex: "sim", "ativo", "1")
 function truthySheetValue(value) {
   return ["sim", "s", "true", "1", "ativo", "yes"].includes(String(value || "").trim().toLowerCase());
 }
 
+// Envolve o texto em f\u00f3rmula ="..." para for\u00e7ar o Excel/Sheets a tratar como texto (preserva zeros \u00e0 esquerda em SKUs)
 export function spreadsheetText(value) {
   const text = String(value ?? "").trim();
   return text ? `="${text.replace(/"/g, '""')}"` : "";
 }
 
+// Reverte o formato ="..." gerado por spreadsheetText ao importar uma planilha de volta
 function normalizeImportedSku(value) {
   const text = String(value ?? "").trim();
   const formulaMatch = text.match(/^="(.*)"$/);
   return formulaMatch ? formulaMatch[1].replace(/""/g, '"') : text;
 }
 
+// Converte linhas brutas da planilha de produtos em objetos, identificando colunas pelo nome do cabe\u00e7alho
 function parseProductsRows(rows) {
   if (rows.length < 2) return [];
   const headers = rows[0].map(normalizeHeader);
@@ -79,10 +86,12 @@ function parseProductsRows(rows) {
   })).filter((item) => item.sku && item.nome);
 }
 
+// Faz o parse de um arquivo texto (CSV/TSV) de produtos
 function parseProductsSheet(text) {
   return parseProductsRows(parseDelimited(text));
 }
 
+// Lê um arquivo de produtos (CSV/TSV ou XLSX via biblioteca SheetJS) e devolve os itens normalizados
 export async function parseProductsFile(file) {
   const extension = file.name.split(".").pop()?.toLowerCase();
   if (["xlsx", "xls"].includes(extension)) {

@@ -1,3 +1,4 @@
+// Normaliza valores livres de prioridade para os rotulos padrao usados nos jobs de integracao
 export function normalizePriority(value) {
   const normalized = String(value || "").trim().toUpperCase();
   if (["CRITICA", "CRITICO", "CRITICAL"].includes(normalized)) return "CRITICA";
@@ -6,6 +7,7 @@ export function normalizePriority(value) {
   return "NORMAL";
 }
 
+// Converte a prioridade em um peso numerico usado para ordenar a fila de jobs
 export function priorityRank(priority) {
   const normalized = normalizePriority(priority);
   if (normalized === "CRITICA") return 100;
@@ -14,6 +16,7 @@ export function priorityRank(priority) {
   return 50;
 }
 
+// Lista os jobs de integracao ativos/recentes, ordenados por prioridade e data
 export async function listIntegrationJobs(client, { limit = 100 } = {}) {
   const rows = await client.query(
     `SELECT *

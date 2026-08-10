@@ -57,6 +57,7 @@ test("estoque admin routes stay protected", async () => {
 test("pedidos admin routes stay protected", async () => {
   for (const [pathname, method] of [
     ["/api/admin/orders", "GET"],
+    ["/api/admin/orders/status", "PATCH"],
     ["/api/admin/order-flow", "POST"],
     ["/api/admin/order-items", "DELETE"],
     ["/api/admin/history", "GET"]
@@ -116,6 +117,54 @@ test("pdv order creation requires idempotency key before touching data", async (
   assert.equal(handled, true);
   assert.equal(res.status, 400);
   assert.deepEqual(JSON.parse(res.body), { error: "Identificador da operação ausente. Atualize a página e tente novamente." });
+});
+
+test("admin order status route rejects status outside active kanban with 400", async () => {
+  const res = createResponse();
+  const req = jsonRequest({
+    codigo_pedido: "PED-TESTE",
+    expected_status: "PENDENTE",
+    status: "FINALIZADO"
+  });
+  const handled = await handlePedidosRoutes(req, res, contextFor("/api/admin/orders/status", "PATCH", {
+    requireUser: () => ({ role: "admin", name: "Almoxarifado" }),
+    user: { role: "admin", name: "Almoxarifado" }
+  }));
+
+  assert.equal(handled, true);
+  assert.equal(res.status, 400);
+  assert.deepEqual(JSON.parse(res.body), { error: "Status ou pedido inválido." });
+});
+
+test("admin order status route uses free movement only between active statuses", () => {
+  const routeMatch = pedidosRoutesSource.match(/if \(url\.pathname === "\/api\/admin\/orders\/status"[\s\S]*?send\(res, 200, \{ ok: true, \.\.\.result \}\);[\s\S]*?return true;/);
+  assert.ok(routeMatch, "status route should be present");
+  const routeSource = routeMatch[0];
+
+  assert.match(routeSource, /new Set\(\["Pendente", "Em Andamento", "Aguardando Retirada"\]\)/);
+  assert.match(routeSource, /Object\.fromEntries/);
+  assert.match(routeSource, /\[\.\.\.kanbanStatuses\]\.map/);
+  assert.match(routeSource, /nextStatus !== status/);
+  assert.match(routeSource, /kanbanStatuses\.has\(expectedStatus\)/);
+  assert.match(routeSource, /kanbanStatuses\.has\(nextStatus\)/);
+  assert.doesNotMatch(routeSource, /Pendente:\s*\["Em Andamento"\]/);
+  assert.doesNotMatch(routeSource, /"Liberação Parcial"|LIBERACAO_PARCIAL/);
+});
+
+test("admin order status route preserves saved quantities and products", () => {
+  const routeMatch = pedidosRoutesSource.match(/if \(url\.pathname === "\/api\/admin\/orders\/status"[\s\S]*?send\(res, 200, \{ ok: true, \.\.\.result \}\);[\s\S]*?return true;/);
+  assert.ok(routeMatch, "status route should be present");
+  const routeSource = routeMatch[0];
+
+  assert.match(routeSource, /SET status = \$1/);
+  assert.match(routeSource, /version = COALESCE\(version, 1\) \+ 1/);
+  assert.doesNotMatch(routeSource, /quantidade_solicitada\s*=/);
+  assert.doesNotMatch(routeSource, /sku_produto\s*=/);
+  // A quantidade já liberada pelo painel é preservada (limitada ao solicitado); só é preenchida
+  // quando o card chega em Aguardando Retirada sem nenhuma liberação, e zerada ao voltar de etapa
+  assert.match(routeSource, /WHEN COALESCE\(quantidade_liberada, 0\) > 0 THEN LEAST\(quantidade_liberada, quantidade_solicitada\)/);
+  assert.match(routeSource, /ELSE quantidade_solicitada/);
+  assert.equal((routeSource.match(/quantidade_liberada = 0/g) || []).length, 2);
 });
 
 test("pdv order quantity is not capped by maximum stock", () => {

@@ -1,12 +1,14 @@
 ﻿import { query, tx, asInt, code } from "../../db.js";
 import { normalizeText, readBody, send } from "../../utils/http.js";
-import { publishOrderAlert } from "../../services/order-alerts/order-alerts.events.js";
+import { publishOrderAlert, publishOrderStatusChange } from "../../services/order-alerts/order-alerts.events.js";
 import { normalizeOrderStatus, orderStatuses } from "./pedidos.service.js";
 
 let pedidoEditColumnsReady = null;
 let pedidoIdempotencyReady = null;
 let pedidoDraftReady = null;
+let pedidoAuditReady = null;
 
+// Cria a tabela de controle de idempotência para criação de pedidos (cacheado em memória)
 function ensurePedidoIdempotencyTable() {
   pedidoIdempotencyReady ||= tx(async (client) => {
     await client.query(`
@@ -24,6 +26,7 @@ function ensurePedidoIdempotencyTable() {
   return pedidoIdempotencyReady;
 }
 
+// Cria a tabela de rascunhos de pedido do PDV (cacheado em memória)
 function ensurePedidoDraftTable() {
   pedidoDraftReady ||= tx(async (client) => {
     await client.query(`
@@ -39,6 +42,7 @@ function ensurePedidoDraftTable() {
   return pedidoDraftReady;
 }
 
+// Garante colunas adicionais usadas na edição/reabertura de pedidos (cacheado em memória)
 function ensurePedidoEditColumns() {
   pedidoEditColumnsReady ||= tx(async (client) => {
     await client.query("ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS pedido_editado BOOLEAN DEFAULT FALSE");
@@ -51,6 +55,39 @@ function ensurePedidoEditColumns() {
   return pedidoEditColumnsReady;
 }
 
+// Cria a tabela de auditoria de ações administrativas sobre pedidos (cacheado em memória)
+function ensurePedidoAuditTable() {
+  pedidoAuditReady ||= tx(async (client) => {
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS pedido_auditoria (
+        id SERIAL PRIMARY KEY,
+        codigo_pedido TEXT NOT NULL,
+        acao TEXT NOT NULL,
+        usuario TEXT,
+        observacao TEXT,
+        dados JSONB NOT NULL DEFAULT '{}'::jsonb,
+        criado_em TIMESTAMP DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'America/Sao_Paulo')
+      )
+    `);
+  });
+  return pedidoAuditReady;
+}
+
+// Registra uma mudança de etapa na auditoria: quem moveu, de onde para onde e quando.
+// Usado pelas três rotas que mexem em status (Kanban, painel e confirmação de retirada).
+async function registrarAuditoriaStatus(client, { codigoPedido, acao, usuario, de = "", para = "", observacao = "", dados = {} } = {}) {
+  const codigo = normalizeText(codigoPedido, 80);
+  if (!codigo) return;
+  // A tabela é garantida antes da transação pela rota que chama, como no restante do arquivo
+  const texto = observacao || (de ? `Status alterado de ${de} para ${para}` : `Status alterado para ${para}`);
+  await client.query(
+    `INSERT INTO pedido_auditoria (codigo_pedido, acao, usuario, observacao, dados)
+     VALUES ($1, $2, $3, $4, $5::jsonb)`,
+    [codigo, acao, usuario || "Almoxarifado", texto, JSON.stringify({ status_anterior: de || null, novo_status: para || null, ...dados })]
+  );
+}
+
+// Corrige pedidos presos em status legados de liberação parcial, migrando-os para Aguardando Retirada
 async function ensurePartialReleaseRemainders() {
   await ensurePedidoEditColumns();
   await tx(async (client) => {
@@ -63,14 +100,29 @@ async function ensurePartialReleaseRemainders() {
   });
 }
 
+// Lê a chave de idempotência do header ou do corpo da requisição
 function normalizeIdempotencyKey(req, body) {
   const header = req.headers?.["idempotency-key"] || req.headers?.["Idempotency-Key"];
   return normalizeText(header || body.idempotencyKey || body.idempotency_key, 120);
 }
 
+// Converte os códigos de status enviados pelo Kanban (ex: EM_ANDAMENTO) para o texto usado no banco
+function statusFromRequest(value) {
+  const status = normalizeText(value, 80);
+  const map = {
+    PENDENTE: "Pendente",
+    EM_ANDAMENTO: "Em Andamento",
+    AGUARDANDO_RETIRADA: "Aguardando Retirada",
+    FINALIZADO: "Finalizado"
+  };
+  return map[status] || status;
+}
+
+// Roteador do módulo de pedidos (solicitação, liberação e histórico)
 export async function handlePedidosRoutes(req, res, context) {
   const { method, requireUser, url, user } = context;
 
+  // Rascunho de pedido do PDV, salvo automaticamente antes do envio definitivo
   if (url.pathname === "/api/pdv/order-draft") {
     if (user.role !== "pdv") return send(res, 403, { error: "Entre como PDV para gerenciar rascunhos." }), true;
     await ensurePedidoDraftTable();
@@ -126,6 +178,7 @@ export async function handlePedidosRoutes(req, res, context) {
     }
   }
 
+  // Cria um novo pedido do PDV; protegido por chave de idempotência contra duplo envio
   if (url.pathname === "/api/pdv/order" && method === "POST") {
     if (user.role !== "pdv") return send(res, 403, { error: "Entre como PDV para solicitar produtos." }), true;
     const body = await readBody(req);
@@ -138,6 +191,7 @@ export async function handlePedidosRoutes(req, res, context) {
     await ensurePedidoIdempotencyTable();
 
     const result = await tx(async (client) => {
+      // Reserva a chave de idempotência; se já existir, reaproveita o pedido já criado (sem duplicar)
       const insertedKey = await client.query(
         `INSERT INTO pedido_idempotencia (idempotency_key, pdv_id, status)
          VALUES ($1, $2, 'processing')
@@ -165,7 +219,11 @@ export async function handlePedidosRoutes(req, res, context) {
       for (const item of items) {
         const sku = normalizeText(item.sku, 60);
         const qty = asInt(item.quantidade);
-        if (!sku || qty <= 0) throw new Error("Item inválido.");
+        if (!sku || qty <= 0) {
+          const error = new Error("Item inválido.");
+          error.statusCode = 400;
+          throw error;
+        }
 
         const allowed = await client.query(
           `SELECT e.quantidade, e.estoque_maximo
@@ -176,7 +234,11 @@ export async function handlePedidosRoutes(req, res, context) {
            WHERE e.pdv_id = $1 AND e.sku_produto = $2 AND e.permitido = TRUE`,
           [user.pdvId, sku]
         );
-        if (!allowed.rows[0]) throw new Error("Produto não liberado para este PDV.");
+        if (!allowed.rows[0]) {
+          const error = new Error("Produto não liberado para este PDV.");
+          error.statusCode = 400;
+          throw error;
+        }
 
         await client.query(
           `INSERT INTO pedidos
@@ -214,6 +276,7 @@ export async function handlePedidosRoutes(req, res, context) {
     return true;
   }
 
+  // Histórico de pedidos do PDV logado (ou de um PDV específico, quando consultado pelo admin)
   if (url.pathname === "/api/pdv/orders") {
     await ensurePedidoEditColumns();
     const pdvId = user.role === "pdv" ? user.pdvId : asInt(url.searchParams.get("pdvId"));
@@ -245,41 +308,232 @@ export async function handlePedidosRoutes(req, res, context) {
     return true;
   }
 
+  // Movimentação do quadro Kanban de liberação: troca livre entre os status ativos, com
+  // checagem de concorrência otimista (version) e registro em auditoria
+  if (url.pathname === "/api/admin/orders/status" && method === "PATCH") {
+    if (!requireUser(req, res, "admin")) return true;
+    await ensurePedidoEditColumns();
+    const body = await readBody(req);
+    const orderCode = normalizeText(body.codigo_pedido, 80);
+    const expectedStatusValue = statusFromRequest(body.expected_status);
+    const nextStatusValue = statusFromRequest(body.status);
+    const expectedStatus = orderStatuses.includes(expectedStatusValue) ? expectedStatusValue : "";
+    const nextStatus = orderStatuses.includes(nextStatusValue) ? nextStatusValue : "";
+    const expectedVersion = asInt(body.version);
+    const kanbanStatuses = new Set(["Pendente", "Em Andamento", "Aguardando Retirada"]);
+    // Qualquer status ativo pode ir para qualquer outro status ativo (sem sequência fixa)
+    const allowedTransitions = Object.fromEntries(
+      [...kanbanStatuses].map((status) => [
+        status,
+        [...kanbanStatuses].filter((nextStatus) => nextStatus !== status)
+      ])
+    );
+    if (!orderCode || !expectedStatus || !nextStatus || !kanbanStatuses.has(expectedStatus) || !kanbanStatuses.has(nextStatus)) {
+      return send(res, 400, { error: "Status ou pedido inválido." }), true;
+    }
+    if (!allowedTransitions[expectedStatus]?.includes(nextStatus)) {
+      return send(res, 422, { error: "Movimentação de status não permitida." }), true;
+    }
+    await ensurePedidoAuditTable();
+
+    const result = await tx(async (client) => {
+      const rows = await client.query(
+        `SELECT id, status, version
+         FROM pedidos
+         WHERE codigo_pedido = $1
+         ORDER BY id
+         FOR UPDATE`,
+        [orderCode]
+      );
+      if (!rows.rows.length) {
+        const error = new Error("Pedido não encontrado.");
+        error.statusCode = 404;
+        throw error;
+      }
+      const normalized = rows.rows.map((row) => ({ ...row, normalizedStatus: normalizeOrderStatus(row.status) }));
+      const targetRows = normalized.filter((row) => row.normalizedStatus === expectedStatus);
+      if (!targetRows.length) {
+        // Outro usuário já moveu o pedido para um status diferente do esperado pela tela
+        const error = new Error("Este pedido foi modificado por outro usuário.");
+        error.statusCode = 409;
+        error.details = { statuses: [...new Set(normalized.map((row) => row.normalizedStatus))] };
+        throw error;
+      }
+      const currentVersion = Math.max(1, ...targetRows.map((row) => asInt(row.version) || 1));
+      if (expectedVersion && currentVersion !== expectedVersion) {
+        // Concorrência otimista: versão divergente indica edição concorrente não sincronizada
+        const error = new Error("Este pedido foi alterado por outro usuário.");
+        error.statusCode = 409;
+        error.details = { currentVersion, expectedVersion };
+        throw error;
+      }
+      const ids = targetRows.map((row) => row.id);
+      const brasiliaNow = "CURRENT_TIMESTAMP AT TIME ZONE 'America/Sao_Paulo'";
+      // Ajusta datas e quantidade liberada conforme o status de destino. Arrastar o card para
+      // Aguardando Retirada equivale a liberar tudo o que foi solicitado (sem isso o pedido
+      // chegava na coluna com quantidade zerada e a retirada ficava impossível de confirmar).
+      // Voltar o card desfaz a liberação, limpando quantidade e datas da etapa abandonada.
+      const timeField = nextStatus === "Em Andamento"
+        ? `, em_andamento_em = ${brasiliaNow}, quantidade_liberada = 0, liberado_em = NULL, pronto_retirada_em = NULL, release_mode = NULL`
+        : nextStatus === "Aguardando Retirada"
+          ? `, liberado_em = ${brasiliaNow}, pronto_retirada_em = ${brasiliaNow},
+             quantidade_liberada = CASE
+               WHEN COALESCE(quantidade_liberada, 0) > 0 THEN LEAST(quantidade_liberada, quantidade_solicitada)
+               ELSE quantidade_solicitada
+             END`
+          : `, em_andamento_em = NULL, quantidade_liberada = 0, liberado_em = NULL, pronto_retirada_em = NULL, release_mode = NULL`;
+      const updated = await client.query(
+        `UPDATE pedidos
+         SET status = $1,
+             updated_at = ${brasiliaNow},
+             version = COALESCE(version, 1) + 1
+             ${timeField}
+         WHERE id = ANY($2::int[])
+         RETURNING id, codigo_pedido, status, quantidade_liberada, updated_at`,
+        [nextStatus, ids]
+      );
+      // Registra a movimentação de status no log de auditoria administrativa
+      await registrarAuditoriaStatus(client, {
+        codigoPedido: orderCode,
+        acao: "status_alterado_kanban",
+        usuario: user.name || user.role || "Almoxarifado",
+        de: expectedStatus,
+        para: nextStatus,
+        dados: { origem: "kanban", total_itens: updated.rows.length, ids }
+      });
+      // Informa quanto foi liberado para a tela poder avisar o usuário no Kanban
+      const totalLiberado = updated.rows.reduce((soma, row) => soma + asInt(row.quantidade_liberada), 0);
+      return {
+        total: updated.rows.length,
+        status: nextStatus,
+        previous_status: expectedStatus,
+        quantidade_liberada: totalLiberado
+      };
+    });
+
+    // Avisa PDV e Almoxarifado na hora; o polling de 12s segue como fallback
+    publishOrderStatusChange({
+      codigoPedido: orderCode,
+      de: expectedStatus,
+      para: nextStatus,
+      usuario: user.name || "Almoxarifado",
+      origem: "kanban"
+    });
+    send(res, 200, { ok: true, ...result });
+    return true;
+  }
+
+  // Listagem administrativa de pedidos, e exclusão definitiva (com confirmação e justificativa)
   if (url.pathname === "/api/admin/orders") {
     if (!requireUser(req, res, "admin")) return true;
     await ensurePedidoEditColumns();
     if (method === "DELETE") {
+      await ensurePedidoAuditTable();
       const body = await readBody(req);
       const orderCode = normalizeText(body.codigo_pedido, 80);
+      const confirmationCode = normalizeText(body.confirmation_code || body.confirmacao || "", 80);
+      const justification = normalizeText(body.justificativa || body.motivo || "", 500);
       if (!orderCode) return send(res, 400, { error: "Pedido inválido." }), true;
+      // Exige digitar o próprio código do pedido como confirmação, evitando exclusão acidental
+      if (confirmationCode !== orderCode) return send(res, 400, { error: "Confirme o código do pedido para excluir." }), true;
+      if (justification.length < 3) return send(res, 400, { error: "Informe uma justificativa para excluir o pedido." }), true;
 
       const deleted = await tx(async (client) => {
         const rows = await client.query(
-          `SELECT id, status, quantidade_liberada, pdv_id, sku_produto
+          `SELECT id, status, quantidade_liberada, pdv_id, sku_produto,
+                  retirada_assinatura, retirada_em, pronto_retirada_em, liberado_em,
+                  COALESCE(item_origem, 'PDV') AS item_origem,
+                  COALESCE(release_mode, '') AS release_mode
            FROM pedidos
            WHERE codigo_pedido = $1
-           ORDER BY id`,
+           ORDER BY id
+           FOR UPDATE`,
           [orderCode]
         );
-        if (!rows.rows.length) return [];
-        const rowsToDelete = rows.rows;
-        if (!rowsToDelete.length) return [];
-
-        for (const item of rowsToDelete) {
-          if (normalizeOrderStatus(item.status) === "Finalizado") {
-            const qty = asInt(item.quantidade_liberada);
-            await client.query("UPDATE produtos SET qtd_total = qtd_total + $1 WHERE sku = $2", [qty, item.sku_produto]);
-            await client.query(
-              "UPDATE estoque_pdv SET quantidade = GREATEST(0, quantidade - $1) WHERE pdv_id = $2 AND sku_produto = $3",
-              [qty, item.pdv_id, item.sku_produto]
-            );
-          }
+        if (!rows.rows.length) {
+          const error = new Error("Pedido não encontrado.");
+          error.statusCode = 404;
+          throw error;
         }
+        const rowsToDelete = rows.rows;
+        const normalizedStatuses = rowsToDelete.map((item) => normalizeOrderStatus(item.status));
+        const allowedCleanStatuses = new Set(["Pendente", "Em Andamento"]);
+        // Só permite exclusão definitiva de pedidos que ainda não avançaram no fluxo de liberação
+        const blockedReasons = [];
+        if (normalizedStatuses.some((status) => !allowedCleanStatuses.has(status))) {
+          blockedReasons.push("status já avançado");
+        }
+        if (rowsToDelete.some((item) => asInt(item.quantidade_liberada) > 0)) {
+          blockedReasons.push("quantidade liberada");
+        }
+        if (rowsToDelete.some((item) => item.retirada_assinatura || item.retirada_em || item.pronto_retirada_em || item.liberado_em)) {
+          blockedReasons.push("retirada, assinatura ou liberação registrada");
+        }
+        if (rowsToDelete.some((item) => item.item_origem !== "PDV")) {
+          blockedReasons.push("item incluído fora do pedido original do PDV");
+        }
+        if (rowsToDelete.some((item) => item.release_mode)) {
+          blockedReasons.push("operação de liberação parcial em andamento");
+        }
+
+        // Bloqueia a exclusão se houver impressão em andamento para este pedido (tabelas opcionais)
+        const printTables = await client.query(`
+          SELECT table_name
+          FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name IN ('print_jobs', 'impressao_jobs')
+            AND column_name IN ('codigo_pedido', 'status')
+          GROUP BY table_name
+          HAVING COUNT(DISTINCT column_name) = 2
+        `);
+        const printTableNames = new Set(printTables.rows.map((row) => row.table_name));
+        if (printTableNames.has("print_jobs")) {
+          const printRows = await client.query(
+            `SELECT COUNT(*)::int AS total
+             FROM print_jobs
+             WHERE codigo_pedido = $1
+               AND LOWER(COALESCE(status, '')) IN ('pending', 'processing', 'pendente', 'processando')`,
+            [orderCode]
+          );
+          if (asInt(printRows.rows[0]?.total) > 0) blockedReasons.push("impressão em processamento");
+        }
+        if (printTableNames.has("impressao_jobs")) {
+          const printRows = await client.query(
+            `SELECT COUNT(*)::int AS total
+             FROM impressao_jobs
+             WHERE codigo_pedido = $1
+               AND LOWER(COALESCE(status, '')) IN ('pending', 'processing', 'pendente', 'processando')`,
+            [orderCode]
+          );
+          if (asInt(printRows.rows[0]?.total) > 0) blockedReasons.push("impressão em processamento");
+        }
+
+        // Qualquer motivo acumulado impede a exclusão definitiva
+        if (blockedReasons.length) {
+          const error = new Error(`Exclusão bloqueada: ${[...new Set(blockedReasons)].join(", ")}.`);
+          error.statusCode = 409;
+          throw error;
+        }
+
         const result = await client.query("DELETE FROM pedidos WHERE codigo_pedido = $1 RETURNING id", [orderCode]);
+        await client.query(
+          `INSERT INTO pedido_auditoria (codigo_pedido, acao, usuario, observacao, dados)
+           VALUES ($1, $2, $3, $4, $5::jsonb)`,
+          [
+            orderCode,
+            "pedido_excluido_definitivamente",
+            user.name || user.role || "Almoxarifado",
+            justification,
+            JSON.stringify({
+              total_itens: result.rows.length,
+              status: [...new Set(normalizedStatuses)],
+              ids: result.rows.map((item) => item.id)
+            })
+          ]
+        );
         return result.rows;
       });
 
-      if (!deleted.length) return send(res, 404, { error: "Pedido não encontrado." }), true;
       send(res, 200, { ok: true, total: deleted.length });
       return true;
     }
@@ -288,7 +542,11 @@ export async function handlePedidosRoutes(req, res, context) {
     const to = url.searchParams.get("to");
     const pdvId = asInt(url.searchParams.get("pdvId"));
     const q = normalizeText(url.searchParams.get("q"), 80);
-    await ensurePartialReleaseRemainders();
+    const activeOnly = url.searchParams.get("active") === "1";
+    const statusParam = normalizeText(url.searchParams.get("status"), 40);
+    const allowedStatus = orderStatuses.includes(statusParam) ? statusParam : "";
+    const limit = Math.min(Math.max(asInt(url.searchParams.get("limit")) || 300, 1), 500);
+    const offset = Math.min(Math.max(asInt(url.searchParams.get("offset")) || 0, 0), 10000);
     const rows = await query(
       `SELECT p.id, p.codigo_pedido, p.pdv_id, pd.nome AS pdv, p.solicitante, p.sku_produto, pr.nome AS produto,
               p.quantidade_solicitada, p.quantidade_liberada,
@@ -314,13 +572,27 @@ export async function handlePedidosRoutes(req, res, context) {
          AND ($2::date IS NULL OR p.criado_em::date <= $2::date)
          AND ($3::int = 0 OR p.pdv_id = $3)
          AND ($4::text IS NULL OR p.codigo_pedido ILIKE '%' || $4::text || '%')
-       ORDER BY p.criado_em ASC, p.id ASC`,
-      [from || null, to || null, pdvId, q || null]
+         AND ($5::boolean = FALSE OR CASE
+                WHEN p.status = 'Liberado' THEN 'Finalizado'
+                WHEN p.status IN ('Liberado Parcial', 'Liberação Parcial') AND COALESCE(p.quantidade_liberada, 0) > 0 AND p.retirada_assinatura IS NOT NULL THEN 'Finalizado'
+                WHEN p.status IN ('Liberado Parcial', 'Liberação Parcial') THEN 'Aguardando Retirada'
+                ELSE p.status
+              END IN ('Pendente', 'Em Andamento', 'Aguardando Retirada'))
+         AND ($6::text IS NULL OR CASE
+                WHEN p.status = 'Liberado' THEN 'Finalizado'
+                WHEN p.status IN ('Liberado Parcial', 'Liberação Parcial') AND COALESCE(p.quantidade_liberada, 0) > 0 AND p.retirada_assinatura IS NOT NULL THEN 'Finalizado'
+                WHEN p.status IN ('Liberado Parcial', 'Liberação Parcial') THEN 'Aguardando Retirada'
+                ELSE p.status
+              END = $6)
+       ORDER BY p.criado_em DESC, p.id DESC
+       LIMIT $7 OFFSET $8`,
+      [from || null, to || null, pdvId, q || null, activeOnly, allowedStatus || null, limit, offset]
     );
-    send(res, 200, { orders: rows });
+    send(res, 200, { orders: rows, limit, offset, hasMore: rows.length === limit });
     return true;
   }
 
+  // Admin inclui produto(s) extra em um pedido já Em Andamento (fora do pedido original do PDV)
   if ((url.pathname === "/api/admin/orders/add-item" || url.pathname === "/api/admin/orders/add-items") && method === "POST") {
     if (!requireUser(req, res, "admin")) return true;
     await ensurePedidoEditColumns();
@@ -356,6 +628,7 @@ export async function handlePedidosRoutes(req, res, context) {
       }
       const order = orderRows.rows[0];
       const statuses = new Set(orderRows.rows.map((row) => normalizeOrderStatus(row.status)));
+      // Todos os itens do pedido precisam estar Em Andamento antes de adicionar novos produtos
       if (!statuses.has("Em Andamento") || statuses.size !== 1) {
         const error = new Error("Produtos só podem ser adicionados quando o pedido está Em andamento.");
         error.statusCode = 400;
@@ -391,6 +664,7 @@ export async function handlePedidosRoutes(req, res, context) {
       }
 
       const inserted = [];
+      // item_origem = 'ALMOX' marca que o produto foi incluído pelo almoxarifado, não pelo PDV
       for (const item of items) {
         const result = await client.query(
           `INSERT INTO pedidos
@@ -430,6 +704,7 @@ export async function handlePedidosRoutes(req, res, context) {
     return send(res, 200, { ok: true, items: added, total: added.length }), true;
   }
 
+  // Remove um único item de um pedido (apenas enquanto Em Andamento)
   if (url.pathname === "/api/admin/order-item" && method === "DELETE") {
     if (!requireUser(req, res, "admin")) return true;
     await ensurePedidoEditColumns();
@@ -474,6 +749,7 @@ export async function handlePedidosRoutes(req, res, context) {
     return true;
   }
 
+  // Remove vários itens de um pedido de uma vez, validando versão de cada item (edição concorrente)
   if (url.pathname === "/api/admin/order-items" && method === "DELETE") {
     if (!requireUser(req, res, "admin")) return true;
     await ensurePedidoEditColumns();
@@ -516,6 +792,7 @@ export async function handlePedidosRoutes(req, res, context) {
           error.statusCode = 400;
           throw error;
         }
+        // Concorrência otimista: rejeita se a versão do item mudou desde que a tela foi carregada
         const expectedVersion = versionsById.get(asInt(item.id));
         if (expectedVersion > 0 && asInt(item.version) !== expectedVersion) {
           const error = new Error("Conflito de edição detectado. Atualize o pedido antes de excluir.");
@@ -555,6 +832,7 @@ export async function handlePedidosRoutes(req, res, context) {
     return true;
   }
 
+  // Movimenta itens de um pedido entre status (usado pela tela de controle do pedido, não pelo Kanban)
   if (url.pathname === "/api/admin/order-flow" && method === "POST") {
     if (!requireUser(req, res, "admin")) return true;
     await ensurePedidoEditColumns();
@@ -566,8 +844,13 @@ export async function handlePedidosRoutes(req, res, context) {
     let items = Array.isArray(body.items) ? body.items : [];
     if (!nextStatus || (!items.length && !orderCode)) return send(res, 400, { error: "Status ou itens inválidos." }), true;
     if (nextStatus === "Finalizado") return send(res, 400, { error: "Finalize o pedido pela confirmação de retirada com assinatura." }), true;
+    // Itens liberados acima do solicitado: permitido, mas devolvido à tela para aviso
+    const excedentes = [];
+    await ensurePedidoAuditTable();
 
     await tx(async (client) => {
+      // Reabrir todo o pedido para Em Andamento: reverte itens finalizados e reagrupa itens
+      // duplicados do mesmo produto/PDV em uma única linha antes de reabrir
       if (orderCode && nextStatus === "Em Andamento") {
         const orderItems = await client.query(
           `SELECT id, status, quantidade_solicitada, quantidade_liberada, pdv_id, sku_produto, version
@@ -587,8 +870,8 @@ export async function handlePedidosRoutes(req, res, context) {
           const allowedTransitions = {
             Pendente: ["Em Andamento"],
             "Em Andamento": ["Pendente", "Aguardando Retirada"],
-            "Aguardando Retirada": ["Em Andamento"],
-            "Liberação Parcial": ["Em Andamento", "Aguardando Retirada"],
+            "Aguardando Retirada": ["Pendente", "Em Andamento"],
+            "Liberação Parcial": ["Pendente", "Em Andamento", "Aguardando Retirada"],
             Finalizado: ["Em Andamento"]
           };
           if (currentStatus !== nextStatus && !allowedTransitions[currentStatus]?.includes(nextStatus)) {
@@ -597,6 +880,7 @@ export async function handlePedidosRoutes(req, res, context) {
             throw error;
           }
           if (currentStatus === "Finalizado") {
+            // Reabrir um item já finalizado estorna a baixa: devolve ao estoque central e retira do PDV
             const oldQty = asInt(current.quantidade_liberada);
             await client.query("UPDATE produtos SET qtd_total = qtd_total + $1 WHERE sku = $2", [oldQty, current.sku_produto]);
             await client.query(
@@ -606,6 +890,7 @@ export async function handlePedidosRoutes(req, res, context) {
           }
         }
 
+        // Agrupa itens duplicados (mesmo pdv+sku) para consolidar em uma única linha ao reabrir
         const groups = new Map();
         for (const row of orderItems.rows) {
           const key = `${row.pdv_id}::${row.sku_produto}`;
@@ -643,6 +928,8 @@ export async function handlePedidosRoutes(req, res, context) {
                  quantidade_solicitada = $2,
                  quantidade_liberada = 0,
                  em_andamento_em = CURRENT_TIMESTAMP,
+                 liberado_em = NULL,
+                 pronto_retirada_em = NULL,
                  pedido_editado = TRUE,
                  pedido_editado_em = CURRENT_TIMESTAMP,
                  pedido_editado_por = $3,
@@ -665,6 +952,7 @@ export async function handlePedidosRoutes(req, res, context) {
         }
         return;
       }
+      // Mover o pedido inteiro (todos os itens de um status) para Em Andamento ou Pendente
       if (orderCode && ["Em Andamento", "Pendente"].includes(nextStatus)) {
         const orderItems = await client.query(
           `SELECT id, version
@@ -691,6 +979,7 @@ export async function handlePedidosRoutes(req, res, context) {
         error.statusCode = 400;
         throw error;
       }
+      // Aplica a transição item a item, respeitando as transições permitidas e a versão esperada
       let changedItems = 0;
       for (const item of items) {
         const old = await client.query("SELECT codigo_pedido, status, quantidade_solicitada, quantidade_liberada, pdv_id, sku_produto, version FROM pedidos WHERE id = $1", [asInt(item.id)]);
@@ -700,8 +989,8 @@ export async function handlePedidosRoutes(req, res, context) {
         const allowedTransitions = {
           Pendente: ["Em Andamento"],
           "Em Andamento": ["Pendente", "Aguardando Retirada"],
-          "Aguardando Retirada": ["Em Andamento"],
-          "Liberação Parcial": ["Em Andamento", "Aguardando Retirada"],
+          "Aguardando Retirada": ["Pendente", "Em Andamento"],
+          "Liberação Parcial": ["Pendente", "Em Andamento", "Aguardando Retirada"],
           Finalizado: ["Em Andamento"]
         };
         if (!allowedTransitions[currentStatus]?.includes(nextStatus)) {
@@ -710,12 +999,14 @@ export async function handlePedidosRoutes(req, res, context) {
           throw error;
         }
         const leavesFinalized = currentStatus === "Finalizado" && nextStatus !== "Finalizado";
+        // Concorrência otimista: rejeita se a versão enviada pela tela estiver desatualizada
         const expectedVersion = asInt(item.version);
         if (expectedVersion > 0 && asInt(current.version) !== expectedVersion) {
           const error = new Error("Conflito de edição detectado. Atualize o pedido antes de salvar.");
           error.statusCode = 409;
           throw error;
         }
+        // Remoção do item embutida na mesma chamada de fluxo
         if (item.remover) {
           if (currentStatus !== "Em Andamento") {
             const error = new Error("Só é possível remover produtos quando o pedido está Em andamento.");
@@ -735,6 +1026,8 @@ export async function handlePedidosRoutes(req, res, context) {
         }
         const requestedQty = asInt(current.quantidade_solicitada);
         let qty = asInt(current.quantidade_liberada);
+        // "entered-only" libera exatamente o valor digitado; caso contrário, libera o total solicitado
+        // quando nada foi digitado explicitamente
         if (["Em Andamento", "Liberação Parcial"].includes(currentStatus) && nextStatus === "Aguardando Retirada") {
           const requestedReleaseQty = asInt(item.quantidade_liberada);
           qty = releaseMode === "entered-only"
@@ -750,16 +1043,22 @@ export async function handlePedidosRoutes(req, res, context) {
           error.statusCode = 400;
           throw error;
         }
+        // O almoxarifado pode liberar acima do solicitado; a diferença é registrada para auditoria
+        if (qty > requestedQty) {
+          excedentes.push({ id: asInt(item.id), sku: current.sku_produto, solicitada: requestedQty, liberada: qty });
+        }
         if (releaseMode === "entered-only" && nextStatus === "Aguardando Retirada" && qty <= 0) {
           continue;
         }
         const itemStatus = nextStatus;
 
+        // Voltar de etapa limpa as datas da etapa abandonada, para o pedido não exibir
+        // "liberado em" depois de retornar para separação ou para pendente
         const timeField = itemStatus === "Em Andamento"
-          ? ", em_andamento_em = CURRENT_TIMESTAMP"
+          ? ", em_andamento_em = CURRENT_TIMESTAMP, liberado_em = NULL, pronto_retirada_em = NULL"
           : itemStatus === "Aguardando Retirada"
             ? ", liberado_em = CURRENT_TIMESTAMP, pronto_retirada_em = CURRENT_TIMESTAMP"
-            : "";
+            : ", em_andamento_em = NULL, liberado_em = NULL, pronto_retirada_em = NULL";
         await client.query(
           `UPDATE pedidos
            SET status = $1,
@@ -787,6 +1086,8 @@ export async function handlePedidosRoutes(req, res, context) {
             itemStatus === "Aguardando Retirada" && releaseMode === "entered-only" ? "entered-only" : null
           ]
         );
+        // Se já existe outro item do mesmo produto aguardando retirada, mescla as quantidades
+        // em uma única linha em vez de manter duas liberações separadas
         if (itemStatus === "Aguardando Retirada") {
           const existing = await client.query(
             `SELECT id
@@ -830,6 +1131,7 @@ export async function handlePedidosRoutes(req, res, context) {
         }
         changedItems += 1;
 
+        // Reabrir um item finalizado estorna a baixa anterior (mesmo raciocínio do bloco de cima)
         if (currentStatus === "Finalizado" && itemStatus !== "Finalizado") {
           const oldQty = asInt(current.quantidade_liberada);
           await client.query("UPDATE produtos SET qtd_total = qtd_total + $1 WHERE sku = $2", [oldQty, current.sku_produto]);
@@ -844,11 +1146,45 @@ export async function handlePedidosRoutes(req, res, context) {
         error.statusCode = 400;
         throw error;
       }
+      await registrarAuditoriaStatus(client, {
+        codigoPedido: orderCode || items[0]?.codigo_pedido || "",
+        acao: "status_alterado_painel",
+        usuario: user.name || "Almoxarifado",
+        de: currentStatusFilter,
+        para: nextStatus,
+        dados: { origem: "order-flow", release_mode: releaseMode || null, itens: items.length, excedentes }
+      });
     });
-    send(res, 200, { ok: true });
+    publishOrderStatusChange({
+      codigoPedido: orderCode,
+      de: currentStatusFilter,
+      para: nextStatus,
+      usuario: user.name || "Almoxarifado",
+      origem: "painel"
+    });
+    send(res, 200, { ok: true, excedentes });
     return true;
   }
 
+  // Linha do tempo do pedido: todas as mudanças de etapa registradas na auditoria
+  if (url.pathname === "/api/admin/order-timeline" && method === "GET") {
+    if (!requireUser(req, res, "admin")) return true;
+    const orderCode = normalizeText(url.searchParams.get("codigo_pedido"), 80);
+    if (!orderCode) return send(res, 400, { error: "Pedido inválido." }), true;
+    await ensurePedidoAuditTable();
+    const timeline = await query(
+      `SELECT acao, usuario, observacao, dados, criado_em
+       FROM pedido_auditoria
+       WHERE codigo_pedido = $1
+       ORDER BY criado_em ASC, id ASC
+       LIMIT 200`,
+      [orderCode]
+    );
+    send(res, 200, { timeline });
+    return true;
+  }
+
+  // Confirma a retirada física do pedido: exige assinatura e dá baixa definitiva no estoque
   if (url.pathname === "/api/admin/order-withdrawal" && method === "POST") {
     if (!requireUser(req, res, "admin")) return true;
     const body = await readBody(req);
@@ -861,6 +1197,10 @@ export async function handlePedidosRoutes(req, res, context) {
     if (!assinatura.startsWith("data:image/png;base64,") || assinatura.length < 1200) {
       return send(res, 400, { error: "A assinatura do responsável é obrigatória." }), true;
     }
+    // Avisos devolvidos à tela: saldos que ficaram negativos e itens liberados abaixo do solicitado
+    const negativos = [];
+    const sobras = [];
+    await ensurePedidoAuditTable();
 
     await tx(async (client) => {
       const requestedStatus = orderStatuses.includes(body.status) ? body.status : "";
@@ -899,6 +1239,7 @@ export async function handlePedidosRoutes(req, res, context) {
         error.statusCode = 400;
         throw error;
       }
+      // Idempotência simples: se já existe assinatura registrada, a retirada não pode ser repetida
       if (targetRows.some((row) => row.retirada_assinatura)) {
         const error = new Error("A retirada deste pedido já foi confirmada.");
         error.statusCode = 400;
@@ -914,9 +1255,21 @@ export async function handlePedidosRoutes(req, res, context) {
         error.statusCode = 400;
         throw error;
       }
+      // Baixa definitiva: sai do estoque central e entra no saldo físico do PDV.
+      // Só a quantidade liberada é movimentada; a diferença para o solicitado não vira pendência.
       for (const row of targetRows) {
         const qty = asInt(row.quantidade_liberada);
-        await client.query("UPDATE produtos SET qtd_total = qtd_total - $1 WHERE sku = $2", [qty, row.sku_produto]);
+        const baixa = await client.query(
+          "UPDATE produtos SET qtd_total = qtd_total - $1 WHERE sku = $2 RETURNING sku, nome, qtd_total",
+          [qty, row.sku_produto]
+        );
+        // Saldo central negativo não bloqueia a retirada, mas volta para a tela como aviso
+        const saldo = baixa.rows[0];
+        if (saldo && asInt(saldo.qtd_total) < 0) {
+          negativos.push({ sku: saldo.sku, nome: saldo.nome, saldo: asInt(saldo.qtd_total) });
+        }
+        const pendente = asInt(row.quantidade_solicitada) - qty;
+        if (pendente > 0) sobras.push({ sku: row.sku_produto, solicitada: asInt(row.quantidade_solicitada), liberada: qty, nao_atendida: pendente });
         await client.query(
           `INSERT INTO estoque_pdv (pdv_id, sku_produto, quantidade)
            VALUES ($1, $2, $3)
@@ -939,6 +1292,7 @@ export async function handlePedidosRoutes(req, res, context) {
          RETURNING id, codigo_pedido, sku_produto, quantidade_liberada`,
         [orderCode, assinatura, responsavel, observacao || null, user.name || "Almoxarifado", targetStatus]
       );
+      // Mescla com outro item finalizado do mesmo produto, evitando linhas duplicadas no histórico
       for (const row of finalized.rows || []) {
         const existing = await client.query(
           `SELECT id
@@ -973,12 +1327,35 @@ export async function handlePedidosRoutes(req, res, context) {
         );
         await client.query("DELETE FROM pedidos WHERE id = $1", [row.id]);
       }
+      await registrarAuditoriaStatus(client, {
+        codigoPedido: orderCode,
+        acao: "retirada_confirmada",
+        usuario: user.name || "Almoxarifado",
+        de: targetStatus,
+        para: "Finalizado",
+        observacao: `Retirada confirmada por ${responsavel}`,
+        dados: {
+          origem: "order-withdrawal",
+          responsavel,
+          itens: finalized.rows?.length || targetRows.length,
+          sobras,
+          saldos_negativos: negativos
+        }
+      });
     });
 
-    send(res, 200, { ok: true });
+    publishOrderStatusChange({
+      codigoPedido: orderCode,
+      de: "Aguardando Retirada",
+      para: "Finalizado",
+      usuario: user.name || "Almoxarifado",
+      origem: "retirada"
+    });
+    send(res, 200, { ok: true, sobras, saldos_negativos: negativos });
     return true;
   }
 
+  // Histórico consolidado de pedidos para relatórios (com filtro de pedidos automáticos)
   if (url.pathname === "/api/admin/history") {
     if (!requireUser(req, res, "admin")) return true;
     await ensurePedidoEditColumns();
@@ -990,7 +1367,7 @@ export async function handlePedidosRoutes(req, res, context) {
     const to = url.searchParams.get("to");
     const rows = await query(
       `SELECT p.id, p.data_hora, p.codigo_pedido, pd.nome AS pdv, p.solicitante, p.observacao,
-              pr.nome AS produto, p.quantidade_solicitada, p.quantidade_liberada,
+              p.sku_produto, pr.nome AS produto, p.quantidade_solicitada, p.quantidade_liberada,
               COALESCE(p.item_origem, 'PDV') AS item_origem,
               p.retirada_assinatura, p.retirada_responsavel, p.retirada_em, p.retirada_usuario_almoxarifado,
               CASE

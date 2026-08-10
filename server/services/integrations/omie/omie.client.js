@@ -1,10 +1,12 @@
 import { OmieIntegrationError, isOmieCredentialError } from "./omie.errors.js";
 
+// Limite local de chamadas por janela de tempo para nao estourar o rate limit da OMIE
 export const OMIE_LOCAL_RATE_LIMIT = {
   windowMs: 60_000,
   maxRequests: 60
 };
 
+// Monta o corpo da requisicao no formato esperado pela API OMIE (call + credenciais + parametros)
 export function buildOmiePayload({ call, params = {}, appKey, appSecret }) {
   return {
     call,
@@ -14,6 +16,7 @@ export function buildOmiePayload({ call, params = {}, appKey, appSecret }) {
   };
 }
 
+// Resolve a URL final do endpoint evitando duplicar o caminho quando a base ja o inclui
 export function resolveOmieEndpointUrl(baseUrl, endpoint) {
   const normalizedBase = String(baseUrl || "https://app.omie.com.br/api/v1").replace(/\/+$/, "");
   const normalizedEndpoint = `/${String(endpoint || "").replace(/^\/+/, "")}`;
@@ -24,6 +27,7 @@ export function resolveOmieEndpointUrl(baseUrl, endpoint) {
   return `${normalizedBase}${normalizedEndpoint}`;
 }
 
+// Executa uma chamada OMIE validando integracao ativa e credenciais antes de enviar a requisicao
 export async function omieRequestWithConfig({
   loaded,
   endpoint,
@@ -54,6 +58,7 @@ export async function omieRequestWithConfig({
   const data = await response.json().catch(() => ({}));
   const durationMetric = { name: "omie_request_duration_ms", value: Date.now() - startedAt };
 
+  // Diferencia erro de credencial (nao retentavel) de outras falhas da API (retentaveis)
   if (!response.ok || data?.faultstring || data?.faultcode) {
     const credentialError = isOmieCredentialError(data);
     throw new OmieIntegrationError(
