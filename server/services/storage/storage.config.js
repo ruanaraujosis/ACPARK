@@ -5,7 +5,7 @@ const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../.
 
 // Resolve as configuracoes de storage (driver, limites e credenciais) a partir das env vars
 export function getStorageConfig(env = process.env) {
-  // Driver ativo: local, supabase, s3 ou r2
+  // Driver ativo: local, s3 ou r2
   const driver = env.STORAGE_DRIVER || "local";
   const maxImageMb = Number(env.UPLOAD_MAX_IMAGE_MB || 8);
   const maxImagesPerItem = Number(env.UPLOAD_MAX_IMAGES_PER_ITEM || 12);
@@ -20,8 +20,6 @@ export function getStorageConfig(env = process.env) {
     endpoint: env.STORAGE_ENDPOINT || "",
     accessKey: env.STORAGE_ACCESS_KEY || "",
     secretKey: env.STORAGE_SECRET_KEY || "",
-    supabaseUrl: env.SUPABASE_URL || "",
-    serviceRoleKey: env.SUPABASE_SERVICE_ROLE_KEY || "",
     publicUrl: env.STORAGE_PUBLIC_URL || "",
     signedUrlTtl: Number.isFinite(signedUrlTtl) && signedUrlTtl > 0 ? signedUrlTtl : 300,
     maxImageBytes: Math.max(1, maxImageMb) * 1024 * 1024,

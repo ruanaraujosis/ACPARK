@@ -29,7 +29,7 @@ function secretLooksSafe(value) {
 
 try {
   addCheck("JWT_SECRET configurado", secretLooksSafe(process.env.JWT_SECRET), "Necessário segredo forte em produção.");
-  addCheck("DATABASE_URL ou Streamlit secrets", true, "Conexão carregada pelo server/db.js.");
+  addCheck("DATABASE_URL configurada", true, "Conexão carregada pelo server/db.js.");
 
   const db = await pool.query("select 1 as ok");
   addCheck("Banco responde", db.rows[0]?.ok === 1);
@@ -37,8 +37,6 @@ try {
   const storageConfig = getStorageConfig();
   addCheck("Storage durável", storageConfig.driver !== "local", `driver=${storageConfig.driver}`);
   addCheck("Bucket de fotos configurado", Boolean(storageConfig.bucket), storageConfig.bucket ? "bucket informado" : "STORAGE_BUCKET ausente");
-  addCheck("Supabase URL configurada", storageConfig.driver !== "supabase" || Boolean(storageConfig.supabaseUrl), "Obrigatório quando STORAGE_DRIVER=supabase.");
-  addCheck("Supabase service role no servidor", storageConfig.driver !== "supabase" || Boolean(storageConfig.serviceRoleKey), "Obrigatório quando STORAGE_DRIVER=supabase.");
 
   try {
     const storage = getStorageService();

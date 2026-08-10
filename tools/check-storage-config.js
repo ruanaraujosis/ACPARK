@@ -25,7 +25,7 @@ const result = {
 try {
   // Opcionalmente exige storage durável (não local) antes de seguir com o teste
   if (requireDurable && config.driver === "local") {
-    throw new Error("Storage local detectado. Configure STORAGE_DRIVER=s3, r2 ou supabase antes da migração definitiva.");
+    throw new Error("Storage local detectado. Configure STORAGE_DRIVER=s3 ou r2 antes da migração definitiva.");
   }
 
   const storage = getStorageService();

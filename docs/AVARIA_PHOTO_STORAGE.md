@@ -1,38 +1,21 @@
 # Storage das fotos de avarias
 
-Este projeto nao deve migrar fotos de avarias para `STORAGE_DRIVER=local` em producao/Vercel.
-O disco local e util para desenvolvimento, mas nao e duravel no deploy.
+O servidor roda como serviço do Windows sempre ativo (ver DEPLOY_LOCAL.md), não mais em ambiente
+serverless/efêmero (Vercel). Por isso o disco local do próprio servidor é durável e é o driver
+padrão de produção: `STORAGE_DRIVER=local`.
 
-## Bucket criado
-
-Bucket privado criado no Supabase:
-
-```text
-avarias-fotos
-```
-
-Configuracao aplicada no bucket:
-
-- `public = false`
-- limite de arquivo: `8 MB`
-- MIME types: `image/jpeg`, `image/png`, `image/webp`
-
-## Variaveis de producao
-
-Configure no ambiente de producao com Supabase Storage:
+## Variaveis de producao (padrao: local)
 
 ```env
-STORAGE_DRIVER=supabase
-SUPABASE_URL=https://seu-projeto.supabase.co
-SUPABASE_SERVICE_ROLE_KEY=configure-apenas-no-servidor
-STORAGE_BUCKET=avarias-fotos
+STORAGE_DRIVER=local
+STORAGE_LOCAL_ROOT=.storage
 UPLOAD_MAX_IMAGE_MB=8
 UPLOAD_MAX_IMAGES_PER_ITEM=12
 ```
 
-`SUPABASE_SERVICE_ROLE_KEY` nunca deve ir para o frontend.
+## Alternativa: S3/R2 compativel
 
-Para S3/R2 compativel, use:
+Para guardar as fotos fora do servidor local (backup externo, outro storage já usado pela empresa):
 
 ```env
 STORAGE_DRIVER=s3
@@ -45,7 +28,7 @@ UPLOAD_MAX_IMAGE_MB=8
 UPLOAD_MAX_IMAGES_PER_ITEM=12
 ```
 
-`STORAGE_DRIVER` aceita `supabase`, `s3` ou `r2`.
+`STORAGE_DRIVER` aceita `local`, `s3` ou `r2`.
 
 ## Verificacao antes de migrar
 

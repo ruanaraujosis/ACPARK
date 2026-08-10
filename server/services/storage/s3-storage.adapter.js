@@ -26,16 +26,16 @@ function encodeS3Key(key) {
     .join("/");
 }
 
-// Valida e normaliza a URL do endpoint S3/R2/Supabase configurado
+// Valida e normaliza a URL do endpoint S3/R2 configurado
 function normalizeEndpoint(endpoint) {
   const value = String(endpoint || "").trim().replace(/\/+$/, "");
-  if (!value) throw new StorageConfigurationError("STORAGE_ENDPOINT e obrigatorio para storage S3/R2/Supabase.");
+  if (!value) throw new StorageConfigurationError("STORAGE_ENDPOINT e obrigatorio para storage S3/R2.");
   return new URL(value);
 }
 
 function requireValue(value, name) {
   const normalized = String(value || "").trim();
-  if (!normalized) throw new StorageConfigurationError(`${name} e obrigatorio para storage S3/R2/Supabase.`);
+  if (!normalized) throw new StorageConfigurationError(`${name} e obrigatorio para storage S3/R2.`);
   return normalized;
 }
 
@@ -55,7 +55,7 @@ async function storageErrorMessage(response) {
   return detail ? `: ${detail}` : "";
 }
 
-// Adaptador de storage compativel com S3 (usado tambem para R2/Supabase via S3 API)
+// Adaptador de storage compativel com S3 (usado tambem para R2 via S3 API)
 export class S3StorageAdapter {
   constructor(config = {}) {
     this.endpoint = normalizeEndpoint(config.endpoint);

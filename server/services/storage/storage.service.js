@@ -3,7 +3,6 @@ import path from "node:path";
 import { getStorageConfig } from "./storage.config.js";
 import { LocalStorageAdapter } from "./local-storage.adapter.js";
 import { S3StorageAdapter } from "./s3-storage.adapter.js";
-import { SupabaseStorageAdapter } from "./supabase-storage.adapter.js";
 import { StorageConfigurationError, StorageValidationError } from "./storage.errors.js";
 
 // Assinaturas binarias (magic numbers) usadas para identificar o tipo real da imagem
@@ -38,7 +37,7 @@ export function imageDimensions(buffer, mime) {
   return { width: null, height: null };
 }
 
-// Fachada de storage: escolhe o adaptador (local/supabase/s3/r2) e valida imagens enviadas
+// Fachada de storage: escolhe o adaptador (local/s3/r2) e valida imagens enviadas
 export class StorageService {
   constructor(config = getStorageConfig()) {
     this.config = config;
@@ -46,11 +45,10 @@ export class StorageService {
     if (config.driver === "local") {
       // Storage local fica bloqueado em producao, salvo liberacao explicita
       if (config.productionLike && !config.allowLocalInProduction) {
-        throw new StorageConfigurationError("Storage local bloqueado em produção. Configure STORAGE_DRIVER=supabase, s3 ou r2.");
+        throw new StorageConfigurationError("Storage local bloqueado em produção. Configure STORAGE_DRIVER=s3 ou r2.");
       }
       this.adapter = new LocalStorageAdapter({ root: config.localRoot });
     }
-    else if (config.driver === "supabase") this.adapter = new SupabaseStorageAdapter(config);
     else if (["s3", "r2"].includes(config.driver)) this.adapter = new S3StorageAdapter(config);
     else throw new StorageConfigurationError(`Driver de storage invalido: ${config.driver}`);
   }

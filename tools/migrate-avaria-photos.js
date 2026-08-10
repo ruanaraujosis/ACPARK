@@ -1,5 +1,5 @@
 // Script: migra fotos legadas de avaria (armazenadas como base64 em coluna
-// de texto) para o storage configurado (S3/R2/Supabase), gravando os
+// de texto) para o storage configurado (local/S3/R2), gravando os
 // metadados em devolucao_avaria_fotos
 // Uso: node tools/migrate-avaria-photos.js [--apply]
 import { pool, tx } from "../server/db.js";

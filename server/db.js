@@ -1,44 +1,20 @@
 // Carrega o ambiente aqui tambem (nao so no server/index.js): scripts de tools/
-// importam este modulo direto e, sem isso, DATABASE_URL ficava vazia e a conexao
-// caia no fallback legado do .streamlit/secrets.toml — ou seja, no banco da nuvem.
+// importam este modulo direto e precisam de DATABASE_URL carregada.
 import "./env.js";
-import fs from "node:fs";
-import path from "node:path";
 import crypto from "node:crypto";
-import { fileURLToPath } from "node:url";
 import pg from "pg";
 
 process.env.TZ ||= "America/Sao_Paulo";
 
 const { Pool, types } = pg;
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const rootDir = path.resolve(__dirname, "..");
 
 // Mantém timestamps sem timezone como string crua, evitando conversão automática do driver
 types.setTypeParser(1114, (value) => value);
 
-// Fallback para pegar a string de conexão do Postgres do secrets.toml do Streamlit (deploy legado)
-function readStreamlitSecret() {
-  const file = path.join(rootDir, ".streamlit", "secrets.toml");
-  if (!fs.existsSync(file)) return null;
-
-  const text = fs.readFileSync(file, "utf8");
-  const values = {};
-  for (const line of text.split(/\r?\n/)) {
-    const match = line.match(/^\s*([a-zA-Z_]+)\s*=\s*"([^"]*)"\s*$/);
-    if (match) values[match[1]] = match[2];
-  }
-
-  if (!values.host || !values.username || !values.password || !values.database) return null;
-  const user = encodeURIComponent(values.username);
-  const pass = encodeURIComponent(values.password);
-  return `postgres://${user}:${pass}@${values.host}:${values.port || 5432}/${values.database}?sslmode=require`;
-}
-
-const rawConnectionString = process.env.DATABASE_URL || readStreamlitSecret();
+const rawConnectionString = process.env.DATABASE_URL;
 
 if (!rawConnectionString) {
-  throw new Error("Configure DATABASE_URL no .env ou mantenha .streamlit/secrets.toml com a conexao PostgreSQL.");
+  throw new Error("Configure DATABASE_URL no .env.local com a conexao PostgreSQL.");
 }
 
 // Remove sslmode da querystring pois é tratado manualmente na opção `ssl` do Pool
@@ -48,7 +24,7 @@ parsedConnection.searchParams.delete("sslmode");
 const connectionString = parsedConnection.toString();
 const hostname = parsedConnection.hostname.toLowerCase();
 const usesHostedPostgres = sslmode !== "disable" && !["localhost", "127.0.0.1", "::1"].includes(hostname);
-// Em Postgres hospedado (Supabase etc.) o pool fica limitado a 1 conexão por padrão, salvo override
+// Em Postgres hospedado remotamente o pool fica limitado a 1 conexão por padrão, salvo override
 const configuredPoolMax = Number(process.env.PGPOOL_MAX || process.env.DB_POOL_MAX || 0);
 const poolMax = Number.isFinite(configuredPoolMax) && configuredPoolMax > 0
   ? configuredPoolMax
@@ -63,7 +39,7 @@ export const pool = new Pool({
   idleTimeoutMillis: 10_000,
   connectionTimeoutMillis: 5_000,
   allowExitOnIdle: true,
-  // Supabase transaction pooler does not work well with traditional prepared statements.
+  // Poolers de conexão em modo transação não funcionam bem com prepared statements tradicionais
   prepareThreshold: 0
 });
 
