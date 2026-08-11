@@ -1,8 +1,6 @@
-# Implantação em rede local (LAN), sem Vercel/Supabase
+# Implantação em rede local (LAN)
 
-Este documento descreve como rodar o MyEstoque inteiramente em um computador da rede local, acessível pelos PDVs e pelo Almoxarifado em dispositivos diferentes, funcionando mesmo sem internet. A integração com a OMIE continua existindo, mas só sincroniza quando há internet disponível — sem travar o resto do sistema quando não há.
-
-Para o deploy na Vercel (se ainda quiser usar como alternativa), veja [DEPLOY.md](DEPLOY.md).
+Este documento descreve como rodar o MyEstoque inteiramente em um computador da rede local, acessível pelos PDVs e pelo Almoxarifado em dispositivos diferentes, funcionando mesmo sem internet. A integração com a OMIE continua existindo, mas só sincroniza quando há internet disponível — sem travar o resto do sistema quando não há. Este é o único caminho de hospedagem do projeto — não há mais dependência de nenhuma plataforma externa (Vercel/Supabase).
 
 ## 1. Banco de dados: PostgreSQL local
 
@@ -61,11 +59,11 @@ OMIE_SCHEDULER_ENABLED=true
 OMIE_SCHEDULER_TICK_MS=5000
 ```
 
-`NODE_ENV=production` é seguro aqui: o cookie de sessão não depende mais dessa variável (só de `VERCEL` ou de `FORCE_SECURE_COOKIES=true`, para um cenário futuro com HTTPS interno), então o login funciona normalmente em HTTP puro na rede local. Setar `NODE_ENV=production` também passa a exigir uma `INTEGRATION_ENCRYPTION_KEY` real, o que é bom para proteger as credenciais da OMIE.
+`NODE_ENV=production` é seguro aqui: o cookie de sessão não depende mais dessa variável (só de `FORCE_SECURE_COOKIES=true`, para um cenário futuro com HTTPS interno), então o login funciona normalmente em HTTP puro na rede local. Setar `NODE_ENV=production` também passa a exigir uma `INTEGRATION_ENCRYPTION_KEY` real, o que é bom para proteger as credenciais da OMIE.
 
-**Checagens que assumem hospedagem na nuvem** (não fazem sentido para a LAN, pode ignorar):
+**Checagens que assumem hospedagem em nuvem/serverless** (não fazem sentido para a LAN, pode ignorar):
 - `npm run storage:check` usa a flag `--require-durable`, que rejeita storage local de propósito — para a LAN, rode `node tools/check-storage-config.js` sem essa flag.
-- `npm run production:check` inclui uma checagem de "storage durável" que sempre falha com storage local — essa checagem é para o deploy na Vercel, não é aplicável aqui.
+- `npm run production:check` inclui uma checagem de "storage durável" que sempre falha com storage local — essa checagem é para hospedagem serverless, não é aplicável aqui.
 
 ## 4. Rodar como serviço do Windows (sempre ativo)
 

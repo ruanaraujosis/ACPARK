@@ -26,11 +26,10 @@ if (process.env.NODE_ENV === "production" && (!process.env.JWT_SECRET || process
   throw new Error("JWT_SECRET obrigatorio em producao.");
 }
 const jwtSecret = process.env.JWT_SECRET || "dev-only-change-me";
-// Cookie seguro (HTTPS) só quando estamos na Vercel ou quando explicitamente forçado (ex: LAN atrás de HTTPS)
-// NODE_ENV=production sozinho NÃO ativa mais isso: em rede local sobre HTTP puro, secure=true faria o navegador nunca enviar o cookie
-const secureCookies = Boolean(process.env.VERCEL) || process.env.FORCE_SECURE_COOKIES === "true";
+// Cookie seguro (HTTPS) só quando explicitamente forçado (ex: LAN atrás de HTTPS interno)
+// NODE_ENV=production sozinho NÃO ativa isso: em rede local sobre HTTP puro, secure=true faria o navegador nunca enviar o cookie
+const secureCookies = process.env.FORCE_SECURE_COOKIES === "true";
 const sessionCookieOptions = { path: "/", httpOnly: true, sameSite: "lax", secure: secureCookies };
-const autoSyncSchema = !process.env.VERCEL || process.env.SCHEMA_SYNC === "true";
 
 const mime = {
   ".html": "text/html; charset=utf-8",
@@ -807,10 +806,8 @@ export async function handler(req, res) {
     }
   }
 
-  // Em produção na Vercel, a sincronização de schema só roda se SCHEMA_SYNC=true (evita custo em toda invocação)
-  if (autoSyncSchema) {
-    await ensureSchemaOnce();
-  }
+  // Servidor sempre ativo: sincroniza o schema uma única vez por processo (resultado fica em cache)
+  await ensureSchemaOnce();
 
   if (req.url?.startsWith("/api/")) {
     api(req, res).catch((error) => {
@@ -826,18 +823,14 @@ export async function handler(req, res) {
   }
 }
 
-export default handler;
-
-// Fora da Vercel, sobe um servidor HTTP tradicional e inicia o agendador de sincronização OMIE
-if (!process.env.VERCEL) {
-  http.createServer((req, res) => {
-    handler(req, res).catch((error) => {
-      console.error(error);
-      send(res, 500, { error: error.message || "Erro interno." });
-    });
-  }).listen(port, () => {
-    console.log(`MyEstoque web rodando em http://localhost:${port}`);
-    startOmieScheduler();
+// Sobe o servidor HTTP e inicia o agendador de sincronização OMIE
+http.createServer((req, res) => {
+  handler(req, res).catch((error) => {
+    console.error(error);
+    send(res, 500, { error: error.message || "Erro interno." });
   });
-}
+}).listen(port, () => {
+  console.log(`MyEstoque web rodando em http://localhost:${port}`);
+  startOmieScheduler();
+});
 

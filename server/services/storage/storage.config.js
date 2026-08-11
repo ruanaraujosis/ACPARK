@@ -13,7 +13,7 @@ export function getStorageConfig(env = process.env) {
   return {
     driver,
     // Indica ambiente tipo producao, onde storage local fica bloqueado por padrao
-    productionLike: env.NODE_ENV === "production" || Boolean(env.VERCEL),
+    productionLike: env.NODE_ENV === "production",
     allowLocalInProduction: env.STORAGE_ALLOW_LOCAL_IN_PRODUCTION === "true",
     bucket: env.STORAGE_BUCKET || "",
     region: env.STORAGE_REGION || "",

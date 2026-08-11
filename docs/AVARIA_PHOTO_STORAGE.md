@@ -1,7 +1,7 @@
 # Storage das fotos de avarias
 
-O servidor roda como serviço do Windows sempre ativo (ver DEPLOY_LOCAL.md), não mais em ambiente
-serverless/efêmero (Vercel). Por isso o disco local do próprio servidor é durável e é o driver
+O servidor roda como serviço do Windows sempre ativo (ver DEPLOY_LOCAL.md), não em ambiente
+serverless/efêmero. Por isso o disco local do próprio servidor é durável e é o driver
 padrão de produção: `STORAGE_DRIVER=local`.
 
 ## Variaveis de producao (padrao: local)

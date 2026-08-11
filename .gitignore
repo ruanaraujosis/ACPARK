@@ -5,9 +5,7 @@ __pycache__/
 .env
 .streamlit/secrets.toml
 
-.vercel
 .env*
-.vercel-upload-*/
 .storage/
 .codex-temp/
 .local-app-logs/

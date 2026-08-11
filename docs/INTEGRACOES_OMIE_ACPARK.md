@@ -125,10 +125,9 @@ Intervalos iniciais:
 - saldos mapeados: 30 segundos;
 - produtos: 5 minutos;
 - locais: 10 minutos;
-- reconciliação rápida: 1 minuto;
-- cron Vercel: 1 minuto.
+- reconciliação rápida: 1 minuto.
 
-Em servidor Node contínuo, o timer interno roda a cada 5 segundos por padrão. Na Vercel, a execução depende de `/api/cron/omie-sync`, protegida por `CRON_SECRET`, e do limite de agendamento da própria plataforma.
+O servidor Node roda continuamente (serviço do Windows, sempre ativo), então o timer interno roda a cada 5 segundos por padrão — é o único caminho de agendamento usado. A rota `/api/cron/omie-sync`, protegida por `CRON_SECRET`, continua existindo como gatilho externo opcional, mas não é necessária nesta implantação local.
 
 Variáveis:
 

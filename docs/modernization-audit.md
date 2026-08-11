@@ -2,11 +2,14 @@
 
 ## Stack atual
 
+> Nota: este documento é um snapshot histórico da auditoria original. A stack evoluiu desde então —
+> o deploy é hoje em rede local (LAN), sem Vercel nem Supabase; ver [DEPLOY_LOCAL.md](DEPLOY_LOCAL.md).
+
 - Frontend: HTML estatico, CSS proprio, Tailwind via CDN e JavaScript ES modules em `public/app.js`.
-- Backend/API: Node.js com `http` nativo em `server/index.js`, exposto na Vercel por `api/index.js`.
-- Banco: Supabase/Postgres acessado pelo pacote `pg` em `server/db.js`.
+- Backend/API: Node.js com `http` nativo em `server/index.js`.
+- Banco: PostgreSQL acessado pelo pacote `pg` em `server/db.js`.
 - Autenticacao: cookie HTTP-only com JWT assinado no servidor.
-- Deploy: Vercel com rewrite de `/api/*` para a API Node.
+- Deploy: servidor local (LAN), sempre ativo como serviço do Windows.
 - Build: sem bundler; `npm run build` apenas confirma que nao ha build necessario.
 
 ## Arquivos principais
@@ -15,7 +18,7 @@
 - Estilos, responsividade e impressao: `public/styles.css`.
 - HTML base e dependencias CDN: `public/index.html`.
 - Rotas, regras de negocio e consultas SQL: `server/index.js`.
-- Conexao Postgres/Supabase e senha: `server/db.js`.
+- Conexao Postgres e senha: `server/db.js`.
 - Estrutura do banco e indices existentes: `server/schema.sql`.
 
 ## Problemas encontrados

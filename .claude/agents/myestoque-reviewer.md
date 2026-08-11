@@ -17,10 +17,11 @@ Verifique estes pontos específicos do projeto, em ordem de gravidade:
    `server/env.js`). `dotenv/config` só lê `.env`, que não existe neste projeto — a config real
    fica em `.env.local`. Isso já fez o sistema inteiro rodar no banco errado sem ninguém notar.
 
-2. **Variáveis da Vercel vazando para local**: qualquer menção a setar `VERCEL`, `VERCEL_*`,
-   `TURBO_*` ou `NX_DAEMON` em `.env.local` ou em instruções de setup local. Com `VERCEL` definida,
-   `server/index.js` pula o `listen()` (servidor não sobe) e força cookie `secure` (quebra login
-   em HTTP puro na LAN).
+2. **Vercel não pode voltar ao projeto**: o Vercel foi removido definitivamente (sem `vercel.json`,
+   `api/index.js`, nem checagem de `process.env.VERCEL` em `server/index.js` ou
+   `server/services/storage/storage.config.js` — o servidor sempre sobe com `listen()` e o cookie só
+   fica `secure` via `FORCE_SECURE_COOKIES=true`). Sinalize qualquer novo código, doc ou variável de
+   ambiente que reintroduza dependência do Vercel — este projeto roda só localmente (LAN).
 
 3. **Regras de status do pedido** (`server/modules/pedidos/pedidos.routes.js`) — a parte mais
    propensa a bugs sutis deste projeto, com três armadilhas já confirmadas:

@@ -16,7 +16,7 @@ const storageConfig = getStorageConfig();
 if (!dryRun && storageConfig.driver === "local" && process.env.MIGRATE_AVARIA_PHOTOS_ALLOW_LOCAL !== "true") {
   console.error(JSON.stringify({
     dryRun,
-    error: "Migração bloqueada: STORAGE_DRIVER=local não é seguro para produção/Vercel. Configure storage durável antes de usar --apply."
+    error: "Migração bloqueada: STORAGE_DRIVER=local não é seguro para produção. Configure storage durável antes de usar --apply."
   }, null, 2));
   process.exit(1);
 }

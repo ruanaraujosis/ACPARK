@@ -12,7 +12,6 @@ const client = fs.readFileSync("server/services/integrations/omie/omie.client.js
 const routes = fs.readFileSync("server/modules/integrations/integrations.routes.js", "utf8");
 const index = fs.readFileSync("server/index.js", "utf8");
 const app = fs.readFileSync("public/app.js", "utf8");
-const vercel = fs.readFileSync("vercel.json", "utf8");
 
 test("scheduler automatico possui intervalos, cron e bloqueio de duplicidade", () => {
   assert.match(scheduler, /15_000/);
@@ -23,7 +22,6 @@ test("scheduler automatico possui intervalos, cron e bloqueio de duplicidade", (
   assert.match(scheduler, /runOmieSchedulerTick/);
   assert.match(index, /startOmieScheduler/);
   assert.match(index, /\/api\/cron\/omie-sync/);
-  assert.match(vercel, /"crons"/);
   assert.match(fs.readFileSync("server/services/integrations/integration.service.js", "utf8"), /status IN \('PENDENTE', 'PROCESSANDO'/);
 });
 
