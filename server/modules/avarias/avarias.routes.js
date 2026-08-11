@@ -9,7 +9,7 @@ let avariaIdempotencyReady = null;
 const OMIE_DISABLED_STATUS = "Integração desativada";
 
 // Garante colunas adicionais usadas pelo fluxo manual de avarias (cacheado em memória)
-function ensureAvariaColumns() {
+export function ensureAvariaColumns() {
   avariaColumnsReady ||= tx(async (client) => {
     await client.query("ALTER TABLE devolucao_avaria_itens ADD COLUMN IF NOT EXISTS retirada_assinatura TEXT");
     await client.query("ALTER TABLE devolucoes_avaria ADD COLUMN IF NOT EXISTS manual_quantidade_processada INTEGER DEFAULT 0");
@@ -21,7 +21,7 @@ function ensureAvariaColumns() {
 }
 
 // Cria a tabela de controle de idempotência das operações de avaria (cacheado em memória)
-function ensureAvariaIdempotencyTable() {
+export function ensureAvariaIdempotencyTable() {
   avariaIdempotencyReady ||= tx(async (client) => {
     await client.query(`
       CREATE TABLE IF NOT EXISTS devolucao_idempotencia (

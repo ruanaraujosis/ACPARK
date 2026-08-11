@@ -87,9 +87,9 @@ o teste `tests/dump-estrutura.test.js` falha se o dump ficar defasado em relaç�
 
 #### Restaurar um backup completo (com dados)
 
-Para mover a operação inteira para outra máquina, o caminho é diferente: em vez do dump de
-estrutura, use um backup completo (estrutura + dados) gerado na máquina de origem. Vale a mesma
-regra de reatribuição de dono acima.
+Para mover a operação inteira para outra máquina — cenário "mesma operação, máquina nova" — o
+caminho é diferente do dump de estrutura: usa-se um backup completo (estrutura + dados) gerado na
+máquina de origem.
 
 ### Gerar backup completo (estrutura + dados)
 
@@ -101,6 +101,46 @@ Grava em `backups/` (pasta ignorada pelo Git — contém dados reais de produç�
 Sai um `.dump` (formato custom, para `pg_restore`) e um `.json` de manifesto com os totais
 (pedidos, produtos, PDVs) para conferir depois de restaurar. Rode sempre antes de qualquer
 migração de estrutura.
+
+### Restaurar um backup completo pelo serviço (não em linha de comando crua)
+
+`server/services/backup/backup.service.js` centraliza a lógica que o instalador (e qualquer
+interface futura, como o `myestoqueConfig.exe`) vai usar para restaurar — não é para rodar
+`pg_restore` direto na mão:
+
+- **`validarArquivoBackup(caminho)`** — confere a assinatura mágica `PGDMP` do formato custom, lê o
+  índice do arquivo (`pg_restore --list`) e recusa arquivo inexistente, truncado, corrompido ou sem
+  dados, **sem tocar em banco nenhum**.
+- **`bancoDestinoTemDados(databaseUrlDestino)`** — verifica se o banco de destino já tem estrutura
+  e dados (conta linhas em `pedidos`/`produtos`/`pdvs`).
+- **`restaurarBackup({ caminhoArquivo, databaseUrlDestino, confirmarSobrescrita, ensureAllRuntimeTables })`**
+  — valida o arquivo, recusa sobrescrever banco com dados sem `confirmarSobrescrita: true`, roda o
+  `pg_restore` (com `--clean --if-exists` só quando está sobrescrevendo), reatribui a propriedade de
+  todas as tabelas e sequences ao usuário da aplicação, roda as rotinas de runtime (veja abaixo) e
+  devolve um resumo (tabelas, pedidos, produtos, PDVs restaurados).
+
+Erros são lançados como `BackupError` com um `codigo` estável (`ARQUIVO_INEXISTENTE`,
+`ARQUIVO_TRUNCADO`, `FORMATO_INVALIDO`, `SEM_DADOS`, `DESTINO_TEM_DADOS`, `RESTAURACAO_FALHOU`) —
+quem chama (rota HTTP, futura tela do instalador) traduz cada código numa mensagem em português
+para o usuário, nunca expõe o erro técnico cru.
+
+`server/services/backup/runtime-schema.service.js` expõe `ensureAllRuntimeTables()`, que roda em
+sequência todas as rotinas `ensureXxxTable()` do servidor (hoje disparadas de forma preguiçosa, só
+na primeira vez que a rota correspondente é usada). Depois de restaurar um backup de uma versão
+anterior do sistema, isso garante a estrutura completa de uma vez, sem depender de qual tela
+alguém abre primeiro.
+
+**Validação de ponta a ponta**, sempre contra um banco descartável — nunca produção:
+
+```bash
+npm run backup:validar-restauracao
+```
+
+Cria um banco temporário, testa arquivo inválido/truncado/corrompido (rejeitados sem tocar em
+banco), restaura em banco vazio, confere contagens/dono/RLS contra a origem, simula um backup
+antigo (apaga uma tabela de runtime e confirma que `ensureAllRuntimeTables` recria), testa que
+sobrescrever sem confirmação é recusado, testa que com confirmação funciona, e apaga o banco de
+teste ao final — 18/18 verificações na última execução.
 
 ## 1.1 Reiniciar o serviço sem terminal de administrador
 

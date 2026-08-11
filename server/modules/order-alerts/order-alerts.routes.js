@@ -32,7 +32,7 @@ const allowedIntervals = new Set([3, 5, 10, 15, 30]);
 let schemaReady = null;
 
 // Cria/atualiza (uma única vez, cacheado em memória) as tabelas de preferências e sons de alerta
-function ensureOrderAlertTables() {
+export function ensureOrderAlertTables() {
   schemaReady ||= tx(async (client) => {
     await client.query(`
       CREATE TABLE IF NOT EXISTS user_order_alert_preferences (

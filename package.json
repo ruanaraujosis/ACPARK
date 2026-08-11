@@ -21,7 +21,8 @@
     "migrate:avaria-photos": "node tools/migrate-avaria-photos.js",
     "dump:gerar": "node tools/gerar-dump-estrutura.mjs",
     "dump:validar": "node tools/validar-dump-estrutura.mjs",
-    "backup:gerar": "node tools/gerar-backup-completo.mjs"
+    "backup:gerar": "node tools/gerar-backup-completo.mjs",
+    "backup:validar-restauracao": "node tools/validar-restauracao-backup.mjs"
   },
   "dependencies": {
     "bcryptjs": "2.4.3",

@@ -9,7 +9,7 @@ let pedidoDraftReady = null;
 let pedidoAuditReady = null;
 
 // Cria a tabela de controle de idempotência para criação de pedidos (cacheado em memória)
-function ensurePedidoIdempotencyTable() {
+export function ensurePedidoIdempotencyTable() {
   pedidoIdempotencyReady ||= tx(async (client) => {
     await client.query(`
       CREATE TABLE IF NOT EXISTS pedido_idempotencia (
@@ -27,7 +27,7 @@ function ensurePedidoIdempotencyTable() {
 }
 
 // Cria a tabela de rascunhos de pedido do PDV (cacheado em memória)
-function ensurePedidoDraftTable() {
+export function ensurePedidoDraftTable() {
   pedidoDraftReady ||= tx(async (client) => {
     await client.query(`
       CREATE TABLE IF NOT EXISTS pedido_rascunhos (
@@ -43,7 +43,7 @@ function ensurePedidoDraftTable() {
 }
 
 // Garante colunas adicionais usadas na edição/reabertura de pedidos (cacheado em memória)
-function ensurePedidoEditColumns() {
+export function ensurePedidoEditColumns() {
   pedidoEditColumnsReady ||= tx(async (client) => {
     await client.query("ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS pedido_editado BOOLEAN DEFAULT FALSE");
     await client.query("ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS pedido_editado_em TIMESTAMP");
@@ -56,7 +56,7 @@ function ensurePedidoEditColumns() {
 }
 
 // Cria a tabela de auditoria de ações administrativas sobre pedidos (cacheado em memória)
-function ensurePedidoAuditTable() {
+export function ensurePedidoAuditTable() {
   pedidoAuditReady ||= tx(async (client) => {
     await client.query(`
       CREATE TABLE IF NOT EXISTS pedido_auditoria (
