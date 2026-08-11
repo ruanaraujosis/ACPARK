@@ -17,19 +17,71 @@ Este documento descreve como rodar o MyEstoque inteiramente em um computador da 
    DATABASE_URL=postgres://myestoque_app:sua-senha-local-forte@localhost:5432/myestoque
    ```
 
-### Restaurar o banco a partir de um dump
+### Estrutura do banco: o dump versionado é a fonte da verdade
 
-Se precisar recriar o banco local do zero (perda/corrupção), restaure sempre a partir de um dump
-real (`pg_dump`/`pg_restore` completo) — nunca confie só em `server/schema.sql`, que não cobre
-tabelas/colunas criadas em tempo de execução pelas funções `ensureXxxTable()` das rotas.
+**`server/schema.sql` é legado e está incompleto.** A estrutura real do sistema vive em
+`db/estrutura.dump` (formato custom do `pg_dump`, versionado no repositório), acompanhado de
+`db/estrutura.sql` — a mesma coisa em texto puro, que existe só para revisar diferenças de
+estrutura no Git, já que o formato custom é binário.
+
+Números que justificam isso (medidos no banco de produção):
+
+| Origem | Tabelas |
+|---|---|
+| Banco de produção | 47 |
+| Cobertas pelo `server/schema.sql` | 37 |
+| Criadas em runtime por `CREATE TABLE IF NOT EXISTS` nas rotas | 6 |
+| **Sem nenhuma origem no código** | **9** |
+
+Ou seja: recriar o banco só pelo `schema.sql` produz um sistema faltando tabelas.
+
+#### Recriar o banco do zero (estrutura vazia)
 
 ```
-pg_restore -d "postgres://myestoque_app:sua-senha-local-forte@localhost:5432/myestoque" --no-owner --no-privileges -v seu_backup.dump
+pg_restore --host localhost --port 5432 --username myestoque_app --dbname myestoque --no-owner --no-privileges db/estrutura.dump
 ```
 
-Depois do restore, rode `REASSIGN`/`ALTER TABLE ... OWNER TO myestoque_app` em todas as tabelas —
-dumps vindos de outro ambiente costumam trazer políticas de RLS herdadas que deixam as tabelas
-inacessíveis para o usuário da aplicação até isso ser corrigido.
+Depois do restore, **é obrigatório** reatribuir a propriedade de todas as tabelas e sequences:
+
+```sql
+ALTER TABLE public.<tabela> OWNER TO myestoque_app;
+ALTER SEQUENCE public.<sequence> OWNER TO myestoque_app;
+```
+
+Isso não é formalidade: 18 tabelas têm **RLS ligada e nenhuma política** (herança da época do
+Supabase). Com RLS nesse estado, só o dono da tabela enxerga as linhas — qualquer outro papel
+recebe zero resultados, e o sistema sobe "funcionando" sem ver dado nenhum. O que mantém a
+produção operando hoje é justamente `myestoque_app` ser dona das 47 tabelas.
+
+#### Regerar o dump quando a estrutura mudar
+
+Sempre que alterar a estrutura do banco (coluna nova, tabela nova, índice), regere e valide:
+
+```bash
+npm run dump:gerar
+```
+
+```bash
+npm run dump:validar
+```
+
+O `dump:validar` cria um banco temporário, restaura o dump nele, confere contagem de tabelas,
+sequences e estado de RLS contra a produção, testa a reatribuição de dono, confirma que as tabelas
+com RLS ficam legíveis e apaga o banco de teste ao final. Requer que `myestoque_app` tenha o
+privilégio `CREATEDB`:
+
+```sql
+ALTER ROLE myestoque_app CREATEDB;
+```
+
+Commite `db/estrutura.dump` e `db/estrutura.sql` junto com a mudança que alterou a estrutura —
+o teste `tests/dump-estrutura.test.js` falha se o dump ficar defasado em relação ao `schema.sql`.
+
+#### Restaurar um backup completo (com dados)
+
+Para mover a operação inteira para outra máquina, o caminho é diferente: em vez do dump de
+estrutura, use um backup completo (estrutura + dados) gerado na máquina de origem. Vale a mesma
+regra de reatribuição de dono acima.
 
 ## 2. Fotos de avaria: storage local
 

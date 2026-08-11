@@ -18,7 +18,9 @@
     "format": "prettier --write \"public/**/*.{html,css,js}\" \"server/**/*.js\" \"tests/**/*.js\"",
     "production:check": "node tools/check-production-readiness.js",
     "storage:check": "node tools/check-storage-config.js --require-durable",
-    "migrate:avaria-photos": "node tools/migrate-avaria-photos.js"
+    "migrate:avaria-photos": "node tools/migrate-avaria-photos.js",
+    "dump:gerar": "node tools/gerar-dump-estrutura.mjs",
+    "dump:validar": "node tools/validar-dump-estrutura.mjs"
   },
   "dependencies": {
     "bcryptjs": "2.4.3",
