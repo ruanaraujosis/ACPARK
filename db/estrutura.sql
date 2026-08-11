@@ -891,40 +891,6 @@ ALTER SEQUENCE public.integrations_id_seq OWNED BY public.integrations.id;
 
 
 --
--- Name: logs_atividades; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.logs_atividades (
-    id integer NOT NULL,
-    usuario text,
-    acao text,
-    pdv text,
-    detalhes text,
-    data_hora timestamp without time zone DEFAULT CURRENT_TIMESTAMP
-);
-
-
---
--- Name: logs_atividades_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-CREATE SEQUENCE public.logs_atividades_id_seq
-    AS integer
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
---
--- Name: logs_atividades_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
---
-
-ALTER SEQUENCE public.logs_atividades_id_seq OWNED BY public.logs_atividades.id;
-
-
---
 -- Name: omie_jobs; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1119,7 +1085,7 @@ ALTER SEQUENCE public.pdv_stock_location_mappings_id_seq OWNED BY public.pdv_sto
 CREATE TABLE public.pdvs (
     id integer NOT NULL,
     nome text,
-    senha text DEFAULT '123'::text,
+    senha text,
     is_cozinha boolean DEFAULT false,
     codigo_orion text,
     categoria text
@@ -1182,48 +1148,6 @@ ALTER SEQUENCE public.pedido_auditoria_id_seq OWNED BY public.pedido_auditoria.i
 
 
 --
--- Name: pedido_historico; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.pedido_historico (
-    id integer NOT NULL,
-    codigo_pedido text NOT NULL,
-    pdv_id integer,
-    usuario text,
-    perfil text,
-    acao text NOT NULL,
-    status_anterior text,
-    status_novo text,
-    versao_anterior integer,
-    versao_nova integer,
-    motivo text,
-    observacao text,
-    detalhes jsonb DEFAULT '{}'::jsonb,
-    criado_em timestamp without time zone DEFAULT CURRENT_TIMESTAMP
-);
-
-
---
--- Name: pedido_historico_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-CREATE SEQUENCE public.pedido_historico_id_seq
-    AS integer
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
---
--- Name: pedido_historico_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
---
-
-ALTER SEQUENCE public.pedido_historico_id_seq OWNED BY public.pedido_historico.id;
-
-
---
 -- Name: pedido_idempotencia; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1256,128 +1180,6 @@ CREATE SEQUENCE public.pedido_idempotencia_id_seq
 --
 
 ALTER SEQUENCE public.pedido_idempotencia_id_seq OWNED BY public.pedido_idempotencia.id;
-
-
---
--- Name: pedido_impressao_historico; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.pedido_impressao_historico (
-    id integer NOT NULL,
-    codigo_pedido text NOT NULL,
-    pdv_nome text,
-    solicitante text,
-    impressora text,
-    resultado text NOT NULL,
-    tentativas integer DEFAULT 0,
-    motivo_falha text,
-    usuario text,
-    criado_em timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
-    tipo_destino text,
-    ponto_id integer,
-    computador text
-);
-
-
---
--- Name: pedido_impressao_historico_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-CREATE SEQUENCE public.pedido_impressao_historico_id_seq
-    AS integer
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
---
--- Name: pedido_impressao_historico_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
---
-
-ALTER SEQUENCE public.pedido_impressao_historico_id_seq OWNED BY public.pedido_impressao_historico.id;
-
-
---
--- Name: pedido_impressao_jobs; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.pedido_impressao_jobs (
-    id integer NOT NULL,
-    codigo_pedido text NOT NULL,
-    tipo_destino text NOT NULL,
-    ponto_id integer,
-    impressora_destino text,
-    status text DEFAULT 'PENDENTE'::text NOT NULL,
-    tentativas integer DEFAULT 0,
-    versao_impressao integer DEFAULT 1,
-    reservado_ate timestamp without time zone,
-    reservado_por text,
-    ultimo_erro text,
-    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
-    impresso_em timestamp without time zone,
-    updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT pedido_impressao_jobs_tipo_destino_check CHECK ((tipo_destino = ANY (ARRAY['PDV'::text, 'ALMOXARIFADO'::text])))
-);
-
-
---
--- Name: pedido_impressao_jobs_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-CREATE SEQUENCE public.pedido_impressao_jobs_id_seq
-    AS integer
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
---
--- Name: pedido_impressao_jobs_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
---
-
-ALTER SEQUENCE public.pedido_impressao_jobs_id_seq OWNED BY public.pedido_impressao_jobs.id;
-
-
---
--- Name: pedido_operacao_idempotencia; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.pedido_operacao_idempotencia (
-    id integer NOT NULL,
-    idempotency_key text NOT NULL,
-    pdv_id integer,
-    codigo_pedido text,
-    operacao text NOT NULL,
-    request_hash text NOT NULL,
-    response jsonb,
-    status text DEFAULT 'processing'::text,
-    criado_em timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
-    atualizado_em timestamp without time zone DEFAULT CURRENT_TIMESTAMP
-);
-
-
---
--- Name: pedido_operacao_idempotencia_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-CREATE SEQUENCE public.pedido_operacao_idempotencia_id_seq
-    AS integer
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
---
--- Name: pedido_operacao_idempotencia_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
---
-
-ALTER SEQUENCE public.pedido_operacao_idempotencia_id_seq OWNED BY public.pedido_operacao_idempotencia.id;
 
 
 --
@@ -1577,76 +1379,6 @@ CREATE TABLE public.produtos (
 
 
 --
--- Name: security_hardening_backup_privileges; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.security_hardening_backup_privileges (
-    id bigint NOT NULL,
-    captured_at timestamp with time zone DEFAULT now() NOT NULL,
-    object_type text NOT NULL,
-    schema_name text NOT NULL,
-    object_name text NOT NULL,
-    grantee text NOT NULL,
-    privilege_type text NOT NULL
-);
-
-
---
--- Name: security_hardening_backup_privileges_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-CREATE SEQUENCE public.security_hardening_backup_privileges_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
---
--- Name: security_hardening_backup_privileges_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
---
-
-ALTER SEQUENCE public.security_hardening_backup_privileges_id_seq OWNED BY public.security_hardening_backup_privileges.id;
-
-
---
--- Name: solicitacoes; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.solicitacoes (
-    id integer NOT NULL,
-    codigo_pedido text,
-    pdv_id integer,
-    sku_produto text,
-    quantidade_solicitada integer NOT NULL,
-    status text DEFAULT 'Pendente'::text,
-    observacao text,
-    data_hora timestamp without time zone DEFAULT CURRENT_TIMESTAMP
-);
-
-
---
--- Name: solicitacoes_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-CREATE SEQUENCE public.solicitacoes_id_seq
-    AS integer
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
---
--- Name: solicitacoes_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
---
-
-ALTER SEQUENCE public.solicitacoes_id_seq OWNED BY public.solicitacoes.id;
-
-
---
 -- Name: stock_movement_items; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1799,43 +1531,6 @@ ALTER SEQUENCE public.stock_reconciliations_id_seq OWNED BY public.stock_reconci
 
 
 --
--- Name: stock_refresh_queue; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.stock_refresh_queue (
-    id bigint NOT NULL,
-    integration_id bigint,
-    omie_product_id text NOT NULL,
-    omie_location_id text NOT NULL,
-    trigger text,
-    external_reference text,
-    status text DEFAULT 'PENDENTE'::text NOT NULL,
-    available_at timestamp without time zone DEFAULT (CURRENT_TIMESTAMP + '00:00:01'::interval) NOT NULL,
-    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL
-);
-
-
---
--- Name: stock_refresh_queue_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-CREATE SEQUENCE public.stock_refresh_queue_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
---
--- Name: stock_refresh_queue_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
---
-
-ALTER SEQUENCE public.stock_refresh_queue_id_seq OWNED BY public.stock_refresh_queue.id;
-
-
---
 -- Name: stock_snapshots; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1911,41 +1606,6 @@ CREATE SEQUENCE public.user_order_alert_preferences_id_seq
 --
 
 ALTER SEQUENCE public.user_order_alert_preferences_id_seq OWNED BY public.user_order_alert_preferences.id;
-
-
---
--- Name: vendas_orion; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.vendas_orion (
-    id integer NOT NULL,
-    pdv_id integer,
-    sku_produto text,
-    quantidade_vendida integer NOT NULL,
-    data_venda timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
-    processado boolean DEFAULT false,
-    tipo_operacao text DEFAULT 'VENDA'::text
-);
-
-
---
--- Name: vendas_orion_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-CREATE SEQUENCE public.vendas_orion_id_seq
-    AS integer
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
---
--- Name: vendas_orion_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
---
-
-ALTER SEQUENCE public.vendas_orion_id_seq OWNED BY public.vendas_orion.id;
 
 
 --
@@ -2061,13 +1721,6 @@ ALTER TABLE ONLY public.integrations ALTER COLUMN id SET DEFAULT nextval('public
 
 
 --
--- Name: logs_atividades id; Type: DEFAULT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.logs_atividades ALTER COLUMN id SET DEFAULT nextval('public.logs_atividades_id_seq'::regclass);
-
-
---
 -- Name: omie_jobs id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -2117,38 +1770,10 @@ ALTER TABLE ONLY public.pedido_auditoria ALTER COLUMN id SET DEFAULT nextval('pu
 
 
 --
--- Name: pedido_historico id; Type: DEFAULT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.pedido_historico ALTER COLUMN id SET DEFAULT nextval('public.pedido_historico_id_seq'::regclass);
-
-
---
 -- Name: pedido_idempotencia id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.pedido_idempotencia ALTER COLUMN id SET DEFAULT nextval('public.pedido_idempotencia_id_seq'::regclass);
-
-
---
--- Name: pedido_impressao_historico id; Type: DEFAULT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.pedido_impressao_historico ALTER COLUMN id SET DEFAULT nextval('public.pedido_impressao_historico_id_seq'::regclass);
-
-
---
--- Name: pedido_impressao_jobs id; Type: DEFAULT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.pedido_impressao_jobs ALTER COLUMN id SET DEFAULT nextval('public.pedido_impressao_jobs_id_seq'::regclass);
-
-
---
--- Name: pedido_operacao_idempotencia id; Type: DEFAULT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.pedido_operacao_idempotencia ALTER COLUMN id SET DEFAULT nextval('public.pedido_operacao_idempotencia_id_seq'::regclass);
 
 
 --
@@ -2170,20 +1795,6 @@ ALTER TABLE ONLY public.product_integration_mappings ALTER COLUMN id SET DEFAULT
 --
 
 ALTER TABLE ONLY public.produto_categorias ALTER COLUMN id SET DEFAULT nextval('public.produto_categorias_id_seq'::regclass);
-
-
---
--- Name: security_hardening_backup_privileges id; Type: DEFAULT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.security_hardening_backup_privileges ALTER COLUMN id SET DEFAULT nextval('public.security_hardening_backup_privileges_id_seq'::regclass);
-
-
---
--- Name: solicitacoes id; Type: DEFAULT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.solicitacoes ALTER COLUMN id SET DEFAULT nextval('public.solicitacoes_id_seq'::regclass);
 
 
 --
@@ -2215,13 +1826,6 @@ ALTER TABLE ONLY public.stock_reconciliations ALTER COLUMN id SET DEFAULT nextva
 
 
 --
--- Name: stock_refresh_queue id; Type: DEFAULT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.stock_refresh_queue ALTER COLUMN id SET DEFAULT nextval('public.stock_refresh_queue_id_seq'::regclass);
-
-
---
 -- Name: stock_snapshots id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -2233,13 +1837,6 @@ ALTER TABLE ONLY public.stock_snapshots ALTER COLUMN id SET DEFAULT nextval('pub
 --
 
 ALTER TABLE ONLY public.user_order_alert_preferences ALTER COLUMN id SET DEFAULT nextval('public.user_order_alert_preferences_id_seq'::regclass);
-
-
---
--- Name: vendas_orion id; Type: DEFAULT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.vendas_orion ALTER COLUMN id SET DEFAULT nextval('public.vendas_orion_id_seq'::regclass);
 
 
 --
@@ -2459,14 +2056,6 @@ ALTER TABLE ONLY public.integrations
 
 
 --
--- Name: logs_atividades logs_atividades_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.logs_atividades
-    ADD CONSTRAINT logs_atividades_pkey PRIMARY KEY (id);
-
-
---
 -- Name: omie_jobs omie_jobs_operation_key_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2579,14 +2168,6 @@ ALTER TABLE ONLY public.pedido_auditoria
 
 
 --
--- Name: pedido_historico pedido_historico_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.pedido_historico
-    ADD CONSTRAINT pedido_historico_pkey PRIMARY KEY (id);
-
-
---
 -- Name: pedido_idempotencia pedido_idempotencia_idempotency_key_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2600,46 +2181,6 @@ ALTER TABLE ONLY public.pedido_idempotencia
 
 ALTER TABLE ONLY public.pedido_idempotencia
     ADD CONSTRAINT pedido_idempotencia_pkey PRIMARY KEY (id);
-
-
---
--- Name: pedido_impressao_historico pedido_impressao_historico_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.pedido_impressao_historico
-    ADD CONSTRAINT pedido_impressao_historico_pkey PRIMARY KEY (id);
-
-
---
--- Name: pedido_impressao_jobs pedido_impressao_jobs_codigo_pedido_tipo_destino_versao_imp_key; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.pedido_impressao_jobs
-    ADD CONSTRAINT pedido_impressao_jobs_codigo_pedido_tipo_destino_versao_imp_key UNIQUE (codigo_pedido, tipo_destino, versao_impressao);
-
-
---
--- Name: pedido_impressao_jobs pedido_impressao_jobs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.pedido_impressao_jobs
-    ADD CONSTRAINT pedido_impressao_jobs_pkey PRIMARY KEY (id);
-
-
---
--- Name: pedido_operacao_idempotencia pedido_operacao_idempotencia_idempotency_key_key; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.pedido_operacao_idempotencia
-    ADD CONSTRAINT pedido_operacao_idempotencia_idempotency_key_key UNIQUE (idempotency_key);
-
-
---
--- Name: pedido_operacao_idempotencia pedido_operacao_idempotencia_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.pedido_operacao_idempotencia
-    ADD CONSTRAINT pedido_operacao_idempotencia_pkey PRIMARY KEY (id);
 
 
 --
@@ -2715,22 +2256,6 @@ ALTER TABLE ONLY public.produtos
 
 
 --
--- Name: security_hardening_backup_privileges security_hardening_backup_privileges_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.security_hardening_backup_privileges
-    ADD CONSTRAINT security_hardening_backup_privileges_pkey PRIMARY KEY (id);
-
-
---
--- Name: solicitacoes solicitacoes_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.solicitacoes
-    ADD CONSTRAINT solicitacoes_pkey PRIMARY KEY (id);
-
-
---
 -- Name: stock_movement_items stock_movement_items_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2779,22 +2304,6 @@ ALTER TABLE ONLY public.stock_reconciliations
 
 
 --
--- Name: stock_refresh_queue stock_refresh_queue_integration_id_omie_product_id_omie_loc_key; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.stock_refresh_queue
-    ADD CONSTRAINT stock_refresh_queue_integration_id_omie_product_id_omie_loc_key UNIQUE (integration_id, omie_product_id, omie_location_id, status);
-
-
---
--- Name: stock_refresh_queue stock_refresh_queue_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.stock_refresh_queue
-    ADD CONSTRAINT stock_refresh_queue_pkey PRIMARY KEY (id);
-
-
---
 -- Name: stock_snapshots stock_snapshots_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2816,14 +2325,6 @@ ALTER TABLE ONLY public.user_order_alert_preferences
 
 ALTER TABLE ONLY public.user_order_alert_preferences
     ADD CONSTRAINT user_order_alert_preferences_user_key_key UNIQUE (user_key);
-
-
---
--- Name: vendas_orion vendas_orion_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.vendas_orion
-    ADD CONSTRAINT vendas_orion_pkey PRIMARY KEY (id);
 
 
 --
@@ -2995,27 +2496,6 @@ CREATE INDEX idx_omie_stock_locations_lookup ON public.omie_stock_locations USIN
 
 
 --
--- Name: idx_pedido_impressao_codigo; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_pedido_impressao_codigo ON public.pedido_impressao_historico USING btree (codigo_pedido, criado_em DESC);
-
-
---
--- Name: idx_pedido_impressao_jobs_codigo; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_pedido_impressao_jobs_codigo ON public.pedido_impressao_jobs USING btree (codigo_pedido, tipo_destino);
-
-
---
--- Name: idx_pedido_impressao_jobs_fila; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_pedido_impressao_jobs_fila ON public.pedido_impressao_jobs USING btree (tipo_destino, status, created_at);
-
-
---
 -- Name: idx_pedidos_pdv_data; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3065,13 +2545,6 @@ CREATE INDEX idx_stock_reconciliation_items_status ON public.stock_reconciliatio
 
 
 --
--- Name: idx_stock_refresh_queue_ready; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_stock_refresh_queue_ready ON public.stock_refresh_queue USING btree (status, available_at, integration_id);
-
-
---
 -- Name: idx_stock_snapshots_lookup; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3083,48 +2556,6 @@ CREATE INDEX idx_stock_snapshots_lookup ON public.stock_snapshots USING btree (p
 --
 
 CREATE INDEX idx_stock_snapshots_sku ON public.stock_snapshots USING btree (sku_produto, snapshot_at DESC);
-
-
---
--- Name: idx_vendas_orion_processado; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_vendas_orion_processado ON public.vendas_orion USING btree (processado);
-
-
---
--- Name: solicitacoes_pdv_id_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX solicitacoes_pdv_id_idx ON public.solicitacoes USING btree (pdv_id);
-
-
---
--- Name: solicitacoes_sku_produto_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX solicitacoes_sku_produto_idx ON public.solicitacoes USING btree (sku_produto);
-
-
---
--- Name: vendas_orion_pdv_id_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX vendas_orion_pdv_id_idx ON public.vendas_orion USING btree (pdv_id);
-
-
---
--- Name: vendas_orion_sku_produto_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX vendas_orion_sku_produto_idx ON public.vendas_orion USING btree (sku_produto);
-
-
---
--- Name: vendas_orion trg_baixa_estoque_orion; Type: TRIGGER; Schema: public; Owner: -
---
-
-CREATE TRIGGER trg_baixa_estoque_orion AFTER INSERT ON public.vendas_orion FOR EACH ROW EXECUTE FUNCTION public.processar_baixa_estoque_orion();
 
 
 --
@@ -3359,35 +2790,11 @@ ALTER TABLE ONLY public.pdv_stock_location_mappings
 
 
 --
--- Name: pedido_historico pedido_historico_pdv_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.pedido_historico
-    ADD CONSTRAINT pedido_historico_pdv_id_fkey FOREIGN KEY (pdv_id) REFERENCES public.pdvs(id) ON DELETE SET NULL;
-
-
---
 -- Name: pedido_idempotencia pedido_idempotencia_pdv_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.pedido_idempotencia
     ADD CONSTRAINT pedido_idempotencia_pdv_id_fkey FOREIGN KEY (pdv_id) REFERENCES public.pdvs(id) ON DELETE CASCADE;
-
-
---
--- Name: pedido_impressao_jobs pedido_impressao_jobs_ponto_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.pedido_impressao_jobs
-    ADD CONSTRAINT pedido_impressao_jobs_ponto_id_fkey FOREIGN KEY (ponto_id) REFERENCES public.pdvs(id) ON DELETE SET NULL;
-
-
---
--- Name: pedido_operacao_idempotencia pedido_operacao_idempotencia_pdv_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.pedido_operacao_idempotencia
-    ADD CONSTRAINT pedido_operacao_idempotencia_pdv_id_fkey FOREIGN KEY (pdv_id) REFERENCES public.pdvs(id) ON DELETE CASCADE;
 
 
 --
@@ -3436,22 +2843,6 @@ ALTER TABLE ONLY public.product_sync_temperature
 
 ALTER TABLE ONLY public.produto_categorias
     ADD CONSTRAINT produto_categorias_sku_produto_fkey FOREIGN KEY (sku_produto) REFERENCES public.produtos(sku) ON DELETE CASCADE;
-
-
---
--- Name: solicitacoes solicitacoes_pdv_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.solicitacoes
-    ADD CONSTRAINT solicitacoes_pdv_id_fkey FOREIGN KEY (pdv_id) REFERENCES public.pdvs(id);
-
-
---
--- Name: solicitacoes solicitacoes_sku_produto_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.solicitacoes
-    ADD CONSTRAINT solicitacoes_sku_produto_fkey FOREIGN KEY (sku_produto) REFERENCES public.produtos(sku);
 
 
 --
@@ -3519,14 +2910,6 @@ ALTER TABLE ONLY public.stock_reconciliations
 
 
 --
--- Name: stock_refresh_queue stock_refresh_queue_integration_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.stock_refresh_queue
-    ADD CONSTRAINT stock_refresh_queue_integration_id_fkey FOREIGN KEY (integration_id) REFERENCES public.integrations(id) ON DELETE CASCADE;
-
-
---
 -- Name: stock_snapshots stock_snapshots_integration_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3548,22 +2931,6 @@ ALTER TABLE ONLY public.stock_snapshots
 
 ALTER TABLE ONLY public.stock_snapshots
     ADD CONSTRAINT stock_snapshots_sku_produto_fkey FOREIGN KEY (sku_produto) REFERENCES public.produtos(sku) ON DELETE SET NULL;
-
-
---
--- Name: vendas_orion vendas_orion_pdv_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.vendas_orion
-    ADD CONSTRAINT vendas_orion_pdv_id_fkey FOREIGN KEY (pdv_id) REFERENCES public.pdvs(id);
-
-
---
--- Name: vendas_orion vendas_orion_sku_produto_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.vendas_orion
-    ADD CONSTRAINT vendas_orion_sku_produto_fkey FOREIGN KEY (sku_produto) REFERENCES public.produtos(sku);
 
 
 --
@@ -3633,12 +3000,6 @@ ALTER TABLE public.integration_webhooks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.integrations ENABLE ROW LEVEL SECURITY;
 
 --
--- Name: logs_atividades; Type: ROW SECURITY; Schema: public; Owner: -
---
-
-ALTER TABLE public.logs_atividades ENABLE ROW LEVEL SECURITY;
-
---
 -- Name: pdvs; Type: ROW SECURITY; Schema: public; Owner: -
 --
 
@@ -3655,24 +3016,6 @@ ALTER TABLE public.pedidos ENABLE ROW LEVEL SECURITY;
 --
 
 ALTER TABLE public.produtos ENABLE ROW LEVEL SECURITY;
-
---
--- Name: security_hardening_backup_privileges; Type: ROW SECURITY; Schema: public; Owner: -
---
-
-ALTER TABLE public.security_hardening_backup_privileges ENABLE ROW LEVEL SECURITY;
-
---
--- Name: solicitacoes; Type: ROW SECURITY; Schema: public; Owner: -
---
-
-ALTER TABLE public.solicitacoes ENABLE ROW LEVEL SECURITY;
-
---
--- Name: vendas_orion; Type: ROW SECURITY; Schema: public; Owner: -
---
-
-ALTER TABLE public.vendas_orion ENABLE ROW LEVEL SECURITY;
 
 --
 -- PostgreSQL database dump complete

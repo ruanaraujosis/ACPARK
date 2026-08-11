@@ -24,16 +24,24 @@ Este documento descreve como rodar o MyEstoque inteiramente em um computador da 
 `db/estrutura.sql` — a mesma coisa em texto puro, que existe só para revisar diferenças de
 estrutura no Git, já que o formato custom é binário.
 
-Números que justificam isso (medidos no banco de produção):
+Estado atual da estrutura (medido no banco de produção):
 
 | Origem | Tabelas |
 |---|---|
-| Banco de produção | 47 |
-| Cobertas pelo `server/schema.sql` | 37 |
-| Criadas em runtime por `CREATE TABLE IF NOT EXISTS` nas rotas | 6 |
-| **Sem nenhuma origem no código** | **9** |
+| Banco de produção | 38 |
+| Declaradas no `server/schema.sql` | 37 |
+| Criadas só em runtime (`pedido_auditoria`) | 1 |
+| Sem nenhuma origem no código | 0 |
 
-Ou seja: recriar o banco só pelo `schema.sql` produz um sistema faltando tabelas.
+O `schema.sql` continua incompleto (não cria `pedido_auditoria`) e, mesmo para as demais, não
+reproduz índices, constraints e defaults com a mesma fidelidade do dump. Recriar um banco só a
+partir dele produz um sistema diferente do de produção.
+
+> Contexto histórico: até agosto/2026 a produção tinha 47 tabelas, sendo **9 sem nenhuma origem no
+> código** — resíduo de recursos removidos (impressão automática por agente), antecessoras de
+> tabelas atuais (`pedido_historico`, `pedido_operacao_idempotencia`) e um snapshot de permissões da
+> época do Supabase. Foram apagadas por `tools/migracao-limpeza-tabelas-mortas.mjs`, com backup
+> completo gerado antes.
 
 #### Recriar o banco do zero (estrutura vazia)
 
@@ -48,10 +56,10 @@ ALTER TABLE public.<tabela> OWNER TO myestoque_app;
 ALTER SEQUENCE public.<sequence> OWNER TO myestoque_app;
 ```
 
-Isso não é formalidade: 18 tabelas têm **RLS ligada e nenhuma política** (herança da época do
+Isso não é formalidade: 14 tabelas têm **RLS ligada e nenhuma política** (herança da época do
 Supabase). Com RLS nesse estado, só o dono da tabela enxerga as linhas — qualquer outro papel
 recebe zero resultados, e o sistema sobe "funcionando" sem ver dado nenhum. O que mantém a
-produção operando hoje é justamente `myestoque_app` ser dona das 47 tabelas.
+produção operando hoje é justamente `myestoque_app` ser dona de todas as tabelas.
 
 #### Regerar o dump quando a estrutura mudar
 

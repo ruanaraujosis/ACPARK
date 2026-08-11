@@ -20,7 +20,8 @@
     "storage:check": "node tools/check-storage-config.js --require-durable",
     "migrate:avaria-photos": "node tools/migrate-avaria-photos.js",
     "dump:gerar": "node tools/gerar-dump-estrutura.mjs",
-    "dump:validar": "node tools/validar-dump-estrutura.mjs"
+    "dump:validar": "node tools/validar-dump-estrutura.mjs",
+    "backup:gerar": "node tools/gerar-backup-completo.mjs"
   },
   "dependencies": {
     "bcryptjs": "2.4.3",
