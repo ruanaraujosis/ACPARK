@@ -13,6 +13,7 @@ import { handleAvariasRoutes } from "./modules/avarias/avarias.routes.js";
 import { handleOmieRoutes } from "./modules/omie/omie.routes.js";
 import { handleIntegrationWebhookRoutes, handleIntegrationsRoutes } from "./modules/integrations/integrations.routes.js";
 import { handleOrderAlertRoutes } from "./modules/order-alerts/order-alerts.routes.js";
+import { handleBackupRoutes } from "./modules/backup/backup.routes.js";
 import { runOmieSchedulerTick, startOmieScheduler } from "./services/integrations/omie/omie.scheduler.js";
 import { normalizeCategories, normalizeCategoryList, normalizeText, readBody, send } from "./utils/http.js";
 
@@ -249,6 +250,7 @@ async function api(req, res) {
   if (await handleOmieRoutes(req, res, { method, requireUser, url, user })) return;
   if (await handleIntegrationsRoutes(req, res, { method, requireUser, url, user })) return;
   if (await handleOrderAlertRoutes(req, res, { method, url, user })) return;
+  if (await handleBackupRoutes(req, res, { method, requireUser, url, user })) return;
 
   // CRUD de produtos manuais; produtos de origem OMIE não podem ser criados/editados/excluídos aqui
   if (url.pathname === "/api/admin/products") {

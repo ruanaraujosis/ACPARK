@@ -10,6 +10,9 @@ import fs from "node:fs";
 import path from "node:path";
 import pg from "pg";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+
+const raizProjeto = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 
 // Localiza um binario do PostgreSQL: primeiro no PATH, depois na instalacao padrao no Windows
 function acharBinario(nome) {
@@ -19,6 +22,16 @@ function acharBinario(nome) {
     if (fs.existsSync(alvo)) return alvo;
   }
   throw new Error(`${nome} nao encontrado no PATH nem na instalacao padrao do PostgreSQL.`);
+}
+
+// Pasta onde os backups completos ficam (fora do Git -- contem dados reais de producao)
+const pastaBackups = path.join(raizProjeto, "backups");
+
+// Carimbo de data/hora para o nome do arquivo, no formato AAAAMMDD-HHMMSS
+function carimbo() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
 }
 
 // Quebra uma connection string em partes, sem nunca expor a senha em argumento de linha de comando
@@ -222,4 +235,106 @@ export async function restaurarBackup({ caminhoArquivo, databaseUrlDestino, conf
   }
 
   return { ok: true, sobrescreveu: estado.temDados, resumo };
+}
+
+// Gera um backup completo (estrutura + dados) do banco indicado por databaseUrlOrigem, gravando em
+// backups/ com um manifesto .json ao lado. Usado tanto pelo CLI (tools/gerar-backup-completo.mjs)
+// quanto pela rota HTTP -- uma unica implementacao para os dois caminhos.
+export async function gerarBackupCompleto({ databaseUrlOrigem, motivo = "" }) {
+  const conexao = quebrarConexao(databaseUrlOrigem);
+  const pgDump = acharBinario("pg_dump");
+
+  fs.mkdirSync(pastaBackups, { recursive: true });
+  const arquivo = path.join(pastaBackups, `myestoque-${conexao.banco}-${carimbo()}.dump`);
+
+  const cliente = new pg.Client({
+    host: conexao.host, port: Number(conexao.porta), user: conexao.usuario,
+    password: conexao.senha, database: conexao.banco, ssl: false
+  });
+  await cliente.connect();
+  let totais;
+  try {
+    const contar = async (tabela) => {
+      try { return (await cliente.query(`SELECT count(*)::int n FROM ${tabela}`)).rows[0].n; }
+      catch { return null; }
+    };
+    totais = {
+      pedidos: await contar("pedidos"),
+      produtos: await contar("produtos"),
+      pdvs: await contar("pdvs"),
+      tabelas: (await cliente.query("SELECT count(*)::int n FROM pg_tables WHERE schemaname='public'")).rows[0].n
+    };
+  } finally {
+    await cliente.end();
+  }
+
+  const resultado = spawnSync(pgDump, [
+    "--host", conexao.host,
+    "--port", conexao.porta,
+    "--username", conexao.usuario,
+    "--dbname", conexao.banco,
+    "--format", "custom",
+    "--no-owner",
+    "--no-privileges",
+    "--file", arquivo
+  ], { encoding: "utf8", env: { ...process.env, PGPASSWORD: conexao.senha } });
+
+  if (resultado.status !== 0) {
+    throw new BackupError(
+      "BACKUP_FALHOU",
+      "Não foi possível gerar o backup.",
+      (resultado.stderr || resultado.error?.message || "erro desconhecido").trim().split("\n").slice(0, 5).join(" | ")
+    );
+  }
+
+  const manifesto = {
+    gerado_em: new Date().toISOString(),
+    banco: conexao.banco,
+    arquivo: path.basename(arquivo),
+    tamanho_mb: Number((fs.statSync(arquivo).size / 1024 / 1024).toFixed(2)),
+    totais,
+    motivo: motivo || null
+  };
+  fs.writeFileSync(arquivo.replace(/\.dump$/, ".json"), JSON.stringify(manifesto, null, 2), "utf8");
+
+  return { ...manifesto, caminhoCompleto: arquivo };
+}
+
+// Lista os backups existentes em backups/, mais recente primeiro, com o manifesto de cada um
+// quando disponivel -- usado pela tela de restauracao para o usuario escolher qual arquivo usar
+export function listarBackups() {
+  if (!fs.existsSync(pastaBackups)) return [];
+  const arquivos = fs.readdirSync(pastaBackups).filter((f) => f.endsWith(".dump"));
+  const itens = arquivos.map((nome) => {
+    const caminhoCompleto = path.join(pastaBackups, nome);
+    const caminhoManifesto = caminhoCompleto.replace(/\.dump$/, ".json");
+    const stat = fs.statSync(caminhoCompleto);
+    let manifesto = null;
+    if (fs.existsSync(caminhoManifesto)) {
+      try { manifesto = JSON.parse(fs.readFileSync(caminhoManifesto, "utf8")); } catch { manifesto = null; }
+    }
+    return {
+      arquivo: nome,
+      tamanhoMb: Number((stat.size / 1024 / 1024).toFixed(2)),
+      modificadoEm: stat.mtime.toISOString(),
+      manifesto
+    };
+  });
+  return itens.sort((a, b) => new Date(b.modificadoEm) - new Date(a.modificadoEm));
+}
+
+// Resolve um nome/caminho de backup informado pelo usuario para um caminho absoluto seguro.
+// Aceita tanto um nome simples (resolvido dentro de backups/) quanto um caminho absoluto --
+// o segundo caso e para quando o arquivo vem de outra midia (pendrive, outra pasta).
+export function resolverCaminhoBackup(caminhoOuNome) {
+  if (!caminhoOuNome) {
+    throw new BackupError("ARQUIVO_INEXISTENTE", "Informe o arquivo de backup.");
+  }
+  if (path.isAbsolute(caminhoOuNome)) return caminhoOuNome;
+  // Nome relativo: so pode apontar para dentro de backups/, nunca escapar via "../"
+  const resolvido = path.join(pastaBackups, caminhoOuNome);
+  if (!resolvido.startsWith(pastaBackups + path.sep) && resolvido !== pastaBackups) {
+    throw new BackupError("ARQUIVO_INEXISTENTE", "Caminho de backup inválido.");
+  }
+  return resolvido;
 }

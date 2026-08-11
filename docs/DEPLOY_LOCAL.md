@@ -142,6 +142,29 @@ antigo (apaga uma tabela de runtime e confirma que `ensureAllRuntimeTables` recr
 sobrescrever sem confirmação é recusado, testa que com confirmação funciona, e apaga o banco de
 teste ao final — 18/18 verificações na última execução.
 
+### API HTTP (o que o instalador/app desktop chama)
+
+`server/modules/backup/backup.routes.js` expõe o serviço acima pela interface — nenhuma dessas
+operações precisa de terminal. Todas exigem sessão de admin:
+
+| Rota | O que faz |
+|---|---|
+| `GET /api/admin/backup/listar` | Lista os backups em `backups/` com o manifesto de cada um |
+| `POST /api/admin/backup/gerar` | Gera um novo backup completo (`{ motivo }` opcional no corpo) |
+| `POST /api/admin/backup/validar` | Valida um arquivo (`{ caminho }`) sem tocar em banco |
+| `GET /api/admin/backup/destino-tem-dados` | Confere se o banco deste servidor já tem dados |
+| `POST /api/admin/backup/restaurar` | Restaura (`{ caminho, confirmarSobrescrita }`) — sobrescrever exige `confirmarSobrescrita: true` explícito, senão responde `409` |
+
+`caminho` aceita um nome simples (resolvido dentro de `backups/`, com proteção contra `../`) ou um
+caminho absoluto (para restaurar de outra mídia, ex: pendrive). A restauração sempre mira o
+`DATABASE_URL` do próprio processo do servidor — a rota nunca aceita um banco de destino arbitrário
+vindo do cliente.
+
+Testado via HTTP real contra o servidor rodando (rotas de leitura e o gatilho de segurança do
+`restaurar` sem confirmação, que responde `409` sem alterar nada) — nunca testado com
+`confirmarSobrescrita: true` contra o banco de produção desta máquina; isso só deve acontecer
+depois que o item "cliente novo/máquina nova" for validado em ambiente separado.
+
 ## 1.1 Reiniciar o serviço sem terminal de administrador
 
 Por padrão, só SYSTEM e o grupo Administradores podem iniciar/parar um serviço do Windows —
