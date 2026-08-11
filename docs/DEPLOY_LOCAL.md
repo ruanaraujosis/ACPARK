@@ -91,6 +91,48 @@ Para mover a operação inteira para outra máquina, o caminho é diferente: em 
 estrutura, use um backup completo (estrutura + dados) gerado na máquina de origem. Vale a mesma
 regra de reatribuição de dono acima.
 
+### Gerar backup completo (estrutura + dados)
+
+```bash
+node tools/gerar-backup-completo.mjs --motivo "descreva por que"
+```
+
+Grava em `backups/` (pasta ignorada pelo Git — contém dados reais de produção, nunca versionar).
+Sai um `.dump` (formato custom, para `pg_restore`) e um `.json` de manifesto com os totais
+(pedidos, produtos, PDVs) para conferir depois de restaurar. Rode sempre antes de qualquer
+migração de estrutura.
+
+## 1.1 Reiniciar o serviço sem terminal de administrador
+
+Por padrão, só SYSTEM e o grupo Administradores podem iniciar/parar um serviço do Windows —
+qualquer usuário comum recebe "Não é possível abrir o serviço" ao tentar `Restart-Service`. Isso
+inviabiliza o botão "Reiniciar servidor" da Frente 3 (precisa funcionar sem UAC, em conta comum).
+
+A solução é conceder start/stop **só para o serviço `MyEstoque`**, via `sc sdset` no descritor de
+segurança do serviço (SDDL) — nunca uma permissão ampla de administrador:
+
+```powershell
+sc.exe sdset MyEstoque "D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWRPWPLOCRRC;;;IU)(A;;CCLCSWLOCRRC;;;SU)"
+```
+
+A única mudança em relação ao padrão do Windows é o bloco `IU` (Usuários Interativos): de
+`CCLCSWLOCRRC` (só consulta) para `CCLCSW**RPWP**LOCRRC` (consulta + iniciar `RP` + parar `WP`).
+SYSTEM (`SY`) e Administradores (`BA`) continuam com controle total, como sempre foram.
+
+Precisa rodar uma única vez, com PowerShell como Administrador. Depois disso, qualquer usuário
+logado na máquina consegue `Restart-Service MyEstoque` (ou o app clicar no botão) sem UAC e sem
+senha de administrador.
+
+**Isso é uma flexibilização deliberada de segurança**, restrita a este único serviço — qualquer
+usuário local passa a poder parar o MyEstoque. Aceitável numa máquina dedicada ao servidor; nunca
+deve ser replicado para outros serviços nem para máquinas de uso geral.
+
+Para conferir o estado atual: `sc.exe sdshow MyEstoque`. Para reverter ao padrão do Windows:
+
+```powershell
+sc.exe sdset MyEstoque "D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWLOCRRC;;;IU)(A;;CCLCSWLOCRRC;;;SU)"
+```
+
 ## 2. Fotos de avaria: storage local
 
 1. Configure no `.env.local`:
