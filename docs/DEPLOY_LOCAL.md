@@ -2,6 +2,32 @@
 
 Este documento descreve como rodar o MyEstoque inteiramente em um computador da rede local, acessível pelos PDVs e pelo Almoxarifado em dispositivos diferentes, funcionando mesmo sem internet. A integração com a OMIE continua existindo, mas só sincroniza quando há internet disponível — sem travar o resto do sistema quando não há. Este é o único caminho de hospedagem do projeto — não há mais dependência de nenhuma plataforma externa (Vercel/Supabase).
 
+## 0. Primeira execução: assistente de configuração
+
+Depois de restaurar a estrutura (seção 1) e subir o servidor, abrir o sistema pela primeira vez
+mostra um **assistente de primeiro uso** em vez da tela de login — o banco está vazio, então não
+haveria com o que logar. O assistente cobre o cenário "cliente novo":
+
+1. **Senha do Almoxarifado** — define a senha e já autentica com ela automaticamente.
+2. **Primeiro PDV** — nome e senha; obrigatório, o sistema não é útil sem nenhum PDV.
+3. **Importar produtos (opcional)** — planilha `.xlsx`/`.xls`/`.csv`, reaproveitando o mesmo parser
+   da tela de gestão de produtos. Pode ser pulada e feita depois.
+
+O gate é `senha_almoxarifado` ausente na tabela `configuracoes` — não existe seed para essa chave,
+então a ausência dela já é o sinal exato de instalação nova, sem precisar de flag extra. As rotas
+(`server/modules/setup/setup.routes.js`, `/api/setup/status` e `/api/setup/senha-admin`) são as
+únicas do sistema que respondem sem sessão — `senha-admin` se tranca sozinha no servidor assim que
+a senha é definida, mesmo que alguém chame direto sem passar pela tela, para não virar um jeito de
+resetar a senha de uma instalação já em uso.
+
+**Limitação conhecida**: se o navegador for fechado no meio do assistente (depois do passo 1, antes
+de terminar), a próxima abertura já mostra o login normal (a senha já existe) em vez de retomar o
+assistente de onde parou. Cadastrar PDVs/produtos nesse caso é feito pela tela normal de gestão,
+depois do login — não há um mecanismo de "retomar assistente".
+
+Para o cenário "mesma operação, máquina nova" (já havia dados em outro lugar), não use o
+assistente — restaure um backup completo (seção "Restaurar um backup completo", mais abaixo).
+
 ## 1. Banco de dados: PostgreSQL local
 
 1. Instale o PostgreSQL no Windows (instalador oficial em postgresql.org/download/windows). Qualquer versão recente (16+) serve.

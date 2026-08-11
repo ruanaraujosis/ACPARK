@@ -3,6 +3,7 @@ import { app, state } from "../../state/app-state.js";
 import { stopAutoRefresh } from "../../ui/auto-refresh.js";
 import { toast } from "../../ui/notifications.js";
 import { esc } from "../../ui.js";
+import { configureSetup, renderSetupWizard, verificarSetupNecessario } from "../setup/setup.js";
 
 // Callbacks injetados pelo app principal para evitar dependência circular com o roteador
 let loadBootstrapCallback = null;
@@ -85,9 +86,17 @@ export async function renderLogin() {
   });
 }
 
-// Ponto de entrada da autenticação: tenta recuperar a sessão atual e decide entre app ou login
-export function initializeAuth(callbacks) {
+// Ponto de entrada da autenticação: numa instalação nova mostra o assistente de primeiro uso;
+// senão, tenta recuperar a sessão atual e decide entre app ou tela de login normal
+export async function initializeAuth(callbacks) {
   configureAuth(callbacks);
+  configureSetup(callbacks);
+
+  const precisaConfigurar = await verificarSetupNecessario();
+  if (precisaConfigurar) {
+    return renderSetupWizard();
+  }
+
   return request("/api/auth/me")
     .then(async ({ user }) => {
       state.user = user;

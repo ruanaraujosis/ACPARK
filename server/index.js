@@ -14,6 +14,7 @@ import { handleOmieRoutes } from "./modules/omie/omie.routes.js";
 import { handleIntegrationWebhookRoutes, handleIntegrationsRoutes } from "./modules/integrations/integrations.routes.js";
 import { handleOrderAlertRoutes } from "./modules/order-alerts/order-alerts.routes.js";
 import { handleBackupRoutes } from "./modules/backup/backup.routes.js";
+import { handleSetupRoutes } from "./modules/setup/setup.routes.js";
 import { runOmieSchedulerTick, startOmieScheduler } from "./services/integrations/omie/omie.scheduler.js";
 import { normalizeCategories, normalizeCategoryList, normalizeText, readBody, send } from "./utils/http.js";
 
@@ -190,6 +191,10 @@ async function api(req, res) {
   if (url.pathname === "/api/public/pdvs") {
     return send(res, 200, { pdvs: await query("SELECT id, nome FROM pdvs ORDER BY nome") });
   }
+
+  // Assistente de primeiro uso: rotas públicas que só funcionam numa instalação nova (sem senha
+  // do almoxarifado configurada ainda) — cada rota se tranca sozinha no servidor
+  if (await handleSetupRoutes(req, res, { method, url })) return;
 
   // Endpoint chamado por cron externo para disparar o tick de sincronização OMIE.
   // Fica desabilitado quando CRON_SECRET não está configurado — antes, sem o segredo
