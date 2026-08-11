@@ -80,16 +80,13 @@ export function hashPassword(password) {
   return `${HASH_PREFIX}$${ITERATIONS}$${salt}$${digest}`;
 }
 
-// Valida senha contra hash pbkdf2 ou, por compatibilidade, contra senha em texto puro antiga
+// Valida senha contra hash pbkdf2. Valor fora do formato de hash e sempre recusado -- a
+// comparacao em texto puro para senhas legadas foi removida depois que todas as senhas do
+// sistema (10 PDVs + almoxarifado) passaram a ser gravadas com hash.
 export function verifyPassword(password, stored) {
   if (!password || !stored) return false;
   const value = String(stored);
-  if (!value.startsWith(`${HASH_PREFIX}$`)) {
-    // Senha legada sem hash: compara em tempo constante para evitar timing attack
-    const entered = Buffer.from(String(password));
-    const saved = Buffer.from(value);
-    return entered.length === saved.length && crypto.timingSafeEqual(entered, saved);
-  }
+  if (!value.startsWith(`${HASH_PREFIX}$`)) return false;
 
   const [, iterations, salt, digest] = value.split("$");
   if (!iterations || !salt || !digest) return false;
