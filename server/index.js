@@ -809,7 +809,10 @@ export async function handler(req, res) {
       const result = await query("SELECT 1 AS ok");
       return send(res, 200, { ok: true, db: result[0]?.ok === 1 });
     } catch (error) {
-      return send(res, 500, { ok: false, error: error.message || "Falha na conexao com o banco." });
+      // Rota sem autenticação: o erro do driver traz usuário, host e porta do banco, então só o
+      // detalhe vai para o log do servidor — a resposta fica genérica para quem está na rede
+      console.error("Falha no healthcheck do banco:", error.message);
+      return send(res, 500, { ok: false, error: "Falha na conexao com o banco." });
     }
   }
 

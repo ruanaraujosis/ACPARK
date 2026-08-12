@@ -199,10 +199,18 @@ export async function restaurarBackup({ caminhoArquivo, databaseUrlDestino, conf
   });
   await clienteDono.connect();
   try {
+    // Nomes de tabela/sequence vem do banco recem-restaurado, ou seja, do conteudo do arquivo de
+    // backup -- que pode ter vindo de fora. Sem quoting, um dump com tabela chamada `x" ... --`
+    // executaria SQL arbitrario aqui. escapeIdentifier faz o quoting correto do Postgres.
+    const dono = clienteDono.escapeIdentifier(conexao.usuario);
     const tabelas = (await clienteDono.query("SELECT tablename FROM pg_tables WHERE schemaname='public'")).rows;
-    for (const t of tabelas) await clienteDono.query(`ALTER TABLE public.${t.tablename} OWNER TO ${conexao.usuario}`);
+    for (const t of tabelas) {
+      await clienteDono.query(`ALTER TABLE public.${clienteDono.escapeIdentifier(t.tablename)} OWNER TO ${dono}`);
+    }
     const sequences = (await clienteDono.query("SELECT sequencename FROM pg_sequences WHERE schemaname='public'")).rows;
-    for (const s of sequences) await clienteDono.query(`ALTER SEQUENCE public.${s.sequencename} OWNER TO ${conexao.usuario}`);
+    for (const s of sequences) {
+      await clienteDono.query(`ALTER SEQUENCE public.${clienteDono.escapeIdentifier(s.sequencename)} OWNER TO ${dono}`);
+    }
   } finally {
     await clienteDono.end();
   }
@@ -323,18 +331,22 @@ export function listarBackups() {
   return itens.sort((a, b) => new Date(b.modificadoEm) - new Date(a.modificadoEm));
 }
 
-// Resolve um nome/caminho de backup informado pelo usuario para um caminho absoluto seguro.
-// Aceita tanto um nome simples (resolvido dentro de backups/) quanto um caminho absoluto --
-// o segundo caso e para quando o arquivo vem de outra midia (pendrive, outra pasta).
+// Resolve um nome de backup informado pelo usuario para um caminho absoluto seguro.
+//
+// So aceita arquivos dentro de backups/. Caminho absoluto arbitrario NAO e aceito: pela API HTTP
+// isso daria a quem tem sessao de admin um oraculo de existencia/tamanho de qualquer arquivo do
+// servidor (e ainda rodaria pg_restore --list sobre ele), que e acesso ao filesystem do host --
+// coisa que admin do sistema nao deveria ter. Restaurar de outra midia (pendrive) e feito
+// copiando o arquivo para backups/ antes.
 export function resolverCaminhoBackup(caminhoOuNome) {
   if (!caminhoOuNome) {
     throw new BackupError("ARQUIVO_INEXISTENTE", "Informe o arquivo de backup.");
   }
-  if (path.isAbsolute(caminhoOuNome)) return caminhoOuNome;
-  // Nome relativo: so pode apontar para dentro de backups/, nunca escapar via "../"
-  const resolvido = path.join(pastaBackups, caminhoOuNome);
-  if (!resolvido.startsWith(pastaBackups + path.sep) && resolvido !== pastaBackups) {
-    throw new BackupError("ARQUIVO_INEXISTENTE", "Caminho de backup inválido.");
+  const resolvido = path.resolve(pastaBackups, caminhoOuNome);
+  const relativo = path.relative(pastaBackups, resolvido);
+  // relativo vazio = a propria pasta; comecando com ".." ou absoluto = escapou de backups/
+  if (!relativo || relativo.startsWith("..") || path.isAbsolute(relativo)) {
+    throw new BackupError("ARQUIVO_INEXISTENTE", "Caminho de backup inválido. Use um arquivo da pasta de backups.");
   }
   return resolvido;
 }

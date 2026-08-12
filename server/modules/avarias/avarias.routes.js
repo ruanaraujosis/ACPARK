@@ -2,6 +2,7 @@
 import { asInt, code, query, tx, verifyPassword } from "../../db.js";
 import { normalizeText, readBody, send } from "../../utils/http.js";
 import { getStorageService } from "../../services/storage/storage.service.js";
+import { getStorageConfig } from "../../services/storage/storage.config.js";
 
 let avariaColumnsReady = null;
 let avariaIdempotencyReady = null;
@@ -129,10 +130,30 @@ function parseItems(body) {
   }
 }
 
-// Lê o corpo bruto da requisição (usado para upload multipart de fotos)
+// Teto absoluto do corpo de upload: o maior envio legítimo é uma foto do tamanho máximo, com
+// folga para os cabeçalhos do multipart. Sem esse limite, o corpo era acumulado em memória sem
+// teto nenhum e um único POST grande derrubava por falta de memória o serviço que atende o
+// almoxarifado e todos os PDVs ao mesmo tempo.
+function limiteUploadBytes() {
+  const config = getStorageConfig();
+  return config.maxImageBytes + 1024 * 1024;
+}
+
+// Lê o corpo bruto da requisição (usado para upload multipart de fotos), abortando se passar do teto
 async function readRawBody(req) {
+  const limite = limiteUploadBytes();
   const chunks = [];
-  for await (const chunk of req) chunks.push(Buffer.from(chunk));
+  let total = 0;
+  for await (const chunk of req) {
+    total += chunk.length;
+    if (total > limite) {
+      const error = new Error("Arquivo grande demais. Envie uma imagem menor.");
+      error.statusCode = 413;
+      req.destroy();
+      throw error;
+    }
+    chunks.push(Buffer.from(chunk));
+  }
   return Buffer.concat(chunks);
 }
 

@@ -24,8 +24,16 @@ test("restaurarBackup exige confirmacao explicita quando o destino ja tem dados"
 });
 
 test("restaurarBackup reatribui a propriedade de tabelas e sequences apos restaurar", () => {
-  assert.match(servico, /ALTER TABLE public\.\$\{t\.tablename\} OWNER TO \$\{conexao\.usuario\}/);
-  assert.match(servico, /ALTER SEQUENCE public\.\$\{s\.sequencename\} OWNER TO \$\{conexao\.usuario\}/);
+  assert.match(servico, /ALTER TABLE public\.\$\{clienteDono\.escapeIdentifier\(t\.tablename\)\} OWNER TO/);
+  assert.match(servico, /ALTER SEQUENCE public\.\$\{clienteDono\.escapeIdentifier\(s\.sequencename\)\} OWNER TO/);
+});
+
+test("nomes vindos do arquivo de backup passam por escapeIdentifier antes de virar SQL", () => {
+  // Os nomes de tabela/sequence vem do banco recem-restaurado, ou seja, do conteudo do arquivo de
+  // backup. Sem quoting, um dump com tabela chamada `x" ... --` executaria SQL arbitrario.
+  assert.doesNotMatch(servico, /ALTER TABLE public\.\$\{t\.tablename\}/, "tablename cru em SQL");
+  assert.doesNotMatch(servico, /ALTER SEQUENCE public\.\$\{s\.sequencename\}/, "sequencename cru em SQL");
+  assert.match(servico, /escapeIdentifier\(conexao\.usuario\)/, "o nome do dono tambem precisa de quoting");
 });
 
 test("restaurarBackup chama ensureAllRuntimeTables quando fornecido", () => {

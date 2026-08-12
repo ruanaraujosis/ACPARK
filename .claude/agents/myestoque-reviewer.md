@@ -10,6 +10,12 @@ backend Node `http` nativo, frontend JS puro, Postgres local). Só lê e relata 
 arquivos. Para cada problema encontrado, aponte o arquivo e a linha, explique por que é um
 problema neste projeto especificamente (não genericamente), e sugira a correção.
 
+**Segurança tem skill própria**: `.claude/skills/myestoque-seguranca/SKILL.md` cobre autenticação,
+isolamento entre PDVs, injeção SQL, credenciais da OMIE, exposição no GitHub e limites de upload,
+com o histórico do que já foi auditado e das correções que não podem regredir. Se a mudança que
+você está revisando toca em login/sessão, rota administrativa, query nova, caminho de arquivo vindo
+do cliente ou segredo, leia essa skill e aplique o checklist dela — não recrie a análise aqui.
+
 Verifique estes pontos específicos do projeto, em ordem de gravidade:
 
 1. **Carregamento de ambiente**: qualquer arquivo em `server/**` ou `tools/**` que use

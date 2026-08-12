@@ -74,12 +74,23 @@ test("resolverCaminhoBackup recusa tentativa de escapar da pasta backups/ com ..
   );
 });
 
-test("resolverCaminhoBackup aceita caminho absoluto (midia externa) e nome simples (dentro de backups/)", () => {
-  const absoluto = resolverCaminhoBackup("D:\\pendrive\\meu-backup.dump");
-  assert.equal(absoluto, "D:\\pendrive\\meu-backup.dump");
-
+test("resolverCaminhoBackup só aceita arquivos de dentro de backups/", () => {
   const simples = resolverCaminhoBackup("meu-backup.dump");
   assert.match(simples, /backups[\\/]meu-backup\.dump$/);
+});
+
+test("resolverCaminhoBackup recusa caminho absoluto arbitrário do servidor", () => {
+  // Aceitar caminho absoluto daria a quem tem sessão de admin um oráculo de existência/tamanho
+  // de qualquer arquivo do host (e rodaria pg_restore --list sobre ele) — acesso ao filesystem
+  // do servidor, que admin do sistema não deveria ter. Restaurar de pendrive é copiar para
+  // backups/ antes.
+  for (const alvo of ["C:\\Windows\\System32\\config\\SAM", "/etc/passwd", "D:\\pendrive\\backup.dump"]) {
+    assert.throws(
+      () => resolverCaminhoBackup(alvo),
+      (e) => e instanceof BackupError && e.codigo === "ARQUIVO_INEXISTENTE",
+      `deveria recusar: ${alvo}`
+    );
+  }
 });
 
 test("rota de restaurar so chama pg_restore depois de checar confirmarSobrescrita -- nunca sobrescreve sem o flag", async () => {

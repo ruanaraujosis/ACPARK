@@ -2,13 +2,19 @@ import crypto from "node:crypto";
 
 const ENCRYPTION_PREFIX = "enc:v1";
 
-// Deriva a chave de criptografia AES a partir da env; exige chave real em producao
+// Deriva a chave de criptografia AES a partir da env.
+//
+// Sem fallback para valor fixo: antes, uma instalação sem NODE_ENV=production caía em
+// "local-integration-secret" (string que está neste arquivo, no repositório público) e gravava
+// as credenciais da OMIE com uma chave que qualquer um conhece. Como os backups incluem a tabela
+// integration_credentials, isso valeria para qualquer cópia do banco. A variável agora é sempre
+// obrigatória — instalação nova precisa gerá-la, igual ao JWT_SECRET.
 function getSecretKey(env = process.env) {
-  const raw = env.INTEGRATION_ENCRYPTION_KEY || env.JWT_SECRET;
-  if (env.NODE_ENV === "production" && (!raw || raw === "dev-only-change-me")) {
-    throw new Error("INTEGRATION_ENCRYPTION_KEY obrigatorio em producao.");
+  const raw = env.INTEGRATION_ENCRYPTION_KEY;
+  if (!raw || raw === "dev-only-change-me") {
+    throw new Error("Configure INTEGRATION_ENCRYPTION_KEY no .env.local para usar integrações.");
   }
-  return crypto.createHash("sha256").update(String(raw || "local-integration-secret")).digest();
+  return crypto.createHash("sha256").update(String(raw)).digest();
 }
 
 // Criptografa uma credencial (ex: app_key/app_secret OMIE) com AES-256-GCM antes de persistir
