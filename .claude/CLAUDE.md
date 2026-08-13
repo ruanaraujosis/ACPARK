@@ -29,6 +29,15 @@ Sistema de gestão de estoque e pedidos para PDVs (pontos de venda) e Almoxarifa
 - `NODE_ENV=production` é seguro no local: o cookie de sessão só fica `secure` se `FORCE_SECURE_COOKIES=true` — não depende de `NODE_ENV` (isso foi corrigido de propósito para não quebrar login em HTTP puro na LAN).
 - Integração OMIE: sincronização é **oportunista** — só funciona quando há internet, nunca deve travar o resto do sistema quando não há. Variável correta é `OMIE_SCHEDULER_ENABLED` (não `OMIE_AUTO_SCHEDULER`, que é nome antigo/morto).
 
+## Performance (decisões medidas, não intuídas)
+
+Três otimizações feitas com medição antes/depois — se for mexer nesses pontos, meça de novo em vez de assumir:
+
+- **Reposição automática por intervalo**: `processAutoOrders()` rodava a *cada* requisição autenticada (transação + varredura de 42 mil linhas de `estoque_pdv`, ~17ms). Agora é limitada por `AUTO_ORDER_INTERVAL_MS` (padrão 60s) e protegida contra execução concorrente. Medido: 31,7ms → 13,7ms de mediana por requisição autenticada. A funcionalidade foi verificada de ponta a ponta contra banco descartável (pedido criado, quantidade certa, sem duplicar).
+- **Categorias juntadas em memória**: `string_agg` + `array_agg` com `ORDER BY` interno forçavam duas ordenações e custavam ~230ms para 4,5 mil produtos, em toda carga de página. `listarProdutosComCategorias()` faz duas consultas simples e junta com um `Map`. A ordenação continua vindo do banco (`ORDER BY sku_produto, categoria`), então o resultado é byte a byte idêntico — isso foi conferido linha a linha contra a versão antiga. Medido: 225ms → 98ms.
+- **gzip nível 1 + cache de estáticos**: `send()` e os estáticos comprimem quando o cliente aceita e o corpo passa de 2 KB. **Nível 1 é proposital**: medido com o payload real de 646 KB do `/api/bootstrap`, reduz 85% gastando 6ms de CPU; o nível 9 gastaria 31ms para ganhar só mais 13 KB — numa LAN de 1 Gbps isso deixaria a resposta *mais lenta* do que não comprimir. Bootstrap: 646 KB → 96 KB na rede. `.woff2`/`.png`/`.jpg` não são comprimidos (já são). **SSE nunca passa pelo `send()`** — comprimir/bufferizar o `text/event-stream` quebraria o tempo real.
+- Estáticos com `?v=` agora vão com `immutable` (antes era `no-store` em tudo, o que rebaixava ~1,9 MB a cada abertura). O `index.html` continua `no-store`, porque é ele que aponta para as URLs versionadas.
+
 ## Comandos
 
 - `npm run dev` — inicia o servidor (`node server/index.js`), porta padrão 5173.

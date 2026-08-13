@@ -16,7 +16,7 @@ import { handleOrderAlertRoutes } from "./modules/order-alerts/order-alerts.rout
 import { handleBackupRoutes } from "./modules/backup/backup.routes.js";
 import { handleSetupRoutes } from "./modules/setup/setup.routes.js";
 import { runOmieSchedulerTick, startOmieScheduler } from "./services/integrations/omie/omie.scheduler.js";
-import { normalizeCategories, normalizeCategoryList, normalizeText, readBody, send } from "./utils/http.js";
+import { comprimirSePossivel, marcarSuporteGzip, normalizeCategories, normalizeCategoryList, normalizeText, readBody, send } from "./utils/http.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
@@ -78,8 +78,30 @@ async function ensureSchema() {
   await pool.query(schema);
 }
 
-// Gera pedidos automáticos (prefixo AUTO-) quando o estoque de um PDV cai no mínimo configurado
+// Intervalo mínimo entre duas verificações de reposição automática.
+// Antes isso rodava a CADA requisição autenticada: uma transação + varredura de estoque_pdv
+// (42 mil linhas, ~17ms) por chamada, inclusive nas de polling. Como a reposição depende só do
+// estoque mudar, verificar periodicamente dá o mesmo resultado por uma fração do custo.
+const AUTO_ORDER_INTERVAL_MS = Number(process.env.AUTO_ORDER_INTERVAL_MS || 60_000);
+let autoOrdersLastRun = 0;
+let autoOrdersRunning = false;
+
+// Gera pedidos automáticos (prefixo AUTO-) quando o estoque de um PDV cai no mínimo configurado.
+// Limitado por AUTO_ORDER_INTERVAL_MS e protegido contra execução concorrente.
 async function processAutoOrders() {
+  const agora = Date.now();
+  if (autoOrdersRunning || agora - autoOrdersLastRun < AUTO_ORDER_INTERVAL_MS) return;
+  autoOrdersRunning = true;
+  autoOrdersLastRun = agora;
+  try {
+    await runAutoOrders();
+  } finally {
+    autoOrdersRunning = false;
+  }
+}
+
+// Faz a verificação de fato; separada para o controle de intervalo ficar legível e testável
+async function runAutoOrders() {
   await tx(async (client) => {
     const lows = await client.query(
       `SELECT e.pdv_id, e.sku_produto, e.quantidade, e.estoque_minimo, e.estoque_maximo
@@ -90,6 +112,7 @@ async function processAutoOrders() {
          AND e.estoque_maximo > e.quantidade
          AND e.quantidade <= e.estoque_minimo`
     );
+    if (!lows.rows.length) return;
 
     for (const item of lows.rows) {
       const exists = await client.query(
@@ -109,6 +132,35 @@ async function processAutoOrders() {
         [code("AUTO"), item.pdv_id, item.sku_produto, item.estoque_maximo - item.quantidade]
       );
     }
+  });
+}
+
+// Lista produtos já com as categorias de cada um.
+//
+// Faz duas consultas simples e junta em memória, em vez de agregar no SQL. O `string_agg` +
+// `array_agg` com ORDER BY interno obrigava o Postgres a ordenar duas vezes (uma para agrupar,
+// outra para o ORDER BY final) e custava ~230ms para 4,5 mil produtos — em toda carga de página.
+// A ordenação das categorias continua vindo do banco (ORDER BY sku_produto, categoria), então o
+// resultado é idêntico ao da versão anterior, inclusive na collation.
+async function listarProdutosComCategorias({ somenteAtivos = false, colunasReduzidas = false } = {}) {
+  const colunas = colunasReduzidas
+    ? "p.sku, p.nome, COALESCE(p.origem, 'manual') AS origem"
+    : "p.sku, p.nome, p.qtd_total, p.ativo, COALESCE(p.origem, 'manual') AS origem";
+  const [produtos, vinculos] = await Promise.all([
+    query(`SELECT ${colunas} FROM produtos p ${somenteAtivos ? "WHERE p.ativo = TRUE" : ""} ORDER BY p.nome`),
+    query("SELECT sku_produto, categoria FROM produto_categorias ORDER BY sku_produto, categoria")
+  ]);
+
+  const categoriasPorSku = new Map();
+  for (const vinculo of vinculos) {
+    const lista = categoriasPorSku.get(vinculo.sku_produto);
+    if (lista) lista.push(vinculo.categoria);
+    else categoriasPorSku.set(vinculo.sku_produto, [vinculo.categoria]);
+  }
+
+  return produtos.map((produto) => {
+    const categorias = categoriasPorSku.get(produto.sku) || [];
+    return { ...produto, categoria: categorias.join(", "), categorias };
   });
 }
 
@@ -234,15 +286,7 @@ async function api(req, res) {
         FROM pdvs p
         ORDER BY p.nome
       `),
-      query(`
-        SELECT p.sku, p.nome, p.qtd_total, p.ativo,
-               COALESCE(string_agg(pc.categoria, ', ' ORDER BY pc.categoria), '') AS categoria,
-               COALESCE(array_agg(pc.categoria ORDER BY pc.categoria) FILTER (WHERE pc.categoria IS NOT NULL), '{}') AS categorias,
-               COALESCE(p.origem, 'manual') AS origem
-        FROM produtos p
-        LEFT JOIN produto_categorias pc ON pc.sku_produto = p.sku
-        GROUP BY p.sku, p.nome, p.qtd_total, p.ativo, p.origem
-        ORDER BY p.nome`),
+      listarProdutosComCategorias(),
       query("SELECT nome FROM categorias ORDER BY nome")
     ]);
     return send(res, 200, { pdvs, products, categories, user });
@@ -261,15 +305,7 @@ async function api(req, res) {
   if (url.pathname === "/api/admin/products") {
     if (!requireUser(req, res, "admin")) return;
     if (method === "GET") {
-      return send(res, 200, { products: await query(`
-        SELECT p.sku, p.nome, p.qtd_total, p.ativo,
-               COALESCE(string_agg(pc.categoria, ', ' ORDER BY pc.categoria), '') AS categoria,
-               COALESCE(array_agg(pc.categoria ORDER BY pc.categoria) FILTER (WHERE pc.categoria IS NOT NULL), '{}') AS categorias,
-               COALESCE(p.origem, 'manual') AS origem
-        FROM produtos p
-        LEFT JOIN produto_categorias pc ON pc.sku_produto = p.sku
-        GROUP BY p.sku, p.nome, p.qtd_total, p.ativo, p.origem
-        ORDER BY p.nome`) });
+      return send(res, 200, { products: await listarProdutosComCategorias() });
     }
     const body = await readBody(req);
     if (method === "POST") {
@@ -523,17 +559,7 @@ async function api(req, res) {
          FROM categorias c
          ORDER BY trim(upper(c.nome))`
       );
-      const products = await query(
-        `SELECT p.sku, p.nome,
-                COALESCE(string_agg(pc.categoria, ', ' ORDER BY pc.categoria), '') AS categoria,
-                COALESCE(array_agg(pc.categoria ORDER BY pc.categoria) FILTER (WHERE pc.categoria IS NOT NULL), '{}') AS categorias,
-                COALESCE(p.origem, 'manual') AS origem
-         FROM produtos p
-         LEFT JOIN produto_categorias pc ON pc.sku_produto = p.sku
-         WHERE p.ativo = TRUE
-         GROUP BY p.sku, p.nome, p.origem
-         ORDER BY p.nome`
-      );
+      const products = await listarProdutosComCategorias({ somenteAtivos: true, colunasReduzidas: true });
       return send(res, 200, { categories: rows, products });
     }
     const body = await readBody(req);
@@ -766,6 +792,46 @@ async function api(req, res) {
   return send(res, 404, { error: "Rota não encontrada." });
 }
 
+// Decide por quanto tempo o navegador pode guardar cada arquivo estático.
+//
+// O index.html nunca é cacheado: é ele que aponta para as URLs versionadas (?v=...), então
+// precisa estar sempre fresco para que um deploy novo seja notado. Já os arquivos pedidos COM
+// ?v= podem ser guardados indefinidamente -- trocar a versão no index.html muda a URL e força
+// o download do arquivo novo. Antes tudo vinha com no-store, o que fazia o navegador rebaixar
+// ~1,9 MB (tailwind + xlsx + app.js + css) a cada abertura do sistema.
+function cacheHeaderFor(url, extension) {
+  if (extension === ".html") return "no-store";
+  if (url.searchParams.has("v")) return "public, max-age=31536000, immutable";
+  // Sem versão na URL (ex: fontes referenciadas de dentro do fonts.css, imagens): cache curto,
+  // suficiente para evitar rebaixar a cada navegação sem segurar uma troca por muito tempo.
+  return "public, max-age=3600";
+}
+
+// Tipos que valem comprimir. Fontes (.woff2), imagens (.png/.jpg) e .ico já são comprimidos
+// no próprio formato -- gzipar de novo só gasta CPU sem reduzir nada.
+const EXTENSOES_COMPRIMIVEIS = new Set([".html", ".css", ".js", ".json", ".svg"]);
+
+// Guarda o conteúdo já comprimido dos estáticos: o app.js tem ~484 KB e seria gzipado de novo a
+// cada primeira visita de cada navegador. A chave inclui o mtime, então editar o arquivo invalida.
+const cacheEstaticosGzip = new Map();
+
+// Comprime um arquivo estático quando faz sentido, reaproveitando o resultado entre requisições
+function comprimirEstatico(res, caminho, extensao, conteudo) {
+  if (!res.aceitaGzip || !EXTENSOES_COMPRIMIVEIS.has(extensao)) return { corpo: conteudo, headers: {} };
+  let chave;
+  try {
+    chave = `${caminho}:${fs.statSync(caminho).mtimeMs}`;
+  } catch {
+    return comprimirSePossivel(res, conteudo);
+  }
+  const emCache = cacheEstaticosGzip.get(chave);
+  if (emCache) return { corpo: emCache, headers: { "Content-Encoding": "gzip", Vary: "Accept-Encoding" } };
+  const { corpo, headers } = comprimirSePossivel(res, conteudo);
+  // Só entra no cache se realmente comprimiu (arquivos pequenos passam direto)
+  if (headers["Content-Encoding"]) cacheEstaticosGzip.set(chave, corpo);
+  return { corpo, headers };
+}
+
 // Serve arquivos estáticos de /public; cai para index.html (SPA) quando o arquivo não existe
 function serveStatic(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
@@ -788,8 +854,15 @@ function serveStatic(req, res) {
       });
       return;
     }
-    res.writeHead(200, { "Content-Type": mime[path.extname(file)] || "application/octet-stream", "Cache-Control": "no-store" });
-    res.end(content);
+    const extension = path.extname(file);
+    const { corpo, headers } = comprimirEstatico(res, file, extension, content);
+    res.writeHead(200, {
+      "Content-Type": mime[extension] || "application/octet-stream",
+      "Cache-Control": cacheHeaderFor(url, extension),
+      "Content-Length": corpo.length,
+      ...headers
+    });
+    res.end(corpo);
   });
 }
 
@@ -804,6 +877,8 @@ function ensureSchemaOnce() {
 // Ponto de entrada HTTP: healthcheck, sincronização de schema, API e arquivos estáticos
 export async function handler(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
+  // Registra uma vez por requisição se o cliente aceita gzip; o send() e os estáticos consultam isso
+  marcarSuporteGzip(req, res);
   if (url.pathname === "/api/health") {
     try {
       const result = await query("SELECT 1 AS ok");
