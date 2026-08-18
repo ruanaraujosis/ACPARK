@@ -5,6 +5,8 @@ __pycache__/
 
 # Variaveis de ambiente e segredos locais (.env, .env.local, .env.production.local, .bak ...)
 .env*
+# Excecao: template sem segredos reais, serve de referencia para instalacao nova.
+!.env.example
 .streamlit/secrets.toml
 .claude/settings.local.json
 
