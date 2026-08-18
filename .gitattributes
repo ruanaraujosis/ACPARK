@@ -1,0 +1,4 @@
+# Forca LF independente do core.autocrlf da maquina -- evita diff falso
+# causado por CRLF no Windows em arquivos gerados/lockfiles.
+pnpm-lock.yaml text eol=lf
+package-lock.json text eol=lf
