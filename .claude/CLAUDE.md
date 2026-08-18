@@ -51,4 +51,5 @@ Três otimizações feitas com medição antes/depois — se for mexer nesses po
 - Comentários e mensagens de erro voltadas ao usuário: em português.
 - Cuidado ao criar pastas com `node_modules` symlinkado dentro do repo (já causou um bug de crash em uma suíte de testes, resolvido removendo a pasta problemática).
 - Há um Skill do projeto em `.claude/skills/myestoque-ops/` com comandos operacionais prontos (checar saúde, reiniciar serviço, rodar testes, refazer migração do banco).
+- Há um Skill do projeto em `.claude/skills/myestoque-git/` com informações de Git/GitHub (dono atual do repositório, conta certa do `gh` CLI a usar, nome legado `ACPARK`, convenções de commit/push).
 - Há um hook em `.claude/settings.json` que roda a suíte de testes automaticamente antes de qualquer `git commit` e bloqueia o commit se algo falhar.
