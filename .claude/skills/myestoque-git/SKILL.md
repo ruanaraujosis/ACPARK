@@ -38,9 +38,21 @@ Se `ruanaraujosis` não estiver marcada `Active account: true`, troque antes de 
 gh auth switch --hostname github.com --user ruanaraujosis
 ```
 
-Git usa o `gh` como credential helper para `https://github.com`, então trocar a conta ativa do `gh`
-também troca qual conta o `git push`/`git fetch` usa — não precisa reconfigurar remote nem token à
-parte.
+**Cuidado**: `gh auth switch` sozinho pode não ser suficiente. Nesta máquina o Git usa o Git
+Credential Manager do Windows (`credential.helper = manager`, configurado no nível de sistema) para
+autenticar HTTPS — isso é **separado** do `gh auth switch` e pode continuar com a credencial de uma
+conta antiga em cache, mesmo depois de trocar a conta ativa do `gh`. Sintoma: `git push` falha com
+`403 Permission denied to <conta-errada>`, mesmo com `gh auth status` mostrando a conta certa como
+ativa. Correção (já aplicada em 2026-08-18, mas registrar aqui caso regrida):
+
+```bash
+gh auth setup-git
+```
+
+Isso configura `credential.https://github.com.helper` no `~/.gitconfig` para usar `gh auth
+git-credential` especificamente para `github.com` (sobrepõe o `manager` do sistema só para esse
+host). Depois disso sim, trocar a conta ativa do `gh` também troca qual conta o `git push`/`git
+fetch` usa.
 
 ## Branches
 
