@@ -13,22 +13,12 @@
   --ac-logo: url("https://aguascorrentes.com.br/wp-content/uploads/2025/10/logo-ac-curvo2.png");
 }
 
-/* Integração OMIE: fluxo, cards e modal de configuração */
-.integration-flow {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto minmax(0, 1fr) auto minmax(0, 1fr);
-  gap: 0.75rem;
-  align-items: center;
-  color: #24435f;
-}
-
-.integration-flow strong,
+/* Central de Integrações: cards de provedor, operações e modal de configuração */
 .integration-card-head h3 {
   color: var(--ac-teal-dark);
   font-weight: 900;
 }
 
-.integration-flow span,
 .integration-meta-grid span,
 .integration-secret-list {
   color: #63728a;
@@ -81,6 +71,137 @@
   border-radius: 999px;
   padding: 0.25rem 0.6rem;
   background: #f3fbfc;
+}
+
+/* Credencial obrigatória ainda não preenchida */
+.integration-secret-list span.pendente {
+  border-color: #f3c7a6;
+  background: #fff5ec;
+  color: var(--ac-orange);
+}
+
+/* Aviso dentro do card: credencial faltando, provedor sumido, último erro */
+.integration-alert {
+  border-radius: 12px;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid #f3c7a6;
+  background: #fff5ec;
+  color: #8a3d0b;
+  font-size: 0.85rem;
+}
+
+.integration-alert.erro {
+  border-color: #f5c2c2;
+  background: #fef2f2;
+  color: #9b1c1c;
+}
+
+/* Cada operação declarada pelo provider vira um cartão dentro do card da integração */
+.integration-capability-grid {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.integration-capability {
+  display: grid;
+  gap: 0.5rem;
+  align-content: start;
+  padding: 0.75rem;
+  border: 1px solid #d8eef1;
+  border-radius: 14px;
+  background: #fbfeff;
+}
+
+.integration-capability.has-error {
+  border-color: #f5c2c2;
+  background: #fffafa;
+}
+
+.integration-capability-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.integration-capability-head strong {
+  color: var(--ac-teal-dark);
+  font-weight: 800;
+}
+
+.integration-capability-priority {
+  padding: 0.1rem 0.45rem;
+  border: 1px solid #cfecef;
+  border-radius: 999px;
+  color: #63728a;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.integration-capability-desc {
+  margin: 0;
+  color: #63728a;
+  font-size: 0.8rem;
+}
+
+.integration-capability-meta {
+  display: grid;
+  gap: 0.25rem;
+  margin: 0;
+  font-size: 0.78rem;
+}
+
+.integration-capability-meta > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.integration-capability-meta dt {
+  color: #63728a;
+}
+
+.integration-capability-meta dd {
+  margin: 0;
+  color: #17324d;
+  font-weight: 700;
+  text-align: right;
+}
+
+.integration-capability-error {
+  margin: 0;
+  color: #9b1c1c;
+  font-size: 0.75rem;
+  overflow-wrap: anywhere;
+}
+
+.integration-capability .btn {
+  justify-self: stretch;
+}
+
+.integration-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+/* Bloco de vínculo PDV x local, um por integração */
+.integration-map-block {
+  display: grid;
+  gap: 0.75rem;
+  padding-block: 0.75rem;
+  border-top: 1px solid rgba(0, 123, 135, 0.12);
+}
+
+.integration-map-block:first-of-type {
+  border-top: 0;
+}
+
+.integration-map-block h4 {
+  color: var(--ac-teal-dark);
+  font-weight: 800;
 }
 
 .integration-modal {
@@ -143,7 +264,7 @@
 }
 
 @media (max-width: 760px) {
-  .integration-flow {
+  .integration-capability-grid {
     grid-template-columns: 1fr;
   }
 
@@ -5925,4 +6046,318 @@ td input[type="number"] {
     border: 0;
     padding: 0;
   }
+}
+
+/* Conversão de embalagem para unidade no carrinho do PDV */
+.conversao-info {
+  color: #63728a;
+  font-size: 0.86rem;
+  white-space: nowrap;
+}
+
+.conversao-info.destaque {
+  color: var(--ac-teal-dark);
+}
+
+.conversao-info.destaque strong {
+  font-weight: 900;
+}
+
+/* Produto cujo cadastro no ERP está sem fator válido: pedir por embalagem fica bloqueado */
+.conversao-alerta {
+  color: var(--ac-orange);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.order-cart-unidade {
+  min-height: 38px;
+  font-size: 0.86rem;
+}
+
+/* ===== Assistente de fator de conversão (histórico de compra) ===== */
+
+.assistente-acoes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.assistente-filtros {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.75rem;
+  margin: 0.9rem 0;
+}
+
+.assistente-filtros label {
+  display: grid;
+  gap: 0.25rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #63728a;
+}
+
+.assistente-filtros select,
+.assistente-filtros input {
+  border: 1px solid #cfecef;
+  border-radius: 10px;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.88rem;
+  background: #fff;
+}
+
+.assistente-busca {
+  min-width: 240px;
+}
+
+.assistente-busca input {
+  width: 100%;
+}
+
+.assistente-lista {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.assistente-item {
+  border: 1px solid #cfecef;
+  border-radius: 14px;
+  padding: 0.85rem 1rem;
+  background: #fbfeff;
+  display: grid;
+  gap: 0.6rem;
+}
+
+/* Cadastro genérico não é conflito de fator: é problema de cadastro, e a cor diz isso */
+.assistente-item.cadastro-generico {
+  border-color: #f3c7a6;
+  background: #fff8f2;
+}
+
+.assistente-item > header {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+.assistente-sku {
+  display: block;
+  font-size: 0.76rem;
+  color: #8494a8;
+}
+
+.assistente-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  font-size: 0.74rem;
+}
+
+.assistente-tags span {
+  border-radius: 999px;
+  padding: 0.2rem 0.55rem;
+  border: 1px solid #cfecef;
+  background: #f3fbfc;
+  color: #63728a;
+  font-weight: 700;
+}
+
+.tag-confianca.conf-ALTA {
+  border-color: #bfe3c6;
+  background: #f1fbf3;
+  color: #2f7d43;
+}
+
+.tag-confianca.conf-MEDIA {
+  border-color: #f3dfa6;
+  background: #fffbef;
+  color: #8a6d1f;
+}
+
+.tag-confianca.conf-UNICA {
+  border-color: #f3c7a6;
+  background: #fff5ec;
+  color: var(--ac-orange);
+}
+
+.assistente-motivo {
+  margin: 0;
+  font-size: 0.85rem;
+  color: #4a5a70;
+}
+
+.assistente-evidencias {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.3rem;
+  font-size: 0.8rem;
+}
+
+.assistente-evidencias li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.35rem 0.55rem;
+  border-radius: 10px;
+  background: #f3fbfc;
+}
+
+.assistente-evidencias strong {
+  font-size: 0.95rem;
+  color: #1f3d4d;
+}
+
+.evidencia-notas {
+  font-weight: 700;
+  color: #4a5a70;
+}
+
+.evidencia-doc {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #1f3d4d;
+}
+
+.evidencia-nf,
+.evidencia-forn {
+  color: #8494a8;
+}
+
+/* O rótulo de unidade da nota mente com frequência: só a razão vale como evidência */
+.evidencia-alerta {
+  border-radius: 999px;
+  padding: 0.1rem 0.45rem;
+  border: 1px solid #f3c7a6;
+  background: #fff5ec;
+  color: var(--ac-orange);
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.assistente-nota {
+  margin: 0;
+  font-size: 0.78rem;
+  color: #8494a8;
+}
+
+.assistente-item > footer {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+  border-top: 1px dashed #dcecef;
+  padding-top: 0.55rem;
+  font-size: 0.82rem;
+}
+
+.assistente-erp {
+  color: #63728a;
+}
+
+.assistente-decisao {
+  font-weight: 700;
+  color: #2f7d43;
+}
+
+.assistente-decisao.pendente {
+  color: var(--ac-orange);
+}
+
+.assistente-botoes {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.assistente-botoes .fator-escolhido {
+  width: 84px;
+  border: 1px solid #cfecef;
+  border-radius: 10px;
+  padding: 0.35rem 0.5rem;
+  font-size: 0.9rem;
+  text-align: center;
+}
+
+@media (max-width: 640px) {
+  .assistente-item > header,
+  .assistente-item > footer {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .assistente-busca {
+    min-width: 100%;
+  }
+}
+
+/* Fontes de evidência lado a lado no cartão do assistente */
+.assistente-fontes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  font-size: 0.76rem;
+}
+
+.assistente-fontes span {
+  border-radius: 999px;
+  padding: 0.18rem 0.5rem;
+  border: 1px solid #cfecef;
+  background: #f3fbfc;
+  color: #4a5a70;
+}
+
+.tag-confianca.conf-MAXIMA {
+  border-color: #9fd3ae;
+  background: #e9f9ee;
+  color: #1f6b33;
+}
+
+/* Planilha divergente entre abas: não vira fator, então precisa saltar aos olhos */
+.assistente-fontes .fonte-planilha.divergente {
+  border-color: #f3c7a6;
+  background: #fff5ec;
+  color: var(--ac-orange);
+}
+
+.planilha-item {
+  border: 1px solid #cfecef;
+  border-radius: 14px;
+  padding: 0.75rem 0.9rem;
+  background: #fbfeff;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.planilha-item.divergente {
+  border-color: #f3c7a6;
+  background: #fff8f2;
+}
+
+.planilha-candidatos {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.planilha-candidatos select {
+  border: 1px solid #cfecef;
+  border-radius: 10px;
+  padding: 0.35rem 0.5rem;
+  font-size: 0.85rem;
+  background: #fff;
+  min-width: 260px;
+  max-width: 100%;
+}
+
+.importar-planilha-label {
+  cursor: pointer;
 }

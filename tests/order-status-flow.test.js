@@ -55,7 +55,9 @@ test("a sobra da liberação parcial não vira pendência, só informação", ()
   // A retirada movimenta apenas o que foi liberado; a diferença fica registrada como aviso
   assert.match(routes, /const pendente = asInt\(row\.quantidade_solicitada\) - qty;/);
   assert.match(routes, /if \(pendente > 0\) sobras\.push/);
-  assert.match(routes, /send\(res, 200, \{ ok: true, sobras, saldos_negativos: negativos \}\)/);
+  // A resposta pode ganhar campos novos (ex: resumo do lançamento na integração), mas
+  // sobras e saldos negativos continuam sendo devolvidos como aviso
+  assert.match(routes, /send\(res, 200, \{ ok: true, sobras, saldos_negativos: negativos[,}]/);
   assert.match(app, /não geram pendência|Não geram pendência/i);
   // Nada de pedido complementar nem saldo aberto
   assert.doesNotMatch(routes, /pedido_complementar/);

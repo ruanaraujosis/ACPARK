@@ -1,5 +1,10 @@
 ﻿import { query, tx, asInt, code } from "../../db.js";
 import { normalizeText, readBody, send } from "../../utils/http.js";
+import {
+  registrarCompensacaoDaReabertura,
+  registrarTransferenciasDaRetirada
+} from "../../services/integrations/core/stock-launches.service.js";
+import { converterQuantidadeDoPedido } from "../../services/integrations/core/fator-conversao.repository.js";
 import { publishOrderAlert, publishOrderStatusChange } from "../../services/order-alerts/order-alerts.events.js";
 import { normalizeOrderStatus, orderStatuses } from "./pedidos.service.js";
 
@@ -240,11 +245,21 @@ export async function handlePedidosRoutes(req, res, context) {
           throw error;
         }
 
+        // O PDV pode pedir por embalagem (fardo, caixa); o banco guarda SEMPRE em unidade.
+        // A multiplicação acontece aqui, na criação do item, e nunca depois — se o número
+        // gravado fosse às vezes embalagem e às vezes unidade, nenhuma tela, relatório ou
+        // transferência saberia qual dos dois está lendo.
+        const conversao = await converterQuantidadeDoPedido(client, {
+          sku,
+          quantidade: qty,
+          unidadeMedida: item.unidade_medida
+        });
+
         await client.query(
           `INSERT INTO pedidos
             (codigo_pedido, solicitante, sku_produto, pdv_id, quantidade_solicitada, observacao)
            VALUES ($1, $2, $3, $4, $5, $6)`,
-          [orderCode, solicitante, sku, user.pdvId, qty, observacao]
+          [orderCode, solicitante, sku, user.pdvId, conversao.unidades, observacao]
         );
       }
       await client.query(
@@ -682,7 +697,13 @@ export async function handlePedidosRoutes(req, res, context) {
             order.solicitante,
             order.pdv_id,
             item.sku,
-            item.quantidade,
+            (
+              await converterQuantidadeDoPedido(client, {
+                sku: item.sku,
+                quantidade: item.quantidade,
+                unidadeMedida: item.unidade_medida
+              })
+            ).unidades,
             order.observacao,
             user.name || "Almoxarifado"
           ]
@@ -889,6 +910,12 @@ export async function handlePedidosRoutes(req, res, context) {
               "UPDATE estoque_pdv SET quantidade = GREATEST(0, quantidade - $1) WHERE pdv_id = $2 AND sku_produto = $3",
               [oldQty, current.pdv_id, current.sku_produto]
             );
+            // A OMIE precisa receber o movimento inverso: sem isso ela segue achando que a
+            // mercadoria está no PDV e os dois sistemas divergem em silêncio.
+            await registrarCompensacaoDaReabertura(client, {
+              codigoPedido: orderCode,
+              itens: [{ pedidoItemId: current.id, sku: current.sku_produto, pdvId: current.pdv_id, quantidade: oldQty }]
+            });
           }
         }
 
@@ -1148,6 +1175,13 @@ export async function handlePedidosRoutes(req, res, context) {
             "UPDATE estoque_pdv SET quantidade = GREATEST(0, quantidade - $1) WHERE pdv_id = $2 AND sku_produto = $3",
             [oldQty, current.pdv_id, current.sku_produto]
           );
+          // Mesmo raciocínio do bloco de cima: o estorno também precisa chegar na integração
+          await registrarCompensacaoDaReabertura(client, {
+            codigoPedido: current.codigo_pedido,
+            itens: [
+              { pedidoItemId: asInt(item.id), sku: current.sku_produto, pdvId: current.pdv_id, quantidade: oldQty }
+            ]
+          });
         }
       }
       if (releaseMode === "entered-only" && nextStatus === "Aguardando Retirada" && changedItems === 0) {
@@ -1209,6 +1243,8 @@ export async function handlePedidosRoutes(req, res, context) {
     // Avisos devolvidos à tela: saldos que ficaram negativos e itens liberados abaixo do solicitado
     const negativos = [];
     const sobras = [];
+    // Resumo do que foi enfileirado para a integração externa, devolvido como aviso à tela
+    let lancamentoIntegracao = null;
     await ensurePedidoAuditTable();
 
     await tx(async (client) => {
@@ -1286,6 +1322,20 @@ export async function handlePedidosRoutes(req, res, context) {
           [row.pdv_id, row.sku_produto, qty]
         );
       }
+
+      // Enfileira a transferência ALMOXARIFADO → PDV para a integração externa.
+      // Nunca bloqueia: sem integração, sem vínculo ou sem internet, a retirada conclui
+      // do mesmo jeito e o lançamento fica pendente na fila.
+      lancamentoIntegracao = await registrarTransferenciasDaRetirada(client, {
+        codigoPedido: orderCode,
+        itens: targetRows.map((row) => ({
+          pedidoItemId: row.id,
+          sku: row.sku_produto,
+          pdvId: row.pdv_id,
+          quantidade: asInt(row.quantidade_liberada)
+        }))
+      });
+
       const finalized = await client.query(
         `UPDATE pedidos
          SET status = 'Finalizado',
@@ -1360,7 +1410,7 @@ export async function handlePedidosRoutes(req, res, context) {
       usuario: user.name || "Almoxarifado",
       origem: "retirada"
     });
-    send(res, 200, { ok: true, sobras, saldos_negativos: negativos });
+    send(res, 200, { ok: true, sobras, saldos_negativos: negativos, integracao: lancamentoIntegracao });
     return true;
   }
 

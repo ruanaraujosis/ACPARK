@@ -10,12 +10,11 @@ import { handleEstoqueRoutes } from "./modules/estoque/estoque.routes.js";
 import { syncPdvAllowedProducts } from "./modules/estoque/estoque.service.js";
 import { handlePedidosRoutes } from "./modules/pedidos/pedidos.routes.js";
 import { handleAvariasRoutes } from "./modules/avarias/avarias.routes.js";
-import { handleOmieRoutes } from "./modules/omie/omie.routes.js";
 import { handleIntegrationWebhookRoutes, handleIntegrationsRoutes } from "./modules/integrations/integrations.routes.js";
 import { handleOrderAlertRoutes } from "./modules/order-alerts/order-alerts.routes.js";
 import { handleBackupRoutes } from "./modules/backup/backup.routes.js";
 import { handleSetupRoutes } from "./modules/setup/setup.routes.js";
-import { runOmieSchedulerTick, startOmieScheduler } from "./services/integrations/omie/omie.scheduler.js";
+import { executarTick, iniciarAgendador } from "./services/integrations/core/scheduler.js";
 import { comprimirSePossivel, marcarSuporteGzip, normalizeCategories, normalizeCategoryList, normalizeText, readBody, send } from "./utils/http.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -248,10 +247,12 @@ async function api(req, res) {
   // do almoxarifado configurada ainda) — cada rota se tranca sozinha no servidor
   if (await handleSetupRoutes(req, res, { method, url })) return;
 
-  // Endpoint chamado por cron externo para disparar o tick de sincronização OMIE.
+  // Endpoint chamado por cron externo para disparar um tick das integrações.
   // Fica desabilitado quando CRON_SECRET não está configurado — antes, sem o segredo
   // a checagem era pulada e qualquer um na rede podia disparar a sincronização.
-  if (url.pathname === "/api/cron/omie-sync") {
+  // O caminho antigo (/api/cron/omie-sync) continua atendido para não quebrar agendamentos
+  // externos já configurados nesta instalação.
+  if (url.pathname === "/api/cron/integrations-sync" || url.pathname === "/api/cron/omie-sync") {
     const cronSecret = process.env.CRON_SECRET;
     if (!cronSecret) {
       return send(res, 404, { error: "Rota de cron desabilitada." });
@@ -259,7 +260,7 @@ async function api(req, res) {
     if (req.headers.authorization !== `Bearer ${cronSecret}`) {
       return send(res, 401, { error: "Cron nao autorizado." });
     }
-    const result = await runOmieSchedulerTick();
+    const result = await executarTick();
     return send(res, 200, { ok: true, result });
   }
 
@@ -296,7 +297,6 @@ async function api(req, res) {
   if (await handleEstoqueRoutes(req, res, { method, requireUser, url, user })) return;
   if (await handlePedidosRoutes(req, res, { method, requireUser, url, user })) return;
   if (await handleAvariasRoutes(req, res, { method, requireUser, url, user })) return;
-  if (await handleOmieRoutes(req, res, { method, requireUser, url, user })) return;
   if (await handleIntegrationsRoutes(req, res, { method, requireUser, url, user })) return;
   if (await handleOrderAlertRoutes(req, res, { method, url, user })) return;
   if (await handleBackupRoutes(req, res, { method, requireUser, url, user })) return;
@@ -908,7 +908,7 @@ export async function handler(req, res) {
   }
 }
 
-// Sobe o servidor HTTP e inicia o agendador de sincronização OMIE
+// Sobe o servidor HTTP e inicia o agendador das integrações registradas
 http.createServer((req, res) => {
   handler(req, res).catch((error) => {
     console.error(error);
@@ -916,6 +916,6 @@ http.createServer((req, res) => {
   });
 }).listen(port, () => {
   console.log(`MyEstoque web rodando em http://localhost:${port}`);
-  startOmieScheduler();
+  iniciarAgendador();
 });
 

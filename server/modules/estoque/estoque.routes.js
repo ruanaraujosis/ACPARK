@@ -9,13 +9,19 @@ export async function handleEstoqueRoutes(req, res, context) {
   if (url.pathname === "/api/pdv/products") {
     const pdvId = user.role === "pdv" ? user.pdvId : asInt(url.searchParams.get("pdvId"));
     const rows = await query(
+      // O fator de conversão vem junto para a tela poder oferecer o pedido por embalagem
+      // e mostrar o total em unidades ao lado. Produto sem fator lido fica unitário.
       `SELECT p.sku, p.nome, p.qtd_total AS estoque_central,
               COALESCE(string_agg(DISTINCT prc.categoria, ', ' ORDER BY prc.categoria), '') AS categoria,
-              e.quantidade, e.estoque_minimo, e.estoque_maximo
+              e.quantidade, e.estoque_minimo, e.estoque_maximo,
+              MAX(m.fator_conversao) AS fator_conversao,
+              MAX(m.embalagem) AS embalagem,
+              MAX(m.fator_status) AS fator_status
        FROM estoque_pdv e
        JOIN produtos p ON p.sku = e.sku_produto
        JOIN produto_categorias prc ON prc.sku_produto = p.sku
        JOIN pdv_categorias pc ON pc.pdv_id = e.pdv_id AND pc.categoria = prc.categoria
+       LEFT JOIN product_integration_mappings m ON m.sku_produto = p.sku AND m.active = TRUE
        WHERE e.pdv_id = $1 AND e.permitido = TRUE AND p.ativo = TRUE
        GROUP BY p.sku, p.nome, p.qtd_total, e.quantidade, e.estoque_minimo, e.estoque_maximo
        ORDER BY p.nome`,

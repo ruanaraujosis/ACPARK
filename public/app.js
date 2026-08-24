@@ -72,7 +72,7 @@ function shell(content, actions = "") {
   const displayName = role === "admin" ? "Almoxarifado" : state.user?.name;
   const shouldShowHero = state.currentView === "dashboard";
   const items = role === "admin"
-    ? [["dashboard", "Dashboard"], ["products", "Estoque central"], ["stock", "Estoque PDVs"], ["release", "Liberação"], ["damages", "Devoluções de avarias"], ["omie", "Integrações"], ["history", "Histórico"], ["damage-history", "Histórico de Devoluções"], ["auto", "Autopedidos"], ["config", "Config"]]
+    ? [["dashboard", "Dashboard"], ["products", "Estoque central"], ["stock", "Estoque PDVs"], ["release", "Liberação"], ["damages", "Devoluções de avarias"], ["integrations", "Integrações"], ["history", "Histórico"], ["damage-history", "Histórico de Devoluções"], ["auto", "Autopedidos"], ["config", "Config"]]
     : [["order", "Novo pedido"], ["mine", "Meus pedidos"], ["my-stock", "Meu estoque"], ["damage-return", "Nova devolução de avaria"]];
 
   app.innerHTML = `
@@ -322,13 +322,13 @@ function connectIntegrationEvents() {
   if (!window.EventSource || state.integrationEventsConnected) return;
   state.integrationEventsConnected = true;
   const source = new EventSource("/api/admin/integrations/events");
-  const refreshOmie = () => {
-    if (state.currentView === "omie") viewOmieIntegrations().catch(() => {});
+  const recarregarIntegracoes = () => {
+    if (state.currentView === "integrations") viewIntegrations().catch(() => {});
   };
-  source.addEventListener("integration.job.updated", refreshOmie);
-  source.addEventListener("integration.status.updated", refreshOmie);
+  source.addEventListener("integration.job.updated", recarregarIntegracoes);
+  source.addEventListener("integration.status.updated", recarregarIntegracoes);
   source.addEventListener("stock.updated", (event) => {
-    refreshOmie();
+    recarregarIntegracoes();
     try {
       const data = JSON.parse(event.data || "{}");
       if (data?.payload?.sku_produto) toast(`Saldo atualizado: ${data.payload.sku_produto}`);
@@ -336,9 +336,7 @@ function connectIntegrationEvents() {
       toast("Saldo atualizado.");
     }
   });
-  source.addEventListener("stock.movement.imported", () => {
-    if (state.currentView === "omie") refreshOmie();
-  });
+  source.addEventListener("stock.movement.imported", recarregarIntegracoes);
   source.onerror = () => {
     source.close();
     state.integrationEventsConnected = false;
@@ -363,7 +361,7 @@ async function route(view) {
       stock: viewStock,
       release: viewRelease,
       damages: viewDamagesAdmin,
-      omie: viewOmieIntegrations,
+      integrations: viewIntegrations,
       history: () => viewHistory(false),
       "damage-history": viewDamageHistory,
       auto: () => viewHistory(true),
@@ -421,7 +419,9 @@ async function viewOrder(options = {}) {
       .map((item) => ({
         sku: String(item.sku || ""),
         nome: String(item.nome || ""),
-        quantidade: Number(item.quantidade || 0)
+        quantidade: Number(item.quantidade || 0),
+        // Sem isto, recarregar a tela devolvia tudo para unidade e o PDV perdia a escolha
+        unidade_medida: item.unidade_medida === "EMBALAGEM" ? "EMBALAGEM" : "UNIDADE"
       }))
       .filter((item) => item.sku && item.quantidade > 0);
   }
@@ -507,7 +507,7 @@ async function viewOrder(options = {}) {
     if (!product || !Number.isFinite(qty) || qty <= 0) return;
     const existing = state.cart.find((item) => item.sku === sku);
     if (existing) existing.quantidade += qty;
-    else state.cart.push({ sku, nome: product.nome, quantidade: qty });
+    else state.cart.push({ sku, nome: product.nome, quantidade: qty, unidade_medida: "UNIDADE" });
   };
   const currentDraftPayload = () => ({
     solicitante: document.querySelector("#solicitante")?.value || "",
@@ -592,11 +592,12 @@ async function viewOrder(options = {}) {
   };
   const renderAvailableProducts = () => {
     document.querySelector("#available-products").innerHTML = data.products.length
-      ? table(["SKU", "Produto", "Categoria", "Estoque central", "Atual", "Máx.", "Ação"], data.products.map((product) => `
+      ? table(["SKU", "Produto", "Categoria", "Embalagem", "Estoque central", "Atual", "Máx.", "Ação"], data.products.map((product) => `
         <tr class="available-product-row" data-search="${esc(productSearch(product))}" data-categories="${esc(productCategories(product).map((category) => category.toLowerCase()).join("|"))}">
           <td>${esc(product.sku)}</td>
           <td>${esc(product.nome)}</td>
           <td>${esc(product.categoria || "-")}</td>
+          <td>${Number(product.fator_conversao) > 1 ? esc(`${product.embalagem || "Embalagem"} c/ ${product.fator_conversao}`) : "Unidade"}</td>
           <td class="release-number-cell">${centralStockValue(product)}</td>
           <td>${product.quantidade}</td>
           <td>${product.estoque_maximo}</td>
@@ -608,18 +609,59 @@ async function viewOrder(options = {}) {
       renderCart();
     }));
   };
+  // Dados de conversão do produto, vindos do cadastro do ERP
+  const fatorDoProduto = (sku) => {
+    const produto = data.products.find((p) => String(p.sku) === String(sku));
+    const fator = Number(produto?.fator_conversao);
+    return {
+      fator: Number.isSafeInteger(fator) && fator > 1 ? fator : 1,
+      embalagem: produto?.embalagem || "",
+      invalido: produto?.fator_status === "INVALIDO"
+    };
+  };
+
+  // "2 fardos = 30 un" — o PDV vê a embalagem que escolheu e o total que vai receber
+  const textoDaConversao = (item) => {
+    const { fator, embalagem, invalido } = fatorDoProduto(item.sku);
+    if (invalido) return `<span class="conversao-alerta">Cadastro sem fator válido — peça em unidades</span>`;
+    if (item.unidade_medida !== "EMBALAGEM" || fator < 2) return `<span class="conversao-info">${esc(item.quantidade)} un</span>`;
+    const nome = embalagem ? `${embalagem.toLowerCase()}${item.quantidade > 1 ? "s" : ""}` : "embalagem(ns)";
+    return `<span class="conversao-info destaque">${esc(item.quantidade)} ${esc(nome)} = <strong>${item.quantidade * fator} un</strong></span>`;
+  };
+
   const renderCart = () => {
     document.querySelector("#cart").innerHTML = state.cart.length
-      ? table(["Produto", "Qtd", "Ação"], state.cart.map((item, index) => `
+      ? table(["Produto", "Qtd", "Unidade", "Total", "Ação"], state.cart.map((item, index) => {
+        const { fator, embalagem, invalido } = fatorDoProduto(item.sku);
+        const temEmbalagem = fator > 1 && !invalido;
+        return `
         <tr class="order-cart-row">
           <td>${esc(item.nome)}</td>
           <td><input class="order-cart-qty" type="number" min="1" value="${item.quantidade}" data-index="${index}" /></td>
+          <td>
+            ${temEmbalagem
+              ? `<select class="order-cart-unidade" data-index="${index}">
+                   <option value="UNIDADE" ${item.unidade_medida !== "EMBALAGEM" ? "selected" : ""}>Unidade</option>
+                   <option value="EMBALAGEM" ${item.unidade_medida === "EMBALAGEM" ? "selected" : ""}>${esc(embalagem || "Embalagem")} (${fator} un)</option>
+                 </select>`
+              : `<span class="conversao-info">Unidade</span>`}
+          </td>
+          <td>${textoDaConversao(item)}</td>
           <td><button class="icon-action danger remove" type="button" data-index="${index}" title="Remover produto" aria-label="Remover produto">&times;</button></td>
-        </tr>`))
+        </tr>`;
+      }))
       : `<p class="text-sm text-slate-500">Nenhum produto adicionado ainda.</p>`;
     document.querySelectorAll(".order-cart-qty").forEach((input) => input.addEventListener("input", () => {
       const qty = Number(input.value);
-      if (Number.isFinite(qty) && qty > 0) state.cart[Number(input.dataset.index)].quantidade = qty;
+      if (Number.isFinite(qty) && qty > 0) {
+        state.cart[Number(input.dataset.index)].quantidade = qty;
+        renderCart();
+      }
+    }));
+    // Trocar de unidade redesenha para o total acompanhar na hora
+    document.querySelectorAll(".order-cart-unidade").forEach((select) => select.addEventListener("change", () => {
+      state.cart[Number(select.dataset.index)].unidade_medida = select.value;
+      renderCart();
     }));
     document.querySelectorAll(".remove").forEach((btn) => btn.addEventListener("click", () => {
       state.cart.splice(Number(btn.dataset.index), 1);
@@ -3484,180 +3526,614 @@ function openDamageWithdrawSignature({ damageId, itemId, product, requested, ref
   });
 }
 
-// View de integrações com o OMIE
-async function viewOmieIntegrations(filters = {}) {
+// Filtros do assistente de fator. Ficam fora da view porque `recarregar()` redesenha a tela
+// inteira: guardados dentro, a fila e a busca voltariam ao padrão a cada confirmação.
+const filtroEvidencia = { fila: "FATOR", situacao: "", busca: "" };
+
+// View da Central de Integrações.
+//
+// A tela não conhece nenhuma API específica: tudo que ela desenha vem do catálogo de
+// providers devolvido por /api/admin/integrations/providers — credenciais, operações,
+// intervalos e prioridades. Ligar uma API nova no backend faz ela aparecer aqui sozinha,
+// sem alterar este arquivo.
+async function viewIntegrations(filters = {}) {
   const status = filters.status || "";
-  const type = filters.type || "";
-  const from = filters.from || "";
-  const to = filters.to || "";
-  const entityId = filters.entityId || "";
+  const capacidade = filters.capacidade || "";
+  const integrationId = filters.integrationId || "";
+
   const params = new URLSearchParams();
   if (status) params.set("status", status);
-  if (type) params.set("type", type);
-  if (from) params.set("from", from);
-  if (to) params.set("to", to);
-  if (entityId) params.set("entityId", entityId);
-  const [integrationsData, jobsData, pdvsData, mappingsData, divergencesData] = await Promise.all([
+  if (capacidade) params.set("capacidade", capacidade);
+  if (integrationId) params.set("integrationId", integrationId);
+
+  const [
+    catalogo,
+    integrationsData,
+    jobsData,
+    pdvsData,
+    locationsData,
+    mappingsData,
+    divergencesData,
+    healthData,
+    launchesData,
+    fatoresData
+  ] = await Promise.all([
+    request("/api/admin/integrations/providers"),
     request("/api/admin/integrations"),
-    request("/api/admin/integrations/jobs"),
+    request(`/api/admin/integrations/jobs?${params}`),
     request("/api/admin/pdvs"),
+    request("/api/admin/integrations/locations").catch(() => ({ locations: [] })),
     request("/api/admin/integrations/location-mappings").catch(() => ({ mappings: [] })),
-    request("/api/admin/integrations/reconciliations").catch(() => ({ divergences: [] }))
+    request("/api/admin/integrations/reconciliations").catch(() => ({ divergences: [] })),
+    request("/api/admin/integrations/health").catch(() => ({ sync_state: [] })),
+    request("/api/admin/integrations/launches").catch(() => ({ launches: [], resumo: [] })),
+    request("/api/admin/integrations/fatores").catch(() => ({ pendencias: [], resumo: [] }))
   ]);
+
+  const providers = catalogo.providers || [];
   const integrations = integrationsData.integrations || [];
   const jobs = jobsData.jobs || [];
   const pdvs = pdvsData.pdvs || [];
+  const locations = locationsData.locations || [];
   const mappings = mappingsData.mappings || [];
   const divergences = divergencesData.divergences || [];
+  const syncState = healthData.sync_state || [];
+  const launches = launchesData.launches || [];
+  const resumoLancamentos = launchesData.resumo || [];
+  const pendenciasFator = fatoresData.pendencias || [];
+  const resumoFatores = fatoresData.resumo || [];
+
+  // O assistente de fator depende de saber qual integração, então carrega depois do Promise.all
+  const integracaoAtiva = integrations[0];
+  const paramsEvidencia = new URLSearchParams({ fila: filtroEvidencia.fila });
+  if (integracaoAtiva) paramsEvidencia.set("id", integracaoAtiva.id);
+  if (filtroEvidencia.situacao) paramsEvidencia.set("situacao", filtroEvidencia.situacao);
+  const evidenciaData = integracaoAtiva
+    ? await request(`/api/admin/integrations/fator-evidencia?${paramsEvidencia}`).catch(() => ({
+        sugestoes: [],
+        resumo: {}
+      }))
+    : { sugestoes: [], resumo: {} };
+  const resumoEvidencia = evidenciaData.resumo || {};
+
+  // Planilha de controle de fardos: fonte de corroboracao, com sua propria fila de vinculo
+  const planilhaData = integracaoAtiva
+    ? await request(`/api/admin/integrations/fator-planilha?id=${integracaoAtiva.id}`).catch(() => ({
+        linhas: [],
+        pendencias: []
+      }))
+    : { linhas: [], pendencias: [] };
+  const linhasPlanilha = planilhaData.linhas || [];
+  const pendenciasVinculo = planilhaData.pendencias || [];
+
+  // Busca por texto acontece na tela: a lista já vem limitada e filtrar aqui evita ida ao servidor
+  const termoBusca = String(filtroEvidencia.busca || "").trim().toUpperCase();
+  const sugestoesEvidencia = (evidenciaData.sugestoes || []).filter((item) => {
+    if (!termoBusca) return true;
+    const alvo = [item.sku, item.nome, item.opcoes?.[0]?.documento?.fornecedor, item.opcoes?.[0]?.documento?.descricao]
+      .filter(Boolean)
+      .join(" ")
+      .toUpperCase();
+    return alvo.includes(termoBusca);
+  });
+
+  // Rótulo curto de cada classificação, para a tela falar a língua de quem confere
+  const rotuloSituacao = {
+    SUGERIDO: "Fator sugerido",
+    CONFLITO_EMBALAGEM: "Conflito de embalagem",
+    CADASTRO_GENERICO: "Cadastro genérico",
+    SO_AVULSO: "Só compra avulsa",
+    SEM_EVIDENCIA: "Sem evidência"
+  };
+  const rotuloConfianca = {
+    MAXIMA: "Confiança máxima",
+    ALTA: "Confiança alta",
+    MEDIA: "Confiança média",
+    UNICA: "Evidência única"
+  };
+
+  // Mostra de qual fonte veio cada número — é isso que sustenta a conferência
+  const linhaFontes = (fontes) => {
+    if (!fontes) return "";
+    const partes = [];
+    if (fontes.notas) partes.push(`<span class="fonte-notas">Notas: ×${esc(fontes.notas.fator)} (${esc(fontes.notas.vezes)})</span>`);
+    if (fontes.planilha) {
+      partes.push(
+        fontes.planilha.divergente
+          ? `<span class="fonte-planilha divergente">Planilha "${esc(fontes.planilha.nome_operacao)}": abas discordam</span>`
+          : `<span class="fonte-planilha">Planilha "${esc(fontes.planilha.nome_operacao)}": ×${esc(fontes.planilha.fator)}</span>`
+      );
+    }
+    if (fontes.descricao) partes.push(`<span class="fonte-descricao">Descrição: ×${esc(fontes.descricao.fator)} ("${esc(fontes.descricao.trecho)}")</span>`);
+    return partes.length ? `<div class="assistente-fontes">${partes.join("")}</div>` : "";
+  };
+
+  // Uma linha de evidência: a nota que sustenta aquele fator
+  const linhaEvidencia = (opcao) => {
+    const doc = opcao.documento || {};
+    const de = `${doc.quantidade_documento ?? "?"} ${doc.unidade_documento || ""}`.trim();
+    const para = `${doc.quantidade_estoque ?? "?"} ${doc.unidade_estoque || ""}`.trim();
+    return `
+      <li>
+        <strong>×${esc(opcao.fator)}</strong>
+        <span class="evidencia-notas">${esc(opcao.vezes)} nota(s)</span>
+        <span class="evidencia-doc">${esc(de)} → ${esc(para)}</span>
+        ${doc.nota ? `<span class="evidencia-nf">NF ${esc(doc.nota)} · ${esc(doc.emissao || "")}</span>` : ""}
+        ${doc.fornecedor ? `<span class="evidencia-forn">${esc(doc.fornecedor)}</span>` : ""}
+        ${doc.unidade_suspeita ? `<span class="evidencia-alerta" title="A nota usa o mesmo rótulo de unidade dos dois lados. A razão vale, o rótulo não.">rótulo de unidade duvidoso</span>` : ""}
+      </li>`;
+  };
+
+  // Cartão de um produto na fila de conferência
+  const cartaoSugestao = (item) => {
+    const decidido = item.decisao;
+    const ehCadastro = item.pendencia_de_cadastro;
+    const podeAprovar = item.exigeConfirmacao && !ehCadastro;
+    return `
+      <article class="assistente-item ${ehCadastro ? "cadastro-generico" : ""}" data-produto="${esc(item.external_product_id)}">
+        <header>
+          <div>
+            <strong>${esc(item.nome || item.sku || "-")}</strong>
+            <span class="assistente-sku">SKU ${esc(item.sku || "-")} · id ${esc(item.external_product_id)}</span>
+          </div>
+          <div class="assistente-tags">
+            <span class="tag-situacao">${esc(rotuloSituacao[item.situacao] || item.situacao)}</span>
+            ${item.confianca ? `<span class="tag-confianca conf-${esc(item.confianca)}">${esc(rotuloConfianca[item.confianca])}</span>` : ""}
+            ${item.pedidos_recentes ? `<span class="tag-demanda">${esc(item.pedidos_recentes)} pedido(s) em 90 dias</span>` : ""}
+          </div>
+        </header>
+
+        <p class="assistente-motivo">${esc(item.motivo || "")}</p>
+
+        ${linhaFontes(item.fontes)}
+        ${item.opcoes?.length ? `<ul class="assistente-evidencias">${item.opcoes.map(linhaEvidencia).join("")}</ul>` : ""}
+        ${item.tambemAvulso
+          ? `<p class="assistente-nota">Também comprado avulso em ${esc(item.tambemAvulso)} nota(s): a embalagem tem ${esc(item.fator)}, mas o item também entra unitário.</p>`
+          : ""}
+
+        <footer>
+          <span class="assistente-erp">Fator hoje no ERP: <strong>${esc(item.fator_no_erp ?? "—")}</strong></span>
+          ${decidido
+            ? `<span class="assistente-decisao ${decidido.status === "ERRO" ? "pendente" : ""}">
+                 ${esc(decidido.status)}${decidido.fator ? ` · fator ${esc(decidido.fator)}` : ""}
+                 ${decidido.por ? ` · por ${esc(decidido.por)}` : ""}
+                 ${decidido.erro ? `<br><small>${esc(decidido.erro)}</small>` : ""}
+               </span>`
+            : ""}
+          ${podeAprovar
+            ? `<div class="assistente-botoes">
+                 <input type="number" min="1" step="1" class="fator-escolhido" value="${esc(item.fator ?? item.opcoes?.[0]?.fator ?? "")}" aria-label="Fator para ${esc(item.sku || "")}" />
+                 <button class="btn aprovar-fator" type="button" data-produto="${esc(item.external_product_id)}" data-sugerido="${esc(item.fator ?? "")}">Confirmar</button>
+                 <button class="btn secondary recusar-fator" type="button" data-produto="${esc(item.external_product_id)}">Deixar pendente</button>
+               </div>`
+            : ""}
+        </footer>
+      </article>`;
+  };
+
+  const providerDe = (integration) => providers.find((item) => item.id === integration.provedor);
+  // Só as operações que o operador pode disparar na mão (SALDO_ITEM é agendada pelo sistema)
+  const capacidadesManuais = (provider) => (provider?.capacidades || []).filter((item) => item.manual !== false);
+  const todasCapacidades = [...new Set(providers.flatMap((provider) => provider.capacidades.map((item) => item.id)))];
+
+  // Estado do cursor de uma operação: quando rodou pela última vez e se deixou erro
+  const estadoDe = (integrationId, capacidadeId) => syncState.find(
+    (item) => String(item.integration_id) === String(integrationId) && item.scope === capacidadeId
+  );
+
+  // Cartão de uma operação dentro do card da integração
+  const cartaoCapacidade = (integration, cap) => {
+    const estado = estadoDe(integration.id, cap.id);
+    const ultimo = estado?.last_success_at ? moneyDate(estado.last_success_at) : "Nunca";
+    return `
+      <div class="integration-capability ${estado?.last_error ? "has-error" : ""}">
+        <div class="integration-capability-head">
+          <strong>${esc(cap.rotulo)}</strong>
+          <span class="integration-capability-priority">${esc(cap.prioridade)}</span>
+        </div>
+        <p class="integration-capability-desc">${esc(cap.descricao)}</p>
+        <dl class="integration-capability-meta">
+          <div><dt>Último sucesso</dt><dd>${esc(ultimo)}</dd></div>
+          <div><dt>Automático</dt><dd>${cap.intervalo_padrao_ms ? esc(formatarIntervalo(cap.intervalo_padrao_ms)) : "Sob demanda"}</dd></div>
+        </dl>
+        ${estado?.last_error ? `<p class="integration-capability-error">${esc(estado.last_error)}</p>` : ""}
+        <button class="btn secondary sync-capability" type="button"
+                data-id="${integration.id}" data-capacidade="${esc(cap.id)}">Sincronizar</button>
+      </div>`;
+  };
+
   shell(`
     <section class="card filter-panel">
       <div class="filter-copy">
         <p class="eyebrow">Integrações</p>
         <h3 class="section-title text-xl font-black">Central de APIs e integrações</h3>
-        <p class="text-sm text-slate-500">Arquitetura oficial: ORION integra diretamente com OMIE. O ACPARK sincroniza produtos, saldos e movimentações já atualizados no OMIE.</p>
+        <p class="text-sm text-slate-500">Cada integração declara as próprias credenciais e operações. As leituras trazem dados da API externa para o MyEstoque; nenhuma operação desta tela escreve no sistema externo.</p>
       </div>
       <div class="filter-actions">
         <button class="btn" id="add-integration" type="button">+ Adicionar integração</button>
       </div>
     </section>
-    <section class="card">
-      <div class="integration-flow">
-        <strong>ORION</strong><span>venda, cancelamento e devolução</span>
-        <strong>OMIE</strong><span>estoque oficial</span>
-        <strong>ACPARK</strong><span>sincronização operacional</span>
-      </div>
-    </section>
+
     <section class="integration-card-grid">
-      ${integrations.map((integration) => `
+      ${integrations.map((integration) => {
+        const provider = providerDe(integration);
+        const capacidades = capacidadesManuais(provider);
+        const faltando = (integration.credenciais || []).filter((item) => item.obrigatoria && !item.configurada);
+        return `
         <article class="card integration-card">
           <div class="integration-card-head">
-            <div><p class="eyebrow">${esc(integration.provedor)}</p><h3>${esc(integration.nome)}</h3></div>
-            ${statusPill(integration.status === "INTEGRADO" ? "Conectado" : integration.status || "Pendente")}
+            <div>
+              <p class="eyebrow">${esc(provider?.rotulo || integration.provedor)}</p>
+              <h3>${esc(integration.nome)}</h3>
+            </div>
+            ${statusPill(integration.status || "PENDENTE")}
           </div>
+
+          ${!integration.provider_registrado
+            ? `<p class="integration-alert">Este provedor não existe mais no sistema. A integração fica parada até ser reconfigurada.</p>`
+            : ""}
+          ${faltando.length
+            ? `<p class="integration-alert">Falta configurar: ${esc(faltando.map((item) => item.rotulo).join(", "))}.</p>`
+            : ""}
+
           <div class="integration-meta-grid">
-            <span>Tipo</span><strong>${esc(integration.tipo === "ERP_ESTOQUE" ? "ERP e estoque" : integration.tipo || "-")}</strong>
             <span>Ambiente</span><strong>${esc(integration.ambiente || "-")}</strong>
-            <span>Última sincronização</span><strong>${integration.ultima_sincronizacao ? moneyDate(integration.ultima_sincronizacao) : "Nunca"}</strong>
+            <span>URL base</span><strong>${esc(integration.url_base || "-")}</strong>
             <span>Empresa</span><strong>${esc(integration.empresa_vinculada || "-")}</strong>
-            <span>Modo de estoque</span><strong>${esc(integration.stock_mode || "MANUAL")}</strong>
+            ${(provider?.configuracoes || []).map((config) => {
+              const valor = integration.configuracao?.[config.chave];
+              // Mostra o nome do local, não o código numérico que ninguém reconhece
+              const local = locations.find((item) => String(item.integration_id) === String(integration.id)
+                && String(item.omie_location_id) === String(valor));
+              return `<span>${esc(config.rotulo)}</span><strong>${esc(local?.name || valor || "não configurado")}</strong>`;
+            }).join("")}
+            <span>Última sincronização</span><strong>${integration.ultima_sincronizacao ? moneyDate(integration.ultima_sincronizacao) : "Nunca"}</strong>
             <span>Último teste</span><strong>${integration.last_connection_test_at ? `${moneyDate(integration.last_connection_test_at)} (${integration.last_connection_duration_ms || 0} ms)` : "Nunca"}</strong>
           </div>
+
           <div class="integration-secret-list">
-            ${(integration.credentials || []).map((credential) => `<span>${esc(credential.key)}: ${esc(credential.masked_value || "não configurado")}</span>`).join("")}
+            ${(integration.credenciais || []).map((credential) => `
+              <span class="${credential.configurada ? "" : "pendente"}">
+                ${esc(credential.rotulo)}: ${esc(credential.configurada ? credential.mascara || "configurada" : "não configurada")}
+              </span>`).join("")}
           </div>
-          ${integration.last_error ? `<p class="text-sm text-red-700">${esc(integration.last_error)}</p>` : ""}
-          <div class="form-actions">
+
+          ${integration.last_error ? `<p class="integration-alert erro">${esc(integration.last_error)}</p>` : ""}
+
+          <div class="integration-capability-grid">
+            ${capacidades.map((cap) => cartaoCapacidade(integration, cap)).join("")
+              || `<div class="empty-state">Este provedor não declara operações.</div>`}
+          </div>
+
+          <div class="integration-card-actions">
             <button class="btn secondary test-integration" type="button" data-id="${integration.id}">Testar conexão</button>
             <button class="btn secondary configure-integration" type="button" data-id="${integration.id}">Configurar</button>
-            <select class="sync-scope" data-id="${integration.id}" aria-label="Escopo da sincronização">
-              <option value="PRODUTOS">Produtos</option>
-              <option value="LOCAIS">Locais</option>
-              <option value="SALDOS">Saldos</option>
-              <option value="MOVIMENTOS">Movimentos</option>
-              <option value="COMPLETA">Completa</option>
-              <option value="RECONCILIACAO">Reconciliação</option>
-            </select>
-            <button class="btn secondary sync-integration" type="button" data-id="${integration.id}">Sincronizar agora</button>
             <button class="btn secondary toggle-integration" type="button" data-id="${integration.id}">${integration.ativo ? "Desativar" : "Ativar"}</button>
           </div>
-        </article>`).join("") || `<section class="card"><div class="empty-state">Nenhuma integração cadastrada. Use + Adicionar integração para configurar OMIE ou uma integração personalizada.</div></section>`}
+        </article>`;
+      }).join("") || `<section class="card"><div class="empty-state">Nenhuma integração cadastrada. Use “+ Adicionar integração” para conectar uma API.</div></section>`}
     </section>
+
     <section class="card filter-panel mt-4">
       <div class="filter-copy">
         <p class="eyebrow">Monitoramento</p>
-        <h3 class="section-title text-xl font-black">Jobs ACPARK x OMIE</h3>
-        <p class="text-sm text-slate-500">Reprocessamento é permitido apenas para operações criadas no ACPARK, como transferências e avarias. Vendas do Orion nunca são reprocessadas aqui.</p>
+        <h3 class="section-title text-xl font-black">Fila de sincronização</h3>
+        <p class="text-sm text-slate-500">Todas as integrações compartilham esta fila. Jobs que falham por configuração ou credencial param e aguardam correção; falhas temporárias voltam sozinhas com espera crescente.</p>
       </div>
       <div class="filter-actions">
-        <button class="btn secondary process-next-integration-job" type="button">Processar próximo job</button>
+        <button class="btn secondary process-next-job" type="button">Processar próximo job</button>
       </div>
-      <form id="omie-filter" class="filter-grid">
+      <form id="integration-filter" class="filter-grid">
+        <label class="field-select">Integração
+          <select name="integrationId">
+            <option value="">Todas</option>
+            ${integrations.map((item) => `<option value="${item.id}" ${String(integrationId) === String(item.id) ? "selected" : ""}>${esc(item.nome)}</option>`).join("")}
+          </select>
+        </label>
+        <label class="field-select">Operação
+          <select name="capacidade">
+            <option value="">Todas</option>
+            ${todasCapacidades.map((item) => `<option value="${esc(item)}" ${capacidade === item ? "selected" : ""}>${esc(item)}</option>`).join("")}
+          </select>
+        </label>
         <label class="field-select">Status
           <select name="status">
-            <option value="" ${!status ? "selected" : ""}>Todos</option>
-            ${["PENDENTE", "PROCESSANDO", "CONCLUIDO", "ERRO_TEMPORARIO", "ERRO_AUTENTICACAO", "AGUARDANDO_REPROCESSAMENTO"].map((item) => `<option value="${item}" ${status === item ? "selected" : ""}>${item}</option>`).join("")}
+            <option value="">Todos</option>
+            ${["PENDENTE", "PROCESSANDO", "CONCLUIDO", "CONCLUIDO_COM_ALERTAS", "ERRO_TEMPORARIO", "ERRO_CONFIGURACAO", "ERRO_AUTENTICACAO", "ERRO_DADOS", "AGUARDANDO_REPROCESSAMENTO"]
+              .map((item) => `<option value="${item}" ${status === item ? "selected" : ""}>${item}</option>`).join("")}
           </select>
         </label>
-        <label class="field-select">Tipo
-          <select name="type">
-            <option value="" ${!type ? "selected" : ""}>Todos</option>
-            <option value="AVARIA" ${type === "AVARIA" ? "selected" : ""}>Avaria</option>
-            <option value="PEDIDO" ${type === "PEDIDO" ? "selected" : ""}>Pedido</option>
-          </select>
-        </label>
-        <label class="field-wide">Documento
-          <input name="entityId" value="${esc(entityId)}" placeholder="ID do pedido ou devolução" />
-        </label>
-        <label class="field-date">De
-          <input name="from" type="date" value="${esc(from)}" />
-        </label>
-        <label class="field-date">Até
-          <input name="to" type="date" value="${esc(to)}" />
-        </label>
-        <div class="filter-actions">
-          <button class="btn" type="submit">Filtrar</button>
-        </div>
+        <div class="filter-actions"><button class="btn" type="submit">Filtrar</button></div>
       </form>
     </section>
+
     <section class="card">
-      ${table(["Status", "Job", "Integração", "Tentativas", "Página", "Resultado", "Último erro", "Concluído em", "Ações"], jobs.map((job) => `
+      ${table(["Status", "Operação", "Integração", "Tentativas", "Resultado", "Último erro", "Concluído em", "Ações"], jobs.map((job) => `
         <tr>
           <td>${statusPill(job.status)}</td>
           <td>${esc(job.job_type || "-")}</td>
-          <td>${esc(job.integration_name || job.integration_id || "-")}</td>
+          <td>${esc(job.integracao_nome || job.integration_id || "-")}</td>
           <td>${esc(job.attempts || 0)}</td>
-          <td>${esc(job.current_page || 1)}</td>
           <td>${formatIntegrationJobResult(job.result)}</td>
           <td>${esc(job.last_error || "-")}</td>
           <td>${job.completed_at ? moneyDate(job.completed_at) : "-"}</td>
-          <td>${job.status !== "CONCLUIDO" ? `<button class="btn secondary reprocess-omie-job" type="button" data-id="${job.id}">Processar</button>` : "-"}</td>
+          <td>${["CONCLUIDO", "PROCESSANDO"].includes(job.status) ? "-" : `<button class="btn secondary retry-job" type="button" data-id="${job.id}">Reprocessar</button>`}</td>
         </tr>`))}
-      ${jobs.length ? "" : `<div class="empty-state">Nenhum job de leitura OMIE encontrado.</div>`}
+      ${jobs.length ? "" : `<div class="empty-state">Nenhum job na fila com esses filtros.</div>`}
     </section>
+
     <section class="card mt-4">
-      <h3 class="section-title text-xl font-black">Mapeamento PDV x local OMIE</h3>
-      <p class="text-sm text-slate-500">Importe os locais do OMIE primeiro e vincule manualmente cada PDV ao seu local de estoque oficial.</p>
-      ${integrations.filter((item) => item.provedor === "OMIE").map((integration) => {
-        const rows = mappings.filter((mapping) => String(mapping.integration_id) === String(integration.id));
+      <h3 class="section-title text-xl font-black">Vínculo PDV × local de estoque</h3>
+      <p class="text-sm text-slate-500">Saldos e movimentações só são importados para PDVs vinculados a um local de estoque. Rode a operação “Locais de estoque” antes de criar os vínculos.</p>
+      ${integrations.map((integration) => {
+        const locaisDaIntegracao = locations.filter((item) => String(item.integration_id) === String(integration.id));
+        const vinculos = mappings.filter((item) => String(item.integration_id) === String(integration.id) && item.active);
         return `
           <div class="integration-map-block">
             <h4>${esc(integration.nome)}</h4>
-            <form class="mapping-form filter-grid" data-id="${integration.id}">
-              <label class="field-select">PDV
-                <select name="pdv_acpark_id">
-                  ${pdvs.map((pdv) => `<option value="${pdv.id}">${esc(pdv.nome)}</option>`).join("")}
-                </select>
-              </label>
-              <label class="field-wide">ID local OMIE
-                <input name="omie_location_id" placeholder="Importe os locais e informe o ID do local" />
-              </label>
-              <div class="filter-actions"><button class="btn secondary" type="submit">Salvar vínculo</button></div>
-            </form>
-            ${table(["PDV", "Local OMIE", "Ativo"], rows.map((mapping) => `<tr><td>${esc(mapping.pdv_nome || mapping.pdv_acpark_id)}</td><td>${esc(mapping.omie_location_name || mapping.omie_location_id)}</td><td>${mapping.active ? "Sim" : "Não"}</td></tr>`))}
+            ${locaisDaIntegracao.length
+              ? `<form class="mapping-form filter-grid" data-id="${integration.id}">
+                  <label class="field-select">PDV
+                    <select name="pdv_id">${pdvs.map((pdv) => `<option value="${pdv.id}">${esc(pdv.nome)}</option>`).join("")}</select>
+                  </label>
+                  <label class="field-select">Local de estoque
+                    <select name="omie_location_id">
+                      ${locaisDaIntegracao.map((local) => `<option value="${esc(local.omie_location_id)}">${esc(local.name)}</option>`).join("")}
+                    </select>
+                  </label>
+                  <div class="filter-actions"><button class="btn secondary" type="submit">Salvar vínculo</button></div>
+                </form>`
+              : `<div class="empty-state">Nenhum local importado ainda. Rode a operação “Locais de estoque” no card acima.</div>`}
+            ${table(["PDV", "Local", "Vinculado em"], vinculos.map((item) => `
+              <tr>
+                <td>${esc(item.pdv_nome || item.pdv_acpark_id)}</td>
+                <td>${esc(item.local_nome || item.omie_location_name || item.omie_location_id)}</td>
+                <td>${item.updated_at ? moneyDate(item.updated_at) : "-"}</td>
+              </tr>`))}
           </div>`;
-      }).join("") || `<div class="empty-state">Cadastre uma integração OMIE para mapear locais.</div>`}
+      }).join("") || `<div class="empty-state">Cadastre uma integração para mapear locais.</div>`}
     </section>
+
     <section class="card mt-4">
-      <h3 class="section-title text-xl font-black">Divergências de reconciliação</h3>
-      ${table(["Status", "Tipo", "PDV", "Produto", "Criado em"], divergences.map((item) => `
+      <div class="integration-card-head">
+        <h3 class="section-title text-xl font-black">Fator de conversão dos produtos</h3>
+        ${integrations.length
+          ? `<button class="btn secondary reler-fatores" type="button" data-id="${integrations[0].id}">Reler todos</button>`
+          : ""}
+      </div>
+      <p class="text-sm text-slate-500">
+        Quantas unidades tem a embalagem em que o PDV pede. Vem da característica do produto no
+        ERP — a correção é feita <strong>lá</strong>, não aqui. Depois de configurar as
+        características, use “Reler todos” em vez de esperar o ciclo de 7 dias.
+      </p>
+      <div class="integration-secret-list">
+        ${resumoFatores.length
+          ? resumoFatores.map((item) => `<span class="${item.status === "INVALIDO" ? "pendente" : ""}">${esc(item.status)}: ${esc(item.total)}</span>`).join("")
+          : `<span>Nenhum produto lido ainda</span>`}
+      </div>
+      ${pendenciasFator.length
+        ? table(["SKU", "Produto", "Conteúdo no ERP", "Lido em"], pendenciasFator.map((item) => `
+          <tr>
+            <td>${esc(item.sku_produto)}</td>
+            <td>${esc(item.produto_nome || "-")}${item.ativo === false ? " <em>(inativo)</em>" : ""}</td>
+            <td><code>${esc(item.fator_conteudo_bruto || "")}</code></td>
+            <td>${item.fator_lido_em ? moneyDate(item.fator_lido_em) : "-"}</td>
+          </tr>`))
+        : `<div class="empty-state">Nenhuma pendência: todo conteúdo lido é um número inteiro válido.</div>`}
+    </section>
+
+    <section class="card mt-4" id="assistente-fator">
+      <div class="integration-card-head">
+        <h3 class="section-title text-xl font-black">Assistente de fator (histórico de compra)</h3>
+        <div class="assistente-acoes">
+          ${integrations.length
+            ? `<button class="btn secondary varrer-evidencia" type="button" data-id="${integrations[0].id}">Varrer histórico</button>
+               <button class="btn secondary exportar-evidencia" type="button">Exportar planilha</button>
+               <label class="btn secondary importar-planilha-label">Importar planilha de fardos
+                 <input type="file" class="importar-planilha" accept=".xlsx,.xls" hidden />
+               </label>
+               <button class="btn secondary escrever-fatores" type="button" data-id="${integrations[0].id}">Gravar aprovados no ERP</button>`
+            : ""}
+        </div>
+      </div>
+      <p class="text-sm text-slate-500">
+        Sugestões derivadas das notas de compra: o que o fornecedor faturou contra o que entrou
+        no estoque. <strong>Nada é gravado sem aprovação.</strong> Produto sem nota fica pendente —
+        nenhuma sugestão nasce de semelhança de nome ou de conhecimento de mercado.
+      </p>
+
+      <div class="integration-secret-list">
+        <span>Aguardando conferência: ${esc(resumoEvidencia.aguardando_revisao || 0)}</span>
+        <span>Confiança máxima: ${esc(resumoEvidencia.confianca_maxima || 0)}</span>
+        <span>Confiança alta: ${esc(resumoEvidencia.confianca_alta || 0)}</span>
+        <span>Confiança média: ${esc(resumoEvidencia.confianca_media || 0)}</span>
+        <span>Evidência única: ${esc(resumoEvidencia.evidencia_unica || 0)}</span>
+        <span>Conflito de embalagem: ${esc(resumoEvidencia.conflito_embalagem || 0)}</span>
+        <span class="${resumoEvidencia.cadastro_generico ? "pendente" : ""}">Cadastro genérico: ${esc(resumoEvidencia.cadastro_generico || 0)}</span>
+        <span>Aprovados: ${esc(resumoEvidencia.aprovados || 0)}</span>
+        <span>Gravados no ERP: ${esc(resumoEvidencia.escritos || 0)}</span>
+        ${resumoEvidencia.com_erro ? `<span class="pendente">Com erro: ${esc(resumoEvidencia.com_erro)}</span>` : ""}
+      </div>
+
+      <div class="assistente-filtros">
+        <label>Fila
+          <select class="filtro-evidencia" data-campo="fila">
+            <option value="FATOR"${filtroEvidencia.fila === "FATOR" ? " selected" : ""}>Conferência de fator</option>
+            <option value="CADASTRO"${filtroEvidencia.fila === "CADASTRO" ? " selected" : ""}>Corrigir cadastro no ERP</option>
+          </select>
+        </label>
+        <label>Classificação
+          <select class="filtro-evidencia" data-campo="situacao">
+            <option value="">Todas</option>
+            <option value="SUGERIDO"${filtroEvidencia.situacao === "SUGERIDO" ? " selected" : ""}>Fator sugerido</option>
+            <option value="CONFLITO_EMBALAGEM"${filtroEvidencia.situacao === "CONFLITO_EMBALAGEM" ? " selected" : ""}>Conflito de embalagem</option>
+            <option value="SO_AVULSO"${filtroEvidencia.situacao === "SO_AVULSO" ? " selected" : ""}>Só compra avulsa</option>
+          </select>
+        </label>
+        <label class="assistente-busca">Buscar
+          <input type="search" class="filtro-evidencia" data-campo="busca" value="${esc(filtroEvidencia.busca || "")}" placeholder="SKU, produto ou fornecedor" />
+        </label>
+        ${filtroEvidencia.fila === "FATOR"
+          ? `<button class="btn secondary aprovar-lote" type="button">Confirmar todas de confiança alta</button>`
+          : ""}
+      </div>
+
+      ${filtroEvidencia.fila === "CADASTRO"
+        ? `<p class="text-sm text-slate-500">
+             Estes códigos aparecem em notas com quantidades por embalagem incompatíveis entre si,
+             ou descrevendo produtos diferentes. <strong>Isso não é conflito de fator, é cadastro
+             errado</strong> — atribuir um fator aqui só carimba o problema. Corrija o cadastro no
+             ERP e varra de novo.
+           </p>`
+        : ""}
+
+      ${sugestoesEvidencia.length
+        ? `<div class="assistente-lista">${sugestoesEvidencia.map((item) => cartaoSugestao(item)).join("")}</div>`
+        : `<div class="empty-state">${
+            resumoEvidencia.total
+              ? "Nenhum produto nesta fila com os filtros atuais."
+              : "Nenhuma evidência ainda. Use “Varrer histórico” para ler as notas de compra do ERP."
+          }</div>`}
+    </section>
+
+    <section class="card mt-4" id="planilha-fardos">
+      <h3 class="section-title text-xl font-black">Planilha de fardos — vínculo com o cadastro</h3>
+      <p class="text-sm text-slate-500">
+        A planilha é chaveada por <strong>nome de operação</strong>, não por SKU. O casamento é
+        textual e <strong>erra</strong> — medido: o primeiro candidato de “ÁGUA MINERAL GÁSOSA
+        500ML” foi “AGUA MINERAL SEM GAS 500ML”, o produto oposto. Por isso nenhum vínculo é
+        criado sozinho.
+      </p>
+      <div class="integration-secret-list">
+        <span>Linhas: ${esc(linhasPlanilha.length)}</span>
+        <span>Vinculadas: ${esc(linhasPlanilha.filter((l) => l.external_product_id).length)}</span>
+        <span class="${pendenciasVinculo.length ? "pendente" : ""}">Aguardando vínculo: ${esc(pendenciasVinculo.length)}</span>
+        <span class="${linhasPlanilha.some((l) => l.divergente) ? "pendente" : ""}">Abas discordam: ${esc(linhasPlanilha.filter((l) => l.divergente).length)}</span>
+      </div>
+      ${pendenciasVinculo.length
+        ? `<div class="assistente-lista">${pendenciasVinculo.slice(0, 60).map((linha) => `
+            <article class="planilha-item ${linha.divergente ? "divergente" : ""}">
+              <header>
+                <div>
+                  <strong>${esc(linha.nome_operacao)}</strong>
+                  <span class="assistente-sku">${linha.secao ? `seção ${esc(linha.secao)} · ` : ""}${
+                    linha.divergente
+                      ? `abas discordam: ${esc(Object.values(linha.valores_por_aba || {}).filter((v) => v !== null).join(" x "))}`
+                      : `fator ${esc(linha.fator ?? "—")}`
+                  }</span>
+                </div>
+              </header>
+              <div class="planilha-candidatos">
+                ${linha.candidatos?.length
+                  ? `<select class="vinculo-produto" data-linha="${esc(linha.nome_operacao)}">
+                       <option value="">Escolha o produto…</option>
+                       ${linha.candidatos.map((c) => `<option value="${esc(c.external_product_id)}">${esc(c.nome || c.sku)} [${esc(c.sku)}] — ${esc(Math.round(c.semelhanca * 100))}%</option>`).join("")}
+                     </select>
+                     <button class="btn vincular-linha" type="button" data-linha="${esc(linha.nome_operacao)}">Vincular</button>`
+                  : `<em class="text-sm text-slate-500">Nenhum candidato parecido — vincule pelo cadastro do produto.</em>`}
+              </div>
+            </article>`).join("")}</div>`
+        : `<div class="empty-state">${
+            linhasPlanilha.length
+              ? "Todas as linhas da planilha estão vinculadas."
+              : "Nenhuma planilha importada ainda. Use “Importar planilha de fardos”."
+          }</div>`}
+    </section>
+
+    <section class="card mt-4">
+      <h3 class="section-title text-xl font-black">Lançamentos enviados à integração</h3>
+      <p class="text-sm text-slate-500">
+        Transferências Almoxarifado → PDV geradas pela confirmação de retirada. Esta é a única
+        escrita do sistema: nunca venda, devolução, compra, inventário ou saldo absoluto.
+      </p>
+      <div class="integration-secret-list">
+        ${resumoLancamentos.length
+          ? resumoLancamentos.map((item) => `<span>${esc(item.status)}: ${esc(item.total)}</span>`).join("")
+          : `<span>Nenhum lançamento registrado ainda</span>`}
+      </div>
+      ${table(
+        ["Status", "Modo", "Pedido", "Produto", "PDV", "Qtd", "Origem → Destino", "Erro", "Criado em", "Ações"],
+        launches.map((item) => `
         <tr>
           <td>${statusPill(item.status)}</td>
-          <td>${esc(item.difference_type)}</td>
+          <td>${esc(item.modo)}</td>
+          <td>${esc(item.codigo_pedido)}</td>
+          <td>${esc(item.produto_nome || item.sku_produto)}</td>
+          <td>${esc(item.pdv_nome || item.pdv_id || "-")}</td>
+          <td>${esc(Number(item.quantidade || 0))}</td>
+          <td>${esc(item.local_origem || "-")} → ${esc(item.local_destino || "-")}</td>
+          <td>${esc(item.erro || "-")}</td>
+          <td>${item.created_at ? moneyDate(item.created_at) : "-"}</td>
+          <td>${item.status === "ENVIADO"
+            ? "-"
+            : `<button class="btn secondary retry-launch" type="button" data-id="${item.id}">Reprocessar</button>`}</td>
+        </tr>`)
+      )}
+      ${launches.length ? "" : `<div class="empty-state">Nenhum lançamento na fila.</div>`}
+    </section>
+
+    <section class="card mt-4">
+      <h3 class="section-title text-xl font-black">Divergências de reconciliação</h3>
+      <p class="text-sm text-slate-500">Divergências não são corrigidas automaticamente: ficam registradas aqui para revisão.</p>
+      ${table(["Tipo", "PDV", "Produto", "Saldo local", "Saldo externo", "Diferença", "Criado em"], divergences.map((item) => `
+        <tr>
+          <td>${statusPill(item.difference_type)}</td>
           <td>${esc(item.pdv_nome || "-")}</td>
           <td>${esc(item.produto_nome || item.sku_produto || "-")}</td>
+          <td>${esc(Number(item.saldo_local || 0))}</td>
+          <td>${esc(Number(item.saldo_omie || 0))}</td>
+          <td>${esc(Number(item.diferenca || 0))}</td>
           <td>${item.created_at ? moneyDate(item.created_at) : "-"}</td>
         </tr>`))}
-      ${divergences.length ? "" : `<div class="empty-state">Nenhuma divergência registrada.</div>`}
+      ${divergences.length ? "" : `<div class="empty-state">Nenhuma divergência pendente.</div>`}
     </section>
   `);
-  document.querySelector("#omie-filter").addEventListener("submit", async (event) => {
+
+  const recarregar = () => viewIntegrations({ status, capacidade, integrationId });
+
+  document.querySelector("#integration-filter").addEventListener("submit", async (event) => {
     event.preventDefault();
-    await viewOmieIntegrations(Object.fromEntries(new FormData(event.currentTarget)));
+    await viewIntegrations(Object.fromEntries(new FormData(event.currentTarget)));
   });
+
+  // Modal de configuração: os campos de credencial vêm do catálogo do provider selecionado
   const openIntegrationModal = (integration = {}) => {
     const modal = document.createElement("div");
     modal.className = "photo-viewer";
     const close = () => modal.remove();
+    const providerAtual = () => providers.find((item) => item.id === (modal.querySelector('[name="provedor"]')?.value || integration.provedor)) || providers[0];
+
+    // Redesenha os campos de credencial ao trocar de provider
+    const camposDeCredencial = (provider) => (provider?.credenciais || []).map((credential) => {
+      const salva = (integration.credenciais || []).find((item) => item.chave === credential.chave);
+      return `
+        <label class="grid gap-1 text-sm font-bold">${esc(credential.rotulo)}${credential.obrigatoria ? " *" : ""}
+          <input name="${esc(credential.chave)}" type="password" autocomplete="new-password"
+                 placeholder="${esc(salva?.configurada ? `Configurada (${salva.mascara}) — preencha só para alterar` : credential.rotulo)}" />
+          ${credential.ajuda ? `<span class="text-xs font-normal text-slate-500">${esc(credential.ajuda)}</span>` : ""}
+        </label>`;
+    }).join("");
+
+    // Ajustes não-secretos declarados pelo provider. O tipo "local_estoque" vira um seletor
+    // com os locais já importados desta integração — digitar o código na mão é fonte de erro.
+    const camposDeConfiguracao = (provider) => (provider?.configuracoes || []).map((config) => {
+      const valor = integration.configuracao?.[config.chave] || "";
+      const locais = locations.filter((item) => String(item.integration_id) === String(integration.id));
+      const campo = config.tipo === "local_estoque"
+        ? (locais.length
+          ? `<select name="cfg_${esc(config.chave)}">
+               <option value="">— selecione —</option>
+               ${locais.map((local) => `<option value="${esc(local.omie_location_id)}" ${String(valor) === String(local.omie_location_id) ? "selected" : ""}>${esc(local.name)}</option>`).join("")}
+             </select>`
+          : `<input name="cfg_${esc(config.chave)}" value="${esc(valor)}" placeholder="Rode “Locais de estoque” para escolher pelo nome" />`)
+        : `<input name="cfg_${esc(config.chave)}" value="${esc(valor)}" />`;
+      return `
+        <label class="grid gap-1 text-sm font-bold">${esc(config.rotulo)}${config.obrigatoria ? " *" : ""}
+          ${campo}
+          ${config.ajuda ? `<span class="text-xs font-normal text-slate-500">${esc(config.ajuda)}</span>` : ""}
+        </label>`;
+    }).join("");
+
     modal.innerHTML = `
       <form class="photo-viewer-dialog integration-modal" id="integration-form" role="dialog" aria-modal="true" aria-label="Configurar integração">
         <div class="photo-viewer-head">
@@ -3666,42 +4142,59 @@ async function viewOmieIntegrations(filters = {}) {
         </div>
         <input name="id" type="hidden" value="${esc(integration.id || "")}" />
         <div class="integration-modal-body">
-          <label class="grid gap-1 text-sm font-bold">Nome <input name="nome" value="${esc(integration.nome || "OMIE")}" required /></label>
           <label class="grid gap-1 text-sm font-bold">Provedor
-            <select name="provedor">
-              <option value="OMIE" ${integration.provedor !== "OUTRA" ? "selected" : ""}>OMIE — ERP e estoque</option>
-              <option value="OUTRA" ${integration.provedor === "OUTRA" ? "selected" : ""}>OUTRA — Integração personalizada</option>
+            <select name="provedor" ${integration.id ? "disabled" : ""}>
+              ${providers.map((provider) => `<option value="${esc(provider.id)}" ${integration.provedor === provider.id ? "selected" : ""}>${esc(provider.rotulo)} — ${esc(provider.descricao)}</option>`).join("")}
             </select>
           </label>
+          <label class="grid gap-1 text-sm font-bold">Nome <input name="nome" value="${esc(integration.nome || "")}" required /></label>
           <label class="grid gap-1 text-sm font-bold">Ambiente
             <select name="ambiente">
-              <option value="PRODUCAO" ${(integration.ambiente || "PRODUCAO") === "PRODUCAO" ? "selected" : ""}>Produção</option>
-              <option value="HOMOLOGACAO" ${integration.ambiente === "HOMOLOGACAO" ? "selected" : ""}>Homologação</option>
+              ${(providerAtual()?.ambientes || ["PRODUCAO"]).map((ambiente) => `<option value="${esc(ambiente)}" ${(integration.ambiente || "PRODUCAO") === ambiente ? "selected" : ""}>${esc(ambiente)}</option>`).join("")}
             </select>
           </label>
-          <label class="grid gap-1 text-sm font-bold">URL base <input name="url_base" value="${esc(integration.url_base || "https://app.omie.com.br/api/v1")}" /></label>
+          <label class="grid gap-1 text-sm font-bold">URL base
+            <input name="url_base" value="${esc(integration.url_base || providerAtual()?.url_base_padrao || "")}" />
+          </label>
           <label class="grid gap-1 text-sm font-bold">Empresa vinculada <input name="empresa_vinculada" value="${esc(integration.empresa_vinculada || "")}" /></label>
-          <label class="grid gap-1 text-sm font-bold">App key <input name="app_key" autocomplete="off" placeholder="${integration.id ? "Preencha apenas para alterar" : "App key"}" /></label>
-          <label class="grid gap-1 text-sm font-bold">App secret <input name="app_secret" type="password" autocomplete="new-password" placeholder="${integration.id ? "Preencha apenas para alterar" : "App secret"}" /></label>
-          <label class="grid gap-1 text-sm font-bold">Token <input name="token" type="password" autocomplete="new-password" placeholder="Opcional" /></label>
-          <label class="grid gap-1 text-sm font-bold">Webhook secret <input name="webhook_secret" type="password" autocomplete="new-password" placeholder="Opcional" /></label>
+          <div id="credential-fields" class="grid gap-3">${camposDeCredencial(providerAtual())}</div>
+          <div id="config-fields" class="grid gap-3">${camposDeConfiguracao(providerAtual())}</div>
           <label class="category-chip selected-chip"><input name="ativo" type="checkbox" value="true" ${integration.ativo !== false ? "checked" : ""} /><span>Integração ativa</span></label>
         </div>
-        <div class="form-actions integration-modal-actions"><button class="btn secondary close-integration-modal" type="button">Cancelar</button><button class="btn" type="submit">Salvar integração</button></div>
+        <div class="form-actions integration-modal-actions">
+          <button class="btn secondary close-integration-modal" type="button">Cancelar</button>
+          <button class="btn" type="submit">Salvar integração</button>
+        </div>
       </form>`;
+
+    modal.querySelector('[name="provedor"]').addEventListener("change", () => {
+      const provider = providerAtual();
+      modal.querySelector("#credential-fields").innerHTML = camposDeCredencial(provider);
+      modal.querySelector("#config-fields").innerHTML = camposDeConfiguracao(provider);
+      const urlBase = modal.querySelector('[name="url_base"]');
+      if (urlBase && !urlBase.value) urlBase.value = provider?.url_base_padrao || "";
+    });
+
     modal.querySelectorAll(".close-integration-modal").forEach((button) => button.addEventListener("click", close));
     modal.querySelector("#integration-form").addEventListener("submit", async (event) => {
       event.preventDefault();
       const submitButton = event.currentTarget.querySelector('button[type="submit"]');
-      const originalLabel = submitButton?.textContent || "Salvar integração";
-      if (submitButton) {
-        submitButton.disabled = true;
-        submitButton.textContent = "Salvando...";
-      }
+      const originalLabel = submitButton.textContent;
+      submitButton.disabled = true;
+      submitButton.textContent = "Salvando...";
       const formData = new FormData(event.currentTarget);
       const form = Object.fromEntries(formData);
       form.ativo = formData.has("ativo");
-      form.tipo = form.provedor === "OMIE" ? "ERP_ESTOQUE" : "PERSONALIZADA";
+      // Provedor fica desabilitado ao editar, então não vem no FormData
+      form.provedor = form.provedor || integration.provedor;
+      // Os ajustes vão prefixados com cfg_ no formulário e viajam agrupados em "configuracao",
+      // para o backend distinguir configuração de credencial sem adivinhar pelo nome do campo
+      form.configuracao = {};
+      for (const [chave, valor] of Object.entries(form)) {
+        if (!chave.startsWith("cfg_")) continue;
+        form.configuracao[chave.slice(4)] = valor;
+        delete form[chave];
+      }
       try {
         await request("/api/admin/integrations", {
           method: "POST",
@@ -3710,14 +4203,12 @@ async function viewOmieIntegrations(filters = {}) {
         });
         toast("Integração salva.");
         close();
-        await viewOmieIntegrations({ status, type, from, to, entityId });
+        await recarregar();
       } catch (error) {
         toast(error.message || "Não foi possível salvar a integração.", "error");
       } finally {
-        if (submitButton) {
-          submitButton.disabled = false;
-          submitButton.textContent = originalLabel;
-        }
+        submitButton.disabled = false;
+        submitButton.textContent = originalLabel;
       }
     });
     modal.addEventListener("click", (event) => {
@@ -3725,83 +4216,430 @@ async function viewOmieIntegrations(filters = {}) {
     });
     document.body.appendChild(modal);
   };
+
   document.querySelector("#add-integration").addEventListener("click", () => openIntegrationModal());
+
   document.querySelectorAll(".configure-integration").forEach((button) => button.addEventListener("click", () => {
     openIntegrationModal(integrations.find((item) => String(item.id) === button.dataset.id) || {});
   }));
+
   document.querySelectorAll(".test-integration").forEach((button) => button.addEventListener("click", async () => {
     button.disabled = true;
     try {
-      await request("/api/admin/integrations/test", { method: "POST", body: JSON.stringify({ id: button.dataset.id }) });
-      toast("Integração validada.");
-      await viewOmieIntegrations({ status, type, from, to, entityId });
+      const resposta = await request("/api/admin/integrations/test", {
+        method: "POST",
+        body: JSON.stringify({ id: button.dataset.id }),
+        loadingMessage: "Testando conexão..."
+      });
+      const detalhe = resposta.resultado?.detalhe;
+      toast(detalhe?.total_de_produtos
+        ? `Conexão validada. A API respondeu com ${detalhe.total_de_produtos} produtos.`
+        : "Conexão validada.");
+      await recarregar();
     } catch (error) {
       toast(error.message || "Não foi possível testar a integração.", "error");
+      await recarregar();
     } finally {
       button.disabled = false;
     }
   }));
-  document.querySelectorAll(".sync-integration").forEach((button) => button.addEventListener("click", async () => {
-    const scope = document.querySelector(`.sync-scope[data-id="${button.dataset.id}"]`)?.value || "COMPLETA";
+
+  // Dispara uma operação específica e mostra o resultado real, não só "registrado"
+  document.querySelectorAll(".sync-capability").forEach((button) => button.addEventListener("click", async () => {
     button.disabled = true;
     try {
-      const response = await request("/api/admin/integrations/sync", { method: "POST", body: JSON.stringify({ id: button.dataset.id, escopo: scope }) });
-      if (response.job?.status === "CONCLUIDO") {
-        toast("Sincronização processada.");
-      } else {
-        toast(response.job?.last_error || "Sincronização registrada com alerta.", "error");
-      }
+      const resposta = await request("/api/admin/integrations/sync", {
+        method: "POST",
+        body: JSON.stringify({ id: button.dataset.id, capacidade: button.dataset.capacidade }),
+        loadingMessage: `Sincronizando ${button.dataset.capacidade.toLowerCase()}...`
+      });
+      const job = resposta.job || {};
+      if (job.status === "CONCLUIDO") toast(`Sincronização concluída. ${formatIntegrationJobResult(job.result)}`);
+      else if (job.status === "CONCLUIDO_COM_ALERTAS") toast(job.last_error || "Concluído com alertas.", "error");
+      else toast(job.last_error || "A sincronização falhou.", "error");
+    } catch (error) {
+      toast(error.message || "Não foi possível sincronizar.", "error");
     } finally {
       button.disabled = false;
+      await recarregar();
     }
-    await viewOmieIntegrations({ status, type, from, to, entityId });
   }));
-  document.querySelector(".process-next-integration-job")?.addEventListener("click", async () => {
-    await request("/api/admin/integrations/jobs/process-next", { method: "POST", body: JSON.stringify({}) });
-    toast("Processamento executado.");
-    await viewOmieIntegrations({ status, type, from, to, entityId });
+
+  document.querySelector(".process-next-job")?.addEventListener("click", async () => {
+    const resposta = await request("/api/admin/integrations/jobs/process-next", { method: "POST", body: JSON.stringify({}) });
+    toast(resposta.job ? `Job ${resposta.job.job_type} processado.` : "Nenhum job pendente na fila.");
+    await recarregar();
   });
-  document.querySelectorAll(".mapping-form").forEach((form) => form.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const formData = new FormData(event.currentTarget);
-    await request("/api/admin/integrations/location-mappings", {
-      method: "POST",
-      body: JSON.stringify({
-        integration_id: event.currentTarget.dataset.id,
-        pdv_acpark_id: formData.get("pdv_acpark_id"),
-        omie_location_id: formData.get("omie_location_id")
-      })
-    });
-    toast("Vínculo salvo.");
-    await viewOmieIntegrations({ status, type, from, to, entityId });
-  }));
-  document.querySelectorAll(".toggle-integration").forEach((button) => button.addEventListener("click", async () => {
-    const integration = integrations.find((item) => String(item.id) === button.dataset.id);
-    if (!integration) return;
-    await request("/api/admin/integrations", { method: "POST", body: JSON.stringify({ ...integration, ativo: !integration.ativo }) });
-    toast(integration.ativo ? "Integração desativada." : "Integração ativada.");
-    await viewOmieIntegrations({ status, type, from, to, entityId });
-  }));
-  document.querySelectorAll(".reprocess-omie-job").forEach((button) => button.addEventListener("click", async () => {
+
+  document.querySelectorAll(".retry-job").forEach((button) => button.addEventListener("click", async () => {
     const confirmed = await confirmSystem({
-      title: "Reprocessar integração",
-      message: "Deseja tentar processar este job novamente?",
-      consequence: "Somente leitura será executada. Nenhuma transferência ou baixa será enviada ao OMIE.",
-      confirmLabel: "Processar"
+      title: "Reprocessar job",
+      message: "Deseja recolocar este job na fila?",
+      consequence: "Somente leitura será executada. Nada é escrito no sistema externo.",
+      confirmLabel: "Reprocessar"
     });
     if (!confirmed) return;
     button.disabled = true;
     try {
-      await request("/api/admin/integrations/jobs/process", {
+      await request("/api/admin/integrations/jobs/retry", {
         method: "POST",
-        body: JSON.stringify({ id: button.dataset.id })
+        body: JSON.stringify({ id: button.dataset.id, motivo: "Reprocessamento manual pela Central de Integrações." })
       });
-      toast("Job processado.");
-      await viewOmieIntegrations({ status, type, from, to, entityId });
+      toast("Job recolocado na fila.");
+      await recarregar();
+    } catch (error) {
+      toast(error.message || "Não foi possível reprocessar.", "error");
     } finally {
       button.disabled = false;
     }
   }));
+
+  document.querySelectorAll(".mapping-form").forEach((form) => form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget);
+    const select = event.currentTarget.querySelector('[name="omie_location_id"]');
+    try {
+      await request("/api/admin/integrations/location-mappings", {
+        method: "POST",
+        body: JSON.stringify({
+          integration_id: event.currentTarget.dataset.id,
+          pdv_id: formData.get("pdv_id"),
+          omie_location_id: formData.get("omie_location_id"),
+          omie_location_name: select?.selectedOptions?.[0]?.textContent?.trim() || ""
+        })
+      });
+      toast("Vínculo salvo.");
+      await recarregar();
+    } catch (error) {
+      toast(error.message || "Não foi possível salvar o vínculo.", "error");
+    }
+  }));
+
+
+  // Filtros do assistente: mudam o estado e redesenham, sem perder o que já foi conferido
+  document.querySelectorAll(".filtro-evidencia").forEach((campo) => {
+    const evento = campo.tagName === "SELECT" ? "change" : "input";
+    campo.addEventListener(evento, async () => {
+      filtroEvidencia[campo.dataset.campo] = campo.value;
+      // Busca é filtrada na tela; trocar fila ou classificação precisa de nova consulta
+      if (campo.dataset.campo === "busca") {
+        await recarregar();
+        const foco = document.querySelector('.filtro-evidencia[data-campo="busca"]');
+        if (foco) {
+          foco.focus();
+          foco.setSelectionRange(foco.value.length, foco.value.length);
+        }
+        return;
+      }
+      await recarregar();
+    });
+  });
+
+  // Dispara a varredura do histórico de compra. Roda na fila, em lotes que encadeiam sozinhos.
+  document.querySelectorAll(".varrer-evidencia").forEach((button) =>
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      try {
+        await request("/api/admin/integrations/fator-evidencia/varrer", {
+          method: "POST",
+          body: JSON.stringify({ id: button.dataset.id }),
+          loadingMessage: "Agendando varredura do histórico de compra..."
+        });
+        toast("Varredura agendada. Ela lê as notas em lotes e continua sozinha.");
+        await recarregar();
+      } catch (error) {
+        toast(error.message || "Não foi possível agendar a varredura.", "error");
+      } finally {
+        button.disabled = false;
+      }
+    })
+  );
+
+  // Envia uma decisão (ou um lote) e redesenha
+  async function decidirFatores(decisoes, mensagem) {
+    if (!integracaoAtiva || !decisoes.length) return;
+    try {
+      const resposta = await request("/api/admin/integrations/fator-evidencia/decidir", {
+        method: "POST",
+        body: JSON.stringify({ id: integracaoAtiva.id, decisoes }),
+        loadingMessage: mensagem
+      });
+      const recusadas = resposta.recusadas?.length || 0;
+      toast(
+        recusadas
+          ? `${resposta.aceitas} confirmada(s); ${recusadas} recusada(s) por fator inválido.`
+          : `${resposta.aceitas} confirmada(s).`,
+        recusadas ? "error" : "success"
+      );
+      await recarregar();
+    } catch (error) {
+      toast(error.message || "Não foi possível registrar a decisão.", "error");
+    }
+  }
+
+  // Confirma o fator de um produto. O número vem do campo, não da sugestão: quem confere pode
+  // corrigir, e um conflito de embalagem só sai daqui com a escolha explícita de uma pessoa.
+  document.querySelectorAll(".aprovar-fator").forEach((button) =>
+    button.addEventListener("click", async () => {
+      const cartao = button.closest(".assistente-item");
+      const campo = cartao?.querySelector(".fator-escolhido");
+      const fator = Number(campo?.value || 0);
+      if (!Number.isInteger(fator) || fator < 1) {
+        toast("Informe um número inteiro positivo para o fator.", "error");
+        campo?.focus();
+        return;
+      }
+      await decidirFatores(
+        [
+          {
+            external_product_id: button.dataset.produto,
+            status: "APROVADA",
+            fator,
+            fator_sugerido: button.dataset.sugerido || null
+          }
+        ],
+        "Registrando confirmação..."
+      );
+    })
+  );
+
+  // Deixa pendente: registra que uma pessoa olhou e não quis aprovar, para o item sair da fila
+  document.querySelectorAll(".recusar-fator").forEach((button) =>
+    button.addEventListener("click", async () => {
+      await decidirFatores(
+        [{ external_product_id: button.dataset.produto, status: "RECUSADA" }],
+        "Marcando como pendente..."
+      );
+    })
+  );
+
+  // Confirmação em lote, só para confiança alta. Média e única continuam item a item de
+  // propósito: são exatamente os casos em que uma pessoa precisa olhar a nota.
+  document.querySelectorAll(".aprovar-lote").forEach((button) =>
+    button.addEventListener("click", async () => {
+      const alvos = sugestoesEvidencia.filter(
+        (item) => item.confianca === "ALTA" && item.situacao === "SUGERIDO" && !item.decisao
+      );
+      if (!alvos.length) {
+        toast("Nenhuma sugestão de confiança alta aguardando confirmação nesta fila.");
+        return;
+      }
+      if (!window.confirm(`Confirmar o fator sugerido de ${alvos.length} produto(s) de confiança alta?`)) return;
+      await decidirFatores(
+        alvos.map((item) => ({
+          external_product_id: item.external_product_id,
+          status: "APROVADA",
+          fator: item.fator,
+          fator_sugerido: item.fator
+        })),
+        `Confirmando ${alvos.length} produto(s)...`
+      );
+    })
+  );
+
+  // Exporta a fila atual para conferência fora do sistema, com a evidência junto
+  document.querySelectorAll(".exportar-evidencia").forEach((button) =>
+    button.addEventListener("click", () => {
+      if (!sugestoesEvidencia.length) {
+        toast("Nada para exportar nesta fila.");
+        return;
+      }
+      const linhas = [
+        [
+          "sku",
+          "id_erp",
+          "produto",
+          "classificacao",
+          "confianca",
+          "fator_sugerido",
+          "fatores_observados",
+          "notas",
+          "fator_hoje_no_erp",
+          "pedidos_90_dias",
+          "decisao",
+          "motivo"
+        ]
+      ];
+      for (const item of sugestoesEvidencia) {
+        linhas.push([
+          item.sku || "",
+          item.external_product_id,
+          item.nome || "",
+          rotuloSituacao[item.situacao] || item.situacao,
+          item.confianca || "",
+          item.fator ?? "",
+          (item.opcoes || []).map((o) => `${o.fator}x(${o.vezes})`).join(" | "),
+          (item.opcoes || []).reduce((soma, o) => soma + Number(o.vezes || 0), 0),
+          item.fator_no_erp ?? "",
+          item.pedidos_recentes || 0,
+          item.decisao ? `${item.decisao.status}${item.decisao.fator ? ` ${item.decisao.fator}` : ""}` : "",
+          item.motivo || ""
+        ]);
+      }
+      downloadCsv(`fatores-${filtroEvidencia.fila.toLowerCase()}-${new Date().toISOString().slice(0, 10)}.csv`, linhas);
+      toast(`${sugestoesEvidencia.length} linha(s) exportada(s).`);
+    })
+  );
+
+  // Grava no ERP os fatores já aprovados. Em modo simulação isso monta o payload e não envia.
+  document.querySelectorAll(".escrever-fatores").forEach((button) =>
+    button.addEventListener("click", async () => {
+      const aprovados = resumoEvidencia.aprovados || 0;
+      if (!aprovados) {
+        toast("Nenhum fator aprovado aguardando gravação.");
+        return;
+      }
+      if (!window.confirm(`Gravar ${aprovados} fator(es) aprovado(s) no cadastro do ERP?`)) return;
+      button.disabled = true;
+      try {
+        await request("/api/admin/integrations/fator-evidencia/escrever", {
+          method: "POST",
+          body: JSON.stringify({ id: button.dataset.id }),
+          loadingMessage: "Agendando gravação no ERP..."
+        });
+        toast("Gravação agendada. Em modo simulação o payload é montado e nada é enviado.");
+        await recarregar();
+      } catch (error) {
+        toast(error.message || "Não foi possível agendar a gravação.", "error");
+      } finally {
+        button.disabled = false;
+      }
+    })
+  );
+
+
+  // Importa a planilha de fardos. O arquivo é lido AQUI, no navegador, com a mesma biblioteca
+  // já usada na importação de produtos — o servidor recebe linhas, não um .xlsx.
+  document.querySelectorAll(".importar-planilha").forEach((input) =>
+    input.addEventListener("change", async () => {
+      const arquivo = input.files?.[0];
+      if (!arquivo) return;
+      if (!integracaoAtiva) {
+        toast("Cadastre uma integração antes de importar a planilha.", "error");
+        return;
+      }
+      if (!window.XLSX) {
+        toast("Leitor de Excel indisponível. Recarregue a página e tente novamente.", "error");
+        return;
+      }
+      try {
+        const workbook = window.XLSX.read(await arquivo.arrayBuffer(), { type: "array", raw: true });
+        // Colunas A (nome de operação) e B (unidades por fardo) de cada aba
+        const abas = {};
+        for (const nomeAba of workbook.SheetNames) {
+          abas[nomeAba] = window.XLSX.utils
+            .sheet_to_json(workbook.Sheets[nomeAba], { header: 1, raw: true, defval: "" })
+            .map((linha) => ({ nome: linha[0], valor: linha[1] }))
+            .filter((linha) => String(linha.nome || "").trim());
+        }
+        const resposta = await request("/api/admin/integrations/fator-planilha/importar", {
+          method: "POST",
+          body: JSON.stringify({ id: integracaoAtiva.id, abas }),
+          loadingMessage: "Importando planilha de fardos..."
+        });
+        const r = resposta.resumo || {};
+        toast(
+          `${r.linhas_lidas} linha(s): ${r.com_fator} com fator, ${r.divergentes} com abas discordando.`,
+          r.divergentes ? "error" : "success"
+        );
+        await recarregar();
+      } catch (error) {
+        toast(error.message || "Não foi possível importar a planilha.", "error");
+      } finally {
+        input.value = "";
+      }
+    })
+  );
+
+  // Vincula uma linha da planilha ao produto escolhido. Sempre escolha explícita: o candidato
+  // sugerido é só uma ordenação por semelhança de nome, e ela erra.
+  document.querySelectorAll(".vincular-linha").forEach((button) =>
+    button.addEventListener("click", async () => {
+      const cartao = button.closest(".planilha-item");
+      const select = cartao?.querySelector(".vinculo-produto");
+      const produto = select?.value;
+      if (!produto) {
+        toast("Escolha o produto antes de vincular.", "error");
+        select?.focus();
+        return;
+      }
+      try {
+        await request("/api/admin/integrations/fator-planilha/vincular", {
+          method: "POST",
+          body: JSON.stringify({
+            id: integracaoAtiva.id,
+            nome_operacao: button.dataset.linha,
+            external_product_id: produto
+          }),
+          loadingMessage: "Vinculando linha da planilha..."
+        });
+        toast("Vínculo registrado. A planilha passa a corroborar o fator deste produto.");
+        await recarregar();
+      } catch (error) {
+        toast(error.message || "Não foi possível vincular.", "error");
+      }
+    })
+  );
+
+  // Dispara a releitura de fatores depois de configurar as características no ERP
+  document.querySelectorAll(".reler-fatores").forEach((button) =>
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      try {
+        await request("/api/admin/integrations/fatores/reler", {
+          method: "POST",
+          body: JSON.stringify({ id: button.dataset.id }),
+          loadingMessage: "Agendando releitura dos fatores..."
+        });
+        toast("Releitura agendada. A varredura roda em lotes e continua sozinha.");
+        await recarregar();
+      } catch (error) {
+        toast(error.message || "Não foi possível agendar a releitura.", "error");
+      } finally {
+        button.disabled = false;
+      }
+    })
+  );
+
+  // Reprocessa um lançamento com erro pela interface, sem terminal
+  document.querySelectorAll(".retry-launch").forEach((button) =>
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      try {
+        await request("/api/admin/integrations/launches/retry", {
+          method: "POST",
+          body: JSON.stringify({ id: button.dataset.id }),
+          loadingMessage: "Recolocando o lançamento na fila..."
+        });
+        toast("Lançamento recolocado na fila.");
+        await recarregar();
+      } catch (error) {
+        toast(error.message || "Não foi possível reprocessar o lançamento.", "error");
+      } finally {
+        button.disabled = false;
+      }
+    })
+  );
+
+  document.querySelectorAll(".toggle-integration").forEach((button) => button.addEventListener("click", async () => {
+    const integration = integrations.find((item) => String(item.id) === button.dataset.id);
+    if (!integration) return;
+    await request("/api/admin/integrations", {
+      method: "POST",
+      body: JSON.stringify({ ...integration, ativo: !integration.ativo })
+    });
+    toast(integration.ativo ? "Integração desativada." : "Integração ativada.");
+    await recarregar();
+  }));
+}
+
+// Converte milissegundos no texto curto usado nos cartões de operação
+function formatarIntervalo(ms) {
+  const minutos = Math.round(Number(ms) / 60000);
+  if (!Number.isFinite(minutos) || minutos <= 0) return "Sob demanda";
+  if (minutos < 60) return `A cada ${minutos} min`;
+  const horas = Math.round(minutos / 60);
+  return horas < 24 ? `A cada ${horas} h` : `A cada ${Math.round(horas / 24)} d`;
 }
 
 // View do painel (dashboard) com indicadores gerais
@@ -8286,7 +9124,7 @@ async function viewConfigV2() {
     });
   };
   document.querySelectorAll("[data-config-tab]").forEach((button) => button.addEventListener("click", () => setConfigTab(button.dataset.configTab)));
-  document.querySelector("#open-integrations-center")?.addEventListener("click", () => route("omie"));
+  document.querySelector("#open-integrations-center")?.addEventListener("click", () => route("integrations"));
   bindOrderAlertSettings();
 
   const categoryPickers = {};

@@ -7,7 +7,7 @@ import fs from "node:fs";
 const indexSrc = fs.readFileSync("server/index.js", "utf8");
 const avariasSrc = fs.readFileSync("server/modules/avarias/avarias.routes.js", "utf8");
 const backupSrc = fs.readFileSync("server/services/backup/backup.service.js", "utf8");
-const integracaoSrc = fs.readFileSync("server/services/integrations/integration.security.js", "utf8");
+const integracaoSrc = fs.readFileSync("server/services/integrations/core/integration.security.js", "utf8");
 const gitignore = fs.readFileSync(".gitignore", "utf8");
 
 test("upload de fotos tem teto de tamanho e nao acumula o corpo sem limite", () => {
@@ -66,7 +66,7 @@ test("nenhuma rota administrativa ficou sem gate de admin", () => {
     "server/modules/estoque/estoque.routes.js",
     "server/modules/avarias/avarias.routes.js",
     "server/modules/backup/backup.routes.js",
-    "server/modules/omie/omie.routes.js"
+    "server/modules/integrations/integrations.routes.js"
   ];
   for (const arquivo of arquivos) {
     const src = fs.readFileSync(arquivo, "utf8");
@@ -77,10 +77,22 @@ test("nenhuma rota administrativa ficou sem gate de admin", () => {
       // O gate precisa aparecer logo depois da checagem do caminho da rota
       const janela = linhas.slice(i, i + 6).join("\n");
       const temGate = /requireUser\(req, res, "admin"\)/.test(janela)
+        || /requireAdmin\(req, res, context\)/.test(janela)
         || /user\.role !== "admin"/.test(janela);
       assert.ok(temGate, `${arquivo}: rota ${rota[1]} (linha ${i + 1}) sem gate de admin visivel`);
     }
   }
+});
+
+test("o atalho requireAdmin das integracoes delega mesmo para o gate de admin", () => {
+  // O teste acima aceita requireAdmin() como gate valido; aqui se garante que esse atalho
+  // nao vira um gate frouxo com o tempo.
+  const src = fs.readFileSync("server/modules/integrations/integrations.routes.js", "utf8");
+  assert.match(
+    src,
+    /function requireAdmin\(req, res, context\) \{\s*return context\.requireUser\(req, res, "admin"\);\s*\}/,
+    "requireAdmin precisa continuar delegando para requireUser(..., \"admin\")"
+  );
 });
 
 test("rotas de PDV usam o pdvId da sessao, nunca o enviado pelo cliente", () => {

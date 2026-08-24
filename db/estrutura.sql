@@ -662,6 +662,125 @@ ALTER SEQUENCE public.integration_credentials_id_seq OWNED BY public.integration
 
 
 --
+-- Name: integration_factor_decisions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.integration_factor_decisions (
+    id bigint NOT NULL,
+    integration_id bigint NOT NULL,
+    external_product_id text NOT NULL,
+    status text NOT NULL,
+    fator_sugerido integer,
+    fator_decidido integer,
+    decidido_por text,
+    decidido_em timestamp without time zone,
+    escrito_em timestamp without time zone,
+    erro text,
+    criado_em timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    atualizado_em timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    valor_anterior text,
+    payload jsonb,
+    resposta jsonb,
+    operacao text,
+    evidencia jsonb
+);
+
+
+--
+-- Name: integration_factor_decisions_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.integration_factor_decisions_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: integration_factor_decisions_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.integration_factor_decisions_id_seq OWNED BY public.integration_factor_decisions.id;
+
+
+--
+-- Name: integration_factor_evidence; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.integration_factor_evidence (
+    id bigint NOT NULL,
+    integration_id bigint NOT NULL,
+    external_product_id text NOT NULL,
+    fator integer NOT NULL,
+    vezes integer DEFAULT 0 NOT NULL,
+    primeira_em date,
+    ultima_em date,
+    documento jsonb,
+    atualizado_em timestamp without time zone DEFAULT CURRENT_TIMESTAMP
+);
+
+
+--
+-- Name: integration_factor_evidence_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.integration_factor_evidence_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: integration_factor_evidence_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.integration_factor_evidence_id_seq OWNED BY public.integration_factor_evidence.id;
+
+
+--
+-- Name: integration_factor_sheet; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.integration_factor_sheet (
+    id bigint NOT NULL,
+    integration_id bigint NOT NULL,
+    nome_operacao text NOT NULL,
+    fator integer,
+    divergente boolean DEFAULT false NOT NULL,
+    valores_por_aba jsonb,
+    secao text,
+    external_product_id text,
+    vinculado_por text,
+    vinculado_em timestamp without time zone,
+    importado_em timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    atualizado_em timestamp without time zone DEFAULT CURRENT_TIMESTAMP
+);
+
+
+--
+-- Name: integration_factor_sheet_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.integration_factor_sheet_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: integration_factor_sheet_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.integration_factor_sheet_id_seq OWNED BY public.integration_factor_sheet.id;
+
+
+--
 -- Name: integration_jobs; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -767,6 +886,54 @@ CREATE TABLE public.integration_runtime_state (
 
 
 --
+-- Name: integration_stock_launches; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.integration_stock_launches (
+    id bigint NOT NULL,
+    integration_id bigint,
+    codigo_pedido text NOT NULL,
+    pedido_item_id bigint,
+    sku_produto text NOT NULL,
+    pdv_id integer,
+    quantidade numeric NOT NULL,
+    local_origem text,
+    local_destino text,
+    evento text NOT NULL,
+    idempotency_key text NOT NULL,
+    modo text DEFAULT 'SIMULACAO'::text NOT NULL,
+    status text DEFAULT 'PENDENTE'::text NOT NULL,
+    payload jsonb,
+    resposta jsonb,
+    external_id text,
+    erro text,
+    tentativas integer DEFAULT 0 NOT NULL,
+    enviado_em timestamp without time zone,
+    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+
+
+--
+-- Name: integration_stock_launches_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.integration_stock_launches_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: integration_stock_launches_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.integration_stock_launches_id_seq OWNED BY public.integration_stock_launches.id;
+
+
+--
 -- Name: integration_sync_state; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -867,7 +1034,8 @@ CREATE TABLE public.integrations (
     created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     created_by text,
-    updated_by text
+    updated_by text,
+    configuracao jsonb DEFAULT '{}'::jsonb NOT NULL
 );
 
 
@@ -1286,7 +1454,12 @@ CREATE TABLE public.product_integration_mappings (
     raw_payload jsonb,
     active boolean DEFAULT true NOT NULL,
     created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL
+    updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    fator_conversao integer,
+    embalagem text,
+    fator_status text,
+    fator_conteudo_bruto text,
+    fator_lido_em timestamp without time zone
 );
 
 
@@ -1686,6 +1859,27 @@ ALTER TABLE ONLY public.integration_credentials ALTER COLUMN id SET DEFAULT next
 
 
 --
+-- Name: integration_factor_decisions id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.integration_factor_decisions ALTER COLUMN id SET DEFAULT nextval('public.integration_factor_decisions_id_seq'::regclass);
+
+
+--
+-- Name: integration_factor_evidence id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.integration_factor_evidence ALTER COLUMN id SET DEFAULT nextval('public.integration_factor_evidence_id_seq'::regclass);
+
+
+--
+-- Name: integration_factor_sheet id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.integration_factor_sheet ALTER COLUMN id SET DEFAULT nextval('public.integration_factor_sheet_id_seq'::regclass);
+
+
+--
 -- Name: integration_jobs id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -1697,6 +1891,13 @@ ALTER TABLE ONLY public.integration_jobs ALTER COLUMN id SET DEFAULT nextval('pu
 --
 
 ALTER TABLE ONLY public.integration_metrics ALTER COLUMN id SET DEFAULT nextval('public.integration_metrics_id_seq'::regclass);
+
+
+--
+-- Name: integration_stock_launches id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.integration_stock_launches ALTER COLUMN id SET DEFAULT nextval('public.integration_stock_launches_id_seq'::regclass);
 
 
 --
@@ -1992,6 +2193,30 @@ ALTER TABLE ONLY public.integration_credentials
 
 
 --
+-- Name: integration_factor_decisions integration_factor_decisions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.integration_factor_decisions
+    ADD CONSTRAINT integration_factor_decisions_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: integration_factor_evidence integration_factor_evidence_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.integration_factor_evidence
+    ADD CONSTRAINT integration_factor_evidence_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: integration_factor_sheet integration_factor_sheet_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.integration_factor_sheet
+    ADD CONSTRAINT integration_factor_sheet_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: integration_jobs integration_jobs_idempotency_key_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2021,6 +2246,14 @@ ALTER TABLE ONLY public.integration_metrics
 
 ALTER TABLE ONLY public.integration_runtime_state
     ADD CONSTRAINT integration_runtime_state_pkey PRIMARY KEY (integration_id);
+
+
+--
+-- Name: integration_stock_launches integration_stock_launches_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.integration_stock_launches
+    ADD CONSTRAINT integration_stock_launches_pkey PRIMARY KEY (id);
 
 
 --
@@ -2426,6 +2659,27 @@ CREATE INDEX idx_estoque_avarias_devolucao ON public.estoque_avarias USING btree
 
 
 --
+-- Name: idx_factor_decisions_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_factor_decisions_status ON public.integration_factor_decisions USING btree (integration_id, status);
+
+
+--
+-- Name: idx_factor_evidence_produto; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_factor_evidence_produto ON public.integration_factor_evidence USING btree (integration_id, external_product_id);
+
+
+--
+-- Name: idx_factor_sheet_produto; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_factor_sheet_produto ON public.integration_factor_sheet USING btree (integration_id, external_product_id);
+
+
+--
 -- Name: idx_integration_jobs_priority; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2465,6 +2719,20 @@ CREATE INDEX idx_integration_sync_state_lookup ON public.integration_sync_state 
 --
 
 CREATE INDEX idx_integrations_provider ON public.integrations USING btree (provedor, ativo);
+
+
+--
+-- Name: idx_mappings_fator_pendente; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_mappings_fator_pendente ON public.product_integration_mappings USING btree (integration_id, fator_lido_em NULLS FIRST);
+
+
+--
+-- Name: idx_mappings_fator_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_mappings_fator_status ON public.product_integration_mappings USING btree (integration_id, fator_status);
 
 
 --
@@ -2531,6 +2799,27 @@ CREATE INDEX idx_produto_categorias_categoria ON public.produto_categorias USING
 
 
 --
+-- Name: idx_stock_launches_idempotency; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_stock_launches_idempotency ON public.integration_stock_launches USING btree (idempotency_key);
+
+
+--
+-- Name: idx_stock_launches_pedido; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_stock_launches_pedido ON public.integration_stock_launches USING btree (codigo_pedido);
+
+
+--
+-- Name: idx_stock_launches_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_stock_launches_status ON public.integration_stock_launches USING btree (status, created_at);
+
+
+--
 -- Name: idx_stock_movements_origin; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2556,6 +2845,27 @@ CREATE INDEX idx_stock_snapshots_lookup ON public.stock_snapshots USING btree (p
 --
 
 CREATE INDEX idx_stock_snapshots_sku ON public.stock_snapshots USING btree (sku_produto, snapshot_at DESC);
+
+
+--
+-- Name: uq_factor_decisions; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_factor_decisions ON public.integration_factor_decisions USING btree (integration_id, external_product_id);
+
+
+--
+-- Name: uq_factor_evidence; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_factor_evidence ON public.integration_factor_evidence USING btree (integration_id, external_product_id, fator);
+
+
+--
+-- Name: uq_factor_sheet_nome; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_factor_sheet_nome ON public.integration_factor_sheet USING btree (integration_id, nome_operacao);
 
 
 --
