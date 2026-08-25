@@ -47,9 +47,9 @@ test("formatarSolicitadoEmbalagem deriva do liberado (unidades), não do solicit
 
 test("o texto mostra também quantas unidades tem a embalagem, não só a contagem", () => {
   // Pedido explícito: "informar a quantidade da embalagem e quantas unidade tem na embalagem"
-  // — ex: "10,00 EMB (50 un/emb)", não só "10,00 EMB"
+  // — ex: "10,00 EMB - (50un)", não só "10,00 EMB"
   const corpo = app.slice(app.indexOf("function formatarSolicitadoEmbalagem"), app.indexOf("function formatarSolicitadoEmbalagem") + 300);
-  assert.match(corpo, /\$\{fator\} un\/emb/);
+  assert.match(corpo, /EMB - \(\$\{fator\}un\)/);
 });
 
 // updateReleaseItemRowState é o único handler disparado em input/change de .liberada (também

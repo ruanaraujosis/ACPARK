@@ -6869,7 +6869,7 @@ function releasePanelStock(value) {
 // quantas embalagens fechadas aquele valor representa (ex: liberar 15 un com fator 15 = 1,00 EMB).
 function formatarSolicitadoEmbalagem(unidadesLiberadas, fator) {
   const valor = (Number(unidadesLiberadas) || 0) / fator;
-  return `${valor.toFixed(2).replace(".", ",")} EMB (${fator} un/emb)`;
+  return `${valor.toFixed(2).replace(".", ",")} EMB - (${fator}un)`;
 }
 
 function releasePanelItemsTable(group = [], editable = false) {
