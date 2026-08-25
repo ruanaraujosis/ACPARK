@@ -2736,6 +2736,13 @@ CREATE INDEX idx_mappings_fator_status ON public.product_integration_mappings US
 
 
 --
+-- Name: idx_mappings_sku_ativo; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_mappings_sku_ativo ON public.product_integration_mappings USING btree (sku_produto) WHERE active;
+
+
+--
 -- Name: idx_omie_jobs_entity; Type: INDEX; Schema: public; Owner: -
 --
 

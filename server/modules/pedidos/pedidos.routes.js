@@ -1,10 +1,10 @@
-﻿import { query, tx, asInt, code } from "../../db.js";
+﻿import { query, tx, pool, asInt, code } from "../../db.js";
 import { normalizeText, readBody, send } from "../../utils/http.js";
 import {
   registrarCompensacaoDaReabertura,
   registrarTransferenciasDaRetirada
 } from "../../services/integrations/core/stock-launches.service.js";
-import { converterQuantidadeDoPedido } from "../../services/integrations/core/fator-conversao.repository.js";
+import { converterQuantidadeDoPedido, obterFatoresEmLote } from "../../services/integrations/core/fator-conversao.repository.js";
 import { publishOrderAlert, publishOrderStatusChange } from "../../services/order-alerts/order-alerts.events.js";
 import { normalizeOrderStatus, orderStatuses } from "./pedidos.service.js";
 
@@ -605,7 +605,14 @@ export async function handlePedidosRoutes(req, res, context) {
        LIMIT $7 OFFSET $8`,
       [from || null, to || null, pdvId, q || null, activeOnly, allowedStatus || null, limit, offset]
     );
-    send(res, 200, { orders: rows, limit, offset, hasMore: rows.length === limit });
+    // Anexa o fator de conversão de cada linha, para a tela exibir Solicitado/Liberar em embalagens
+    // quando o produto tiver uma (busca em lote — nunca uma consulta por linha, ver obterFatoresEmLote)
+    const fatores = await obterFatoresEmLote(pool, rows.map((r) => r.sku_produto));
+    const ordersComFator = rows.map((row) => {
+      const info = fatores.get(row.sku_produto) || { fator: 1, status: "UNITARIO", embalagem: null };
+      return { ...row, fator_conversao: info.fator, fator_status: info.status, embalagem: info.embalagem };
+    });
+    send(res, 200, { orders: ordersComFator, limit, offset, hasMore: rows.length === limit });
     return true;
   }
 

@@ -507,7 +507,7 @@ async function viewOrder(options = {}) {
     if (!product || !Number.isFinite(qty) || qty <= 0) return;
     const existing = state.cart.find((item) => item.sku === sku);
     if (existing) existing.quantidade += qty;
-    else state.cart.push({ sku, nome: product.nome, quantidade: qty, unidade_medida: "UNIDADE" });
+    else state.cart.push({ sku, nome: product.nome, quantidade: qty, unidade_medida: unidadePadraoDoProduto(sku) });
   };
   const currentDraftPayload = () => ({
     solicitante: document.querySelector("#solicitante")?.value || "",
@@ -618,6 +618,14 @@ async function viewOrder(options = {}) {
       embalagem: produto?.embalagem || "",
       invalido: produto?.fator_status === "INVALIDO"
     };
+  };
+
+  // Embalagem é o padrão: é assim que o PDV pede no dia a dia. Cai para unidade só quando o
+  // produto não tem fator confiável no cadastro — ali pedir por embalagem seria multiplicar por
+  // um número adivinhado, e o backend recusa o pedido (fator-conversao.repository.js).
+  const unidadePadraoDoProduto = (sku) => {
+    const { fator, invalido } = fatorDoProduto(sku);
+    return !invalido && fator > 1 ? "EMBALAGEM" : "UNIDADE";
   };
 
   // "2 fardos = 30 un" — o PDV vê a embalagem que escolheu e o total que vai receber
@@ -6856,6 +6864,14 @@ function releasePanelStock(value) {
 }
 
 // Monta a tabela única de itens: editável na separação, somente leitura nas demais etapas
+// Formata a coluna "Solicitado" do painel do Almoxarifado em embalagens, a partir do que está
+// liberado (não do pedido original): assim o almoxarifado vê, ao lado do campo em unidades,
+// quantas embalagens fechadas aquele valor representa (ex: liberar 15 un com fator 15 = 1,00 EMB).
+function formatarSolicitadoEmbalagem(unidadesLiberadas, fator) {
+  const valor = (Number(unidadesLiberadas) || 0) / fator;
+  return `${valor.toFixed(2).replace(".", ",")} EMB`;
+}
+
 function releasePanelItemsTable(group = [], editable = false) {
   const draft = getReleaseDraft(group[0]?.codigo_pedido);
   const draftById = new Map((draft.items || []).map((item) => [String(item.id), item]));
@@ -6868,6 +6884,10 @@ function releasePanelItemsTable(group = [], editable = false) {
       ? Number((draftItem?.quantidade_liberada ?? (saved > 0 ? saved : requested)) || 0)
       : saved;
     const missing = Math.max(requested - released, 0);
+    // Produto pedido por embalagem: mostra "Solicitado" em EMB (derivado do liberado), nunca
+    // com fator inválido/adivinhado — nesse caso a coluna continua em unidades, como sempre foi
+    const fator = Number(item.fator_conversao);
+    const fatorValido = item.fator_status !== "INVALIDO" && Number.isSafeInteger(fator) && fator > 1;
     const rowState = central < 0
       ? "release-item-negative"
       : central === 0
@@ -6898,7 +6918,7 @@ function releasePanelItemsTable(group = [], editable = false) {
           <small class="order-panel-pdv">PDV ${releasePanelStock(item.estoque_pdv)} · mín ${releasePanelStock(item.estoque_minimo)} · máx ${releasePanelStock(item.estoque_maximo)}</small>
         </td>
         <td class="release-number-cell"><span class="stock-badge ${stockClass}">${central}</span></td>
-        <td class="release-number-cell" data-requested-value>${requested}</td>
+        <td class="release-number-cell" data-requested-value${fatorValido ? ` data-fator="${fator}"` : ""}>${fatorValido ? formatarSolicitadoEmbalagem(released, fator) : requested}</td>
         <td class="release-number-cell">${editable
           ? `<input class="liberada release-qty-input" type="number" min="0" step="1" inputmode="numeric" aria-label="Quantidade a liberar de ${esc(item.produto || "")}" value="${esc(released)}">`
           : released}</td>
@@ -7724,12 +7744,19 @@ function updateReleaseItemRowState(row) {
     const parsed = Number(normalized);
     return Number.isFinite(parsed) ? parsed : 0;
   };
-  const requested = parseQty(row.dataset.requested || row.querySelector("[data-requested-value]")?.textContent);
+  const requestedCell = row.querySelector("[data-requested-value]");
+  const requested = parseQty(row.dataset.requested || requestedCell?.textContent);
   const released = parseQty(row.querySelector(".liberada")?.value);
   const saldo = Number(row.querySelector(".stock-badge")?.textContent || 0);
   const missing = Math.max(requested - released, 0);
   const missingCell = row.querySelector(".release-missing-cell");
   if (missingCell) missingCell.textContent = missing;
+  // Produto com fator de conversão válido: "Solicitado" acompanha em embalagens o que está
+  // digitado em "Liberar" (unidades), ao vivo, a cada tecla — não fica preso ao pedido original
+  const fator = Number(requestedCell?.dataset.fator);
+  if (requestedCell && Number.isSafeInteger(fator) && fator > 1) {
+    requestedCell.textContent = formatarSolicitadoEmbalagem(released, fator);
+  }
   row.classList.toggle("is-marked-remove", Boolean(row.querySelector(".remover")?.checked));
   row.classList.toggle("release-item-negative", saldo < 0);
   row.classList.toggle("release-item-zero", saldo === 0);
@@ -7865,6 +7892,10 @@ function orderCard(group) {
         const requestedQty = Number(o.quantidade_solicitada || 0);
         const savedReleaseQty = Number(o.quantidade_liberada || 0);
         const releasedQty = Number((draftItem?.quantidade_liberada ?? (savedReleaseQty > 0 ? savedReleaseQty : requestedQty)) || 0);
+        // Mesma regra do painel do pedido: "Solicitado" mostra em embalagens o que está em
+        // "Liberar" (unidades), quando o produto tiver fator de conversão válido
+        const fatorKanban = Number(o.fator_conversao);
+        const fatorKanbanValido = o.fator_status !== "INVALIDO" && Number.isSafeInteger(fatorKanban) && fatorKanban > 1;
         const missingQty = Math.max(requestedQty - releasedQty, 0);
         const saldo = centralStockValue(o);
         const isRemoved = canRemoveProducts && Boolean(draftItem?.remover);
@@ -7896,7 +7927,7 @@ function orderCard(group) {
           <td class="release-number-cell">${stockValue(o.estoque_pdv)}</td>
           <td class="release-number-cell">${stockValue(o.estoque_minimo)}</td>
           <td class="release-number-cell">${stockValue(o.estoque_maximo)}</td>
-          <td class="release-number-cell" data-requested-value>${requestedQty}</td>
+          <td class="release-number-cell" data-requested-value${fatorKanbanValido ? ` data-fator="${fatorKanban}"` : ""}>${fatorKanbanValido ? formatarSolicitadoEmbalagem(releasedQty, fatorKanban) : requestedQty}</td>
           <td>
             <input class="liberada release-qty-input" type="number" min="0" step="1" inputmode="numeric" aria-label="Quantidade a liberar de ${esc(o.produto)}" value="${esc(releasedQty)}">
           </td>

@@ -74,6 +74,42 @@ export async function converterQuantidadeDoPedido(client, { sku, quantidade, uni
   };
 }
 
+// Le o fator de varios SKUs de uma vez, devolvendo um Map(sku -> {fator, status, embalagem}).
+//
+// Usado por telas que listam pedidos (o Almoxarifado precisa saber, por linha, se aquele item
+// foi pedido em embalagem). Busca com `sku_produto = ANY($1)` e desempate em JS, em vez de um
+// LEFT JOIN LATERAL por linha ou um DISTINCT ON: medido neste projeto contra 60 SKUs reais --
+// LATERAL por linha custava 98ms mesmo com indice dedicado (o planejador preferia table scan
+// por causa do ORDER BY externo), DISTINCT ON custava 48ms, e esta forma custa 1,6ms com o
+// indice idx_mappings_sku_ativo (sku_produto) WHERE active.
+export async function obterFatoresEmLote(client, skus) {
+  const unicos = [...new Set(skus)].filter(Boolean);
+  const mapa = new Map();
+  if (!unicos.length) return mapa;
+
+  const resultado = await client.query(
+    `SELECT sku_produto, fator_conversao, fator_status, embalagem, fator_lido_em
+     FROM product_integration_mappings
+     WHERE active = TRUE AND sku_produto = ANY($1::text[])`,
+    [unicos]
+  );
+
+  for (const linha of resultado.rows) {
+    const atual = mapa.get(linha.sku_produto);
+    // Mantem a leitura mais recente; fator_lido_em nulo nunca vence uma leitura com data
+    const maisRecente = !atual || (linha.fator_lido_em && (!atual.fator_lido_em || linha.fator_lido_em > atual.fator_lido_em));
+    if (maisRecente) mapa.set(linha.sku_produto, linha);
+  }
+
+  return new Map(unicos.map((sku) => {
+    const linha = mapa.get(sku);
+    if (!linha || !linha.fator_status) {
+      return [sku, { fator: FATOR_UNITARIO, status: STATUS_FATOR.UNITARIO, embalagem: null }];
+    }
+    return [sku, { fator: linha.fator_conversao ?? null, status: linha.fator_status, embalagem: linha.embalagem || null }];
+  }));
+}
+
 // Produtos cujo fator ficou pendente de correcao no cadastro do ERP
 export async function listarPendenciasDeFator(client, { integrationId = null, limite = 200 } = {}) {
   const resultado = await client.query(
