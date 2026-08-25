@@ -1786,6 +1786,33 @@ textarea {
   resize: vertical;
 }
 
+/* O Tailwind entra por <script> e injeta o preflight em tempo de execução — ou seja, DEPOIS
+   deste arquivo. O preflight zera `padding` de campos de formulário com a mesma especificidade
+   da regra acima, então vencia no empate e o texto encostava na borda (o primeiro caractere
+   chegava a ser cortado). O prefixo `html` sobe a especificidade só o suficiente para este
+   arquivo voltar a valer, sem precisar de `!important`.
+   Checkbox e radio ficam de fora de propósito: padding neles deforma o controle. */
+html input,
+html select,
+html textarea {
+  padding: 0.72rem 0.85rem;
+}
+
+/* Checkbox e radio ficam de fora: padding neles deforma o controle. Feito como regra separada
+   (e não com `:not()` no seletor acima) de propósito — `:not([type="..."])` somaria a
+   especificidade do atributo e passaria por cima do `td input`, que deixa os campos dentro de
+   tabelas mais compactos. */
+html input[type="checkbox"],
+html input[type="radio"] {
+  padding: 0;
+}
+
+/* A primeira linha do textarea é onde o corte aparecia: garante folga vertical própria, já que
+   o campo cresce e não pode deixar a linha inicial rente à borda. */
+html textarea {
+  padding-block: 0.68rem;
+}
+
 /* Campo de senha (mostrar/ocultar) */
 .password-field {
   position: relative;
@@ -2494,29 +2521,58 @@ body.sheet-manager-open {
 }
 
 .order-cart-list table {
-  min-width: 0;
   table-layout: fixed;
+  /* Soma das colunas fixas (39rem) mais uma faixa mínima legível para o nome do produto.
+     Abaixo disso o #cart acima rola horizontalmente em vez de espremer as colunas. */
+  min-width: 800px;
 }
 
 .order-cart-list th,
 .order-cart-list td {
   padding: 0.75rem 0.8rem;
+  /* A linha mistura texto com campos mais altos: centralizar evita o degrau visual */
+  vertical-align: middle;
 }
 
+/* Colunas do carrinho: Produto · Quantidade · Unidade · Total · Ação.
+   Estas regras eram do carrinho antigo de 3 colunas (Produto/Qtd/Ação) e não acompanharam a
+   entrada de "Unidade" e "Total" — a coluna 3 tinha 58px, largura de botão de ícone, que passou
+   a espremer o seletor de unidade a ponto de mostrar só uma letra. */
+
+/* Produto: sem largura fixa de propósito, absorve toda a sobra */
 .order-cart-list th:nth-child(1),
 .order-cart-list td:nth-child(1) {
-  width: 62%;
+  /* Nome longo quebra em vez de empurrar as outras colunas */
+  word-break: break-word;
 }
 
+/* Quantidade: cabe 3 dígitos mais as setinhas do campo numérico */
 .order-cart-list th:nth-child(2),
 .order-cart-list td:nth-child(2) {
-  width: 96px;
+  width: 7rem;
+  text-align: center;
 }
 
+/* Unidade: precisa caber a opção inteira ("Embalagem (15 un)"), nunca truncada */
 .order-cart-list th:nth-child(3),
 .order-cart-list td:nth-child(3) {
-  width: 58px;
+  width: 11.5rem;
   text-align: center;
+}
+
+/* Total: o texto calculado não pode quebrar no meio. Largura medida no pior caso realista —
+   "999 embalagem(ns) = 14985 un" pede 222px, mais o padding de 0.8rem de cada lado. */
+.order-cart-list th:nth-child(4),
+.order-cart-list td:nth-child(4) {
+  width: 15.5rem;
+  white-space: nowrap;
+}
+
+/* Ação: botão de remover alinhado à direita */
+.order-cart-list th:nth-child(5),
+.order-cart-list td:nth-child(5) {
+  width: 5rem;
+  text-align: right;
 }
 
 .order-available-card {
@@ -6073,6 +6129,18 @@ td input[type="number"] {
 .order-cart-unidade {
   min-height: 38px;
   font-size: 0.86rem;
+}
+
+/* Os campos do carrinho ocupam a largura útil da própria célula. Escopado ao carrinho do PDV
+   porque .order-cart-qty tem max-width menor por padrão e as regras de `td input` são
+   compartilhadas com a tela de liberação do Almoxarifado e com o painel do pedido. */
+.order-cart-list .order-cart-qty {
+  width: 100%;
+  max-width: none;
+}
+
+.order-cart-list .order-cart-unidade {
+  width: 100%;
 }
 
 /* ===== Assistente de fator de conversão (histórico de compra) ===== */
