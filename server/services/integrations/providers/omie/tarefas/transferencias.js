@@ -28,10 +28,42 @@ async function idExternoDoProduto(client, integrationId, sku) {
   return resultado.rows[0]?.external_product_id || null;
 }
 
+// Descobre o valor unitario do produto, que a OMIE exige no ajuste.
+//
+// Duas fontes, nesta ordem, ambas documentais -- nunca um numero inventado:
+//   1. o preco do cadastro, que veio do proprio ERP na sincronizacao de produtos;
+//   2. o preco unitario da ultima nota de compra, guardado na evidencia de fator.
+//
+// Medido: 1.334 dos 4.435 mapeamentos tem preco zero no cadastro, entao a segunda fonte nao
+// e luxo. Sem nenhuma das duas, o lancamento falha com mensagem explicita e fica na fila.
+async function valorUnitarioDoProduto(client, integrationId, sku) {
+  const doCadastro = await client.query(
+    "SELECT price FROM product_integration_mappings WHERE integration_id = $1 AND sku_produto = $2 LIMIT 1",
+    [integrationId, sku]
+  );
+  const preco = Number(doCadastro.rows[0]?.price);
+  if (Number.isFinite(preco) && preco > 0) return preco;
+
+  const daNota = await client.query(
+    `SELECT (e.documento->>'preco_unitario')::numeric AS preco
+     FROM integration_factor_evidence e
+     JOIN product_integration_mappings m
+       ON m.integration_id = e.integration_id AND m.external_product_id = e.external_product_id
+     WHERE e.integration_id = $1 AND m.sku_produto = $2
+       AND (e.documento->>'preco_unitario') IS NOT NULL
+     ORDER BY e.ultima_em DESC NULLS LAST
+     LIMIT 1`,
+    [integrationId, sku]
+  );
+  const daCompra = Number(daNota.rows[0]?.preco);
+  return Number.isFinite(daCompra) && daCompra > 0 ? daCompra : null;
+}
+
 // Monta o payload conforme o evento: retirada transfere do almoxarifado para o PDV,
 // compensacao faz o caminho inverso
-function montarPayload(lancamento, idExternoProduto) {
+function montarPayload(lancamento, idExternoProduto, valorUnitario) {
   const comum = {
+    valorUnitario,
     chaveOperacao: lancamento.idempotency_key,
     idExternoProduto,
     sku: lancamento.sku_produto,
@@ -60,9 +92,11 @@ export async function enviarTransferencias(contexto) {
   const { client, integracao, segredos, configuracao, payload, fetchImpl } = contexto;
   const simulacao = emSimulacao(configuracao);
 
+  // Um lancamento so: a virada para real comeca com um envio conferido no ERP
   const abertos = await lancamentos.listarAbertos(client, {
     integrationId: integracao.id,
-    limite: Number(payload.limite) || LANCAMENTOS_POR_JOB
+    limite: Number(payload.limite) || LANCAMENTOS_POR_JOB,
+    apenas: payload.apenas ? Number(payload.apenas) : null
   });
 
   const resumo = {
@@ -91,7 +125,17 @@ export async function enviarTransferencias(contexto) {
         continue;
       }
 
-      const corpo = montarPayload(lancamento, idExterno);
+      const valorUnitario = await valorUnitarioDoProduto(client, integracao.id, lancamento.sku_produto);
+      if (!valorUnitario) {
+        resumo.sem_valor = (resumo.sem_valor || 0) + 1;
+        await lancamentos.registrarResultado(client, lancamento.id, {
+          status: lancamentos.STATUS.ERRO,
+          erro: `Produto ${lancamento.sku_produto} nao tem preco no cadastro nem em nota de compra. A OMIE exige valor diferente de zero no ajuste.`
+        });
+        continue;
+      }
+
+      const corpo = montarPayload(lancamento, idExterno, valorUnitario);
 
       // MODO SIMULACAO: o payload e gravado para conferencia e nada sai daqui.
       if (simulacao) {
@@ -117,7 +161,18 @@ export async function enviarTransferencias(contexto) {
         status: lancamentos.STATUS.ENVIADO,
         payload: corpo,
         resposta: resposta.dados,
-        externalId: String(resposta.dados?.codigo_lancamento || resposta.dados?.nCodAjuste || "") || null
+        // A resposta real do IncluirAjusteEstoque traz id_ajuste e id_movest -- nao
+        // codigo_lancamento nem nCodAjuste, que era o que o codigo procurava. Conferido no
+        // primeiro envio real: o external_id ficava nulo e o lancamento perdia a
+        // rastreabilidade do lado da OMIE.
+        externalId:
+          String(
+            resposta.dados?.id_ajuste ||
+              resposta.dados?.id_movest ||
+              resposta.dados?.codigo_lancamento ||
+              resposta.dados?.nCodAjuste ||
+              ""
+          ) || null
       });
       resumo.enviados += 1;
     } catch (erro) {

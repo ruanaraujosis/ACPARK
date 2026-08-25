@@ -107,6 +107,7 @@ export function montarTransferenciaEstoque({
   codigoLocalOrigem,
   codigoLocalDestino,
   quantidade,
+  valorUnitario,
   data = new Date(),
   observacao
 }) {
@@ -117,6 +118,18 @@ export function montarTransferenciaEstoque({
     throw new Error("Transferencia com origem e destino iguais nao move estoque.");
   }
 
+  // "Valor do Movimento" e obrigatorio na API e NAO pode ser zero -- a OMIE recusa com
+  // «O "Valor" informado deve ser diferente de zero». Isso so apareceu no primeiro envio
+  // real: em simulacao o payload estava bem formado e passava.
+  //
+  // Falhar aqui, antes da requisicao, e melhor do que descobrir produto a produto na fila.
+  const valor = Number(valorUnitario);
+  if (!Number.isFinite(valor) || valor <= 0) {
+    throw new Error(
+      `Transferencia de ${sku || idExternoProduto} sem valor unitario conhecido. A OMIE exige valor diferente de zero no ajuste.`
+    );
+  }
+
   const payload = {
     cod_int_ajuste: String(chaveOperacao || "").slice(0, 60),
     data: formatarData(data),
@@ -125,7 +138,7 @@ export function montarTransferenciaEstoque({
     origem: "AJU",
     tipo: "TRF",
     motivo: "TRF",
-    valor: 0,
+    valor,
     codigo_local_estoque: Number(codigoLocalOrigem),
     codigo_local_estoque_destino: Number(codigoLocalDestino)
   };

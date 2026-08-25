@@ -43,13 +43,21 @@ function fetchFalso(respostas = [{ codigo_lancamento: 999 }]) {
 }
 
 // Client falso que devolve lancamentos abertos e guarda as atualizacoes
-function clientComLancamentos(lancamentos, { vinculoProduto = "10792612974" } = {}) {
+function clientComLancamentos(lancamentos, { vinculoProduto = "10792612974", preco = 4.5 } = {}) {
   const atualizacoes = [];
   return {
     atualizacoes,
     async query(texto, params = []) {
       if (/FROM integration_stock_launches/.test(texto) && /status = ANY/.test(texto)) {
         return { rows: lancamentos, rowCount: lancamentos.length };
+      }
+      // A OMIE exige valor diferente de zero no ajuste: a tarefa busca o preco do cadastro
+      if (/SELECT price FROM product_integration_mappings/.test(texto)) {
+        return { rows: preco ? [{ price: preco }] : [], rowCount: preco ? 1 : 0 };
+      }
+      // Segunda fonte de preco: a ultima nota de compra
+      if (/integration_factor_evidence/.test(texto)) {
+        return { rows: [], rowCount: 0 };
       }
       if (/FROM product_integration_mappings/.test(texto)) {
         return vinculoProduto
@@ -179,7 +187,8 @@ test("a compensacao inverte os locais e exige chave propria", () => {
     idExternoProduto: 10792612974,
     codigoLocalOrigem: ALMOXARIFADO,
     codigoLocalDestino: LOCAL_PDV,
-    quantidade: 3
+    quantidade: 3,
+    valorUnitario: 4.5
   };
 
   const compensacao = montarCompensacaoTransferencia(base);
@@ -228,7 +237,8 @@ test("transferencia com origem igual ao destino e recusada antes de sair", () =>
         idExternoProduto: 1,
         codigoLocalOrigem: ALMOXARIFADO,
         codigoLocalDestino: ALMOXARIFADO,
-        quantidade: 1
+        quantidade: 1,
+        valorUnitario: 4.5
       }),
     /origem e destino iguais/i
   );
@@ -298,7 +308,8 @@ test("o local do almoxarifado nao pode ser vinculado a um PDV", () => {
         idExternoProduto: 1,
         codigoLocalOrigem: ALMOXARIFADO,
         codigoLocalDestino: ALMOXARIFADO,
-        quantidade: 1
+        quantidade: 1,
+        valorUnitario: 4.5
       }),
     /origem e destino iguais/i
   );
@@ -355,4 +366,38 @@ test("valor ja existente no ERP nunca e sobrescrito em silencio", async () => {
   const atual = { cConteudo: "15" };
   assert.equal(String(atual.cConteudo ?? "").trim(), "15");
   assert.notEqual(String(atual.cConteudo), "12", "12 nao pode substituir 15 sem decisao humana");
+});
+
+test("transferencia sem valor unitario conhecido nao sai da maquina", () => {
+  // A OMIE recusa o ajuste com «O "Valor" informado deve ser diferente de zero». Isso so
+  // apareceu no primeiro envio real -- em simulacao o payload passava. Medido: 1.334 dos
+  // 4.435 mapeamentos tem preco zero no cadastro, entao o caso e comum, nao excecao.
+  assert.throws(
+    () =>
+      montarTransferenciaEstoque({
+        chaveOperacao: "X",
+        idExternoProduto: 1,
+        sku: "ABC",
+        codigoLocalOrigem: ALMOXARIFADO,
+        codigoLocalDestino: LOCAL_PDV,
+        quantidade: 1,
+        valorUnitario: 0
+      }),
+    /valor unitario/i
+  );
+});
+
+test("com valor unitario, o ajuste leva o campo valor preenchido", () => {
+  const corpo = montarTransferenciaEstoque({
+    chaveOperacao: "PEDIDO-X-ITEM-1-RETIRADA-V1",
+    idExternoProduto: 10819228863,
+    sku: "11152",
+    codigoLocalOrigem: ALMOXARIFADO,
+    codigoLocalDestino: LOCAL_PDV,
+    quantidade: 1,
+    valorUnitario: 4.476667
+  });
+  assert.equal(corpo.tipo, "TRF");
+  assert.equal(corpo.valor, 4.476667);
+  assert.notEqual(corpo.valor, 0, "valor zero e recusado pela OMIE");
 });

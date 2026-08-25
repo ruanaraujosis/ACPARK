@@ -17,8 +17,16 @@ export const STATUS = Object.freeze({
   CANCELADO: "CANCELADO"
 });
 
-// Status que ainda serao processados pela fila
-export const STATUS_ABERTOS = [STATUS.PENDENTE, STATUS.ERRO];
+// Status que ainda serao processados pela fila.
+//
+// SIMULADO entra aqui de proposito: simulacao NAO e um estado final, e sim "ainda nao saiu".
+// Sem isso, tudo que passou pela simulacao ficava num beco sem saida -- ligar o modo REAL nao
+// reprocessava nada, porque a fila nem enxergava esses lancamentos. Medido em producao: 381
+// transferencias de retirada paradas em SIMULADO, nenhuma com enviado_em.
+//
+// Reprocessar e seguro: a chave de idempotencia continua sendo a mesma, e `foiEnviado`
+// impede que um lancamento ja aceito pela OMIE seja mandado de novo.
+export const STATUS_ABERTOS = [STATUS.PENDENTE, STATUS.ERRO, STATUS.SIMULADO];
 
 // Monta a chave de idempotencia de um lancamento.
 //
@@ -86,14 +94,19 @@ export async function registrarLancamento(client, dados) {
 }
 
 // Lancamentos ainda por enviar, mais antigos primeiro
-export async function listarAbertos(client, { integrationId = null, limite = 50 } = {}) {
+// `apenas` restringe a UM lancamento, pelo id.
+//
+// Existe para a virada de simulacao para real: o primeiro envio verdadeiro e de um so,
+// conferido na tela do ERP, antes de soltar o resto.
+export async function listarAbertos(client, { integrationId = null, limite = 50, apenas = null } = {}) {
   const resultado = await client.query(
     `SELECT * FROM integration_stock_launches
      WHERE status = ANY($1::text[])
        AND ($2::bigint IS NULL OR integration_id = $2 OR integration_id IS NULL)
+       AND ($4::bigint IS NULL OR id = $4)
      ORDER BY created_at
      LIMIT $3`,
-    [STATUS_ABERTOS, integrationId, Math.min(Number(limite) || 50, 200)]
+    [STATUS_ABERTOS, integrationId, Math.min(Number(limite) || 50, 200), apenas]
   );
   return resultado.rows;
 }
