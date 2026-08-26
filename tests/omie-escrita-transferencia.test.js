@@ -401,3 +401,15 @@ test("com valor unitario, o ajuste leva o campo valor preenchido", () => {
   assert.equal(corpo.valor, 4.476667);
   assert.notEqual(corpo.valor, 0, "valor zero e recusado pela OMIE");
 });
+
+test("lancamento em ERRO vai para o fim da fila, nunca bloqueia os novos", () => {
+  // Medido em producao: 44 lancamentos sem preco, por serem os mais antigos, ocupavam as
+  // primeiras vagas de toda leitura. Com o agendador lendo 25 por vez, nenhum lancamento
+  // novo era alcancado -- a fila parava por inteiro.
+  const fonte = fs.readFileSync("server/services/integrations/core/stock-launches.repository.js", "utf8");
+  assert.match(
+    fonte,
+    /ORDER BY \(status = 'ERRO'\), created_at/,
+    "listarAbertos precisa despriorizar quem esta em ERRO"
+  );
+});

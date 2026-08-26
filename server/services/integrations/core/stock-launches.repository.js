@@ -98,13 +98,20 @@ export async function registrarLancamento(client, dados) {
 //
 // Existe para a virada de simulacao para real: o primeiro envio verdadeiro e de um so,
 // conferido na tela do ERP, antes de soltar o resto.
+//
+// A ordenacao poe quem esta em ERRO no FIM da fila, nunca no comeco.
+//
+// Medido em producao: 44 lancamentos sem preco, mais antigos que o resto, ocupavam as
+// primeiras vagas de toda leitura. Como o agendador le 25 por vez, ele nunca alcancava um
+// lancamento novo -- a fila inteira ficava refem de pendencias que nao tinham como sair.
+// Elas continuam sendo retentadas, so que depois de quem ainda nao teve a primeira chance.
 export async function listarAbertos(client, { integrationId = null, limite = 50, apenas = null } = {}) {
   const resultado = await client.query(
     `SELECT * FROM integration_stock_launches
      WHERE status = ANY($1::text[])
        AND ($2::bigint IS NULL OR integration_id = $2 OR integration_id IS NULL)
        AND ($4::bigint IS NULL OR id = $4)
-     ORDER BY created_at
+     ORDER BY (status = 'ERRO'), created_at
      LIMIT $3`,
     [STATUS_ABERTOS, integrationId, Math.min(Number(limite) || 50, 200), apenas]
   );

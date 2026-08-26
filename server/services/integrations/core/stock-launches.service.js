@@ -115,7 +115,13 @@ export async function registrarCompensacaoDaReabertura(client, { codigoPedido, i
 
   try {
     const alvo = await integracaoDeEscrita(client);
-    if (!alvo) return resumo;
+    if (!alvo) {
+      // Sem motivo escrito, este retorno era mudo: devolvia zero em tudo e parecia "nada a
+      // compensar", quando na verdade a integracao de escrita nao foi encontrada. Custou uma
+      // investigacao inteira -- a causa era o registro de providers nao carregado.
+      resumo.motivo = "Nenhuma integracao ativa com escrita habilitada.";
+      return resumo;
+    }
     const { integracao, capacidade } = alvo;
 
     for (const item of itens) {
