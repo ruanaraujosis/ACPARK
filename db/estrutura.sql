@@ -1459,7 +1459,8 @@ CREATE TABLE public.product_integration_mappings (
     embalagem text,
     fator_status text,
     fator_conteudo_bruto text,
-    fator_lido_em timestamp without time zone
+    fator_lido_em timestamp without time zone,
+    price_manual numeric
 );
 
 

@@ -55,21 +55,28 @@ export const providerExemplo = {
   urlBasePadrao: "https://api.exemplo.com/v1",
   ambientes: ["PRODUCAO", "HOMOLOGACAO"],
   credenciais: [
-    { chave: "token", rotulo: "Token", obrigatoria: true, ajuda: "Onde encontrar." }
+    {
+      chave: "token",
+      rotulo: "Token",
+      obrigatoria: true,
+      ajuda: "Onde encontrar.",
+    },
   ],
   capacidades: [
     {
       id: "PRODUTOS",
       rotulo: "Produtos",
       descricao: "...",
-      prioridade: "NORMAL",          // CRITICA | ALTA | NORMAL | BAIXA
+      prioridade: "NORMAL", // CRITICA | ALTA | NORMAL | BAIXA
       intervaloPadraoMs: 3600000,
-      automatica: true,              // false = só sob demanda
-      manual: true,                  // false = não aparece como botão na tela
-      executar: async (contexto) => ({ /* resumo */ })
-    }
+      automatica: true, // false = só sob demanda
+      manual: true, // false = não aparece como botão na tela
+      executar: async (contexto) => ({/* resumo */}),
+    },
   ],
-  async testarConexao({ integracao, segredos, fetchImpl }) { /* leitura mínima */ }
+  async testarConexao({ integracao, segredos, fetchImpl }) {
+    /* leitura mínima */
+  },
 };
 ```
 
@@ -90,14 +97,14 @@ validada em banco descartável antes de qualquer exclusão). Tudo posterior é a
 
 O que o corte apagou:
 
-| Tabela | Registros |
-|---|---|
-| `pedidos` | 2.788 |
-| `pedido_auditoria` | 711 |
-| `pedido_idempotencia` | 419 |
-| `pedido_rascunhos` | 1 |
+| Tabela                       | Registros                        |
+| ---------------------------- | -------------------------------- |
+| `pedidos`                    | 2.788                            |
+| `pedido_auditoria`           | 711                              |
+| `pedido_idempotencia`        | 419                              |
+| `pedido_rascunhos`           | 1                                |
 | `integration_stock_launches` | 80 (77 simulados + 3 cancelados) |
-| `integration_jobs` | 1.506 |
+| `integration_jobs`           | 1.506                            |
 
 **Os 80 lançamentos foram descartados, não enviados.** Nenhum deles chegou à OMIE, então não
 havia divergência a compensar — eram anteriores ao fator de conversão e à recontagem. O motivo
@@ -216,7 +223,7 @@ a tela exibir "2 fardos = 30 un"; sem ela, a tela fala genericamente.
 `exibir_caracteristicas: "S"`, mas voltou `null` em 100 de 100 produtos. Só `ConsultarProduto`
 traz, e ele é por produto. Por isso a capacidade `FATORES` lê em lotes de 60, com pausa a cada
 10 chamadas, agenda a própria continuação e só relê quem passou de 7 dias — a OMIE já devolveu
-*"Consumo redundante detectado, aguarde 53 segundos"* nesta conta.
+_"Consumo redundante detectado, aguarde 53 segundos"_ nesta conta.
 
 ### Validação do conteúdo — estrita de propósito
 
@@ -239,7 +246,7 @@ sem essa referência, cada lote deixaria os produtos "frescos", a conta de resta
 primeira volta e a releitura pararia no lote 1.
 
 **Cada continuação leva um número de lote no payload.** A fila deduplica por
-*(integração, capacidade, payload)* e considera jobs em `PROCESSANDO` — ou seja, encontraria o
+_(integração, capacidade, payload)_ e considera jobs em `PROCESSANDO` — ou seja, encontraria o
 próprio job que está pedindo a continuação e devolveria ele. Medido em produção antes da
 correção: a varredura andava 60 produtos a cada 30 minutos em vez de encadear, o que daria
 ~36 horas para 4.306 produtos.
@@ -263,17 +270,17 @@ que vem do ERP. Desligando a integração, o fator sai junto em vez de deixar um
 
 ## Capacidades da OMIE
 
-| Capacidade | O que faz | Intervalo padrão |
-|---|---|---|
-| `PRODUTOS` | Importa o cadastro e mantém o vínculo SKU ↔ produto OMIE. **Não escreve saldo** | 1 h |
-| `FATORES` | Lê o fator de conversão (unidades por embalagem) do cadastro | 30 min |
-| `LOCAIS` | Importa os locais de estoque | 6 h |
-| `ESTOQUE_ALMOXARIFADO` | Saldo do local do almoxarifado → estoque central | 15 min |
-| `SALDOS` | Saldo dos locais vinculados → estoque dos PDVs | sob demanda ⚠ |
-| `SALDO_ITEM` | Atualiza um produto/local específico | sob demanda |
-| `MOVIMENTOS` | Importa movimentações do almoxarifado e dos locais vinculados | 5 min |
-| `TRANSFERENCIAS` | **Escrita**: envia a transferência Almoxarifado → PDV | 5 min |
-| `RECONCILIACAO` | Registra divergências para revisão | 12 h |
+| Capacidade             | O que faz                                                                       | Intervalo padrão |
+| ---------------------- | ------------------------------------------------------------------------------- | ---------------- |
+| `PRODUTOS`             | Importa o cadastro e mantém o vínculo SKU ↔ produto OMIE. **Não escreve saldo** | 1 h              |
+| `FATORES`              | Lê o fator de conversão (unidades por embalagem) do cadastro                    | 30 min           |
+| `LOCAIS`               | Importa os locais de estoque                                                    | 6 h              |
+| `ESTOQUE_ALMOXARIFADO` | Saldo do local do almoxarifado → estoque central                                | 15 min           |
+| `SALDOS`               | Saldo dos locais vinculados → estoque dos PDVs                                  | sob demanda ⚠    |
+| `SALDO_ITEM`           | Atualiza um produto/local específico                                            | sob demanda      |
+| `MOVIMENTOS`           | Importa movimentações do almoxarifado e dos locais vinculados                   | 5 min            |
+| `TRANSFERENCIAS`       | **Escrita**: envia a transferência Almoxarifado → PDV                           | 5 min            |
+| `RECONCILIACAO`        | Registra divergências para revisão                                              | 12 h             |
 
 Cadastro e saldo têm **donos diferentes de propósito**: `PRODUTOS` cuida do cadastro e
 `ESTOQUE_ALMOXARIFADO` do saldo. O `quantidade_estoque` do `ListarProdutos` vem zerado nesta
@@ -284,11 +291,11 @@ saldo a última a rodar venceria e o estoque central ficaria oscilando entre o n
 >
 > Situação medida em 20/08/2026:
 >
-> | Local | Movimentações em 90 dias | Produtos com saldo |
-> |---|---|---|
-> | ALMOXARIFADO | 2.093 | 3.969 |
-> | CABANA / PARK / MOUNTAIN PARK / CENTRAL | 1 a 2, todas em 13/08 | 1 a 2 |
-> | DECK / COZINHA / RESTAURANTE / PARK HALL | 0 | 0 a 42 |
+> | Local                                    | Movimentações em 90 dias | Produtos com saldo |
+> | ---------------------------------------- | ------------------------ | ------------------ |
+> | ALMOXARIFADO                             | 2.093                    | 3.969              |
+> | CABANA / PARK / MOUNTAIN PARK / CENTRAL  | 1 a 2, todas em 13/08    | 1 a 2              |
+> | DECK / COZINHA / RESTAURANTE / PARK HALL | 0                        | 0 a 42             |
 >
 > As transferências ALMOXARIFADO → PDV **começaram a ser lançadas na OMIE** (as entradas de
 > 13/08 são o início). A baixa de venda ainda **não** — a integração do sistema de vendas com
@@ -321,7 +328,7 @@ usando o id da capacidade como chave.
    um-para-um nos dois sentidos: um local não pode alimentar dois PDVs, senão o mesmo saldo
    entraria duas vezes. (Atenção: a OMIE tem um único local `DECK` para os dois PDVs
    DECK INFERIOR e DECK SUPERIOR, e nenhum local para MIRANTE.)
-5. **Saldos** e **Movimentos** só importam para PDVs vinculados — sem o vínculo não há para
+7. **Saldos** e **Movimentos** só importam para PDVs vinculados — sem o vínculo não há para
    qual PDV gravar, e adivinhar seria pior do que não importar.
 
 ## Escrita: transferência Almoxarifado → PDV
@@ -337,13 +344,13 @@ aparecer no destino, e ninguém saberia sem conferir os dois locais.
 
 ### Matriz de responsabilidade
 
-| Local | Movimento | Quem lança na OMIE |
-|---|---|---|
-| Almoxarifado | Saída por transferência para o PDV | **MyEstoque** |
-| Almoxarifado | Compras, notas, inventário, ajustes | Fora do MyEstoque |
-| PDV | Entrada por transferência do Almoxarifado | **MyEstoque** |
-| PDV | Baixa por venda | Sistema de vendas |
-| PDV | Entrada por devolução de venda | Sistema de vendas |
+| Local        | Movimento                                 | Quem lança na OMIE |
+| ------------ | ----------------------------------------- | ------------------ |
+| Almoxarifado | Saída por transferência para o PDV        | **MyEstoque**      |
+| Almoxarifado | Compras, notas, inventário, ajustes       | Fora do MyEstoque  |
+| PDV          | Entrada por transferência do Almoxarifado | **MyEstoque**      |
+| PDV          | Baixa por venda                           | Sistema de vendas  |
+| PDV          | Entrada por devolução de venda            | Sistema de vendas  |
 
 O MyEstoque envia **movimento, nunca saldo absoluto** — escrever saldo apagaria os lançamentos
 do sistema de vendas. O tipo `SLD` (ajuste de saldo) está travado por teste.
@@ -406,13 +413,13 @@ uma capacidade normal, usando a mesma fila das leituras.
 
 ## Variáveis de ambiente
 
-| Variável | Para que serve |
-|---|---|
+| Variável                         | Para que serve                                                      |
+| -------------------------------- | ------------------------------------------------------------------- |
 | `INTEGRATIONS_SCHEDULER_ENABLED` | Liga o agendador (aceita `OMIE_SCHEDULER_ENABLED` como nome antigo) |
-| `INTEGRATIONS_SCHEDULER_TICK_MS` | Intervalo do tick, padrão 15 s |
-| `OMIE_TIMEOUT_MS` | Tempo limite das chamadas à OMIE |
-| `INTEGRATION_ENCRYPTION_KEY` | Chave AES das credenciais. Obrigatória, sem fallback |
-| `CRON_SECRET` | Protege `/api/cron/integrations-sync`, gatilho externo opcional |
+| `INTEGRATIONS_SCHEDULER_TICK_MS` | Intervalo do tick, padrão 15 s                                      |
+| `OMIE_TIMEOUT_MS`                | Tempo limite das chamadas à OMIE                                    |
+| `INTEGRATION_ENCRYPTION_KEY`     | Chave AES das credenciais. Obrigatória, sem fallback                |
+| `CRON_SECRET`                    | Protege `/api/cron/integrations-sync`, gatilho externo opcional     |
 
 Credenciais de API **não** ficam em `.env`: são cadastradas pela tela e gravadas
 criptografadas em `integration_credentials`.
@@ -457,11 +464,11 @@ do histórico de compras. Este levantamento mediu, contra a API real, se isso é
 
 Três serviços foram testados nesta conta:
 
-| Serviço | Endpoint | Registros nesta conta |
-| --- | --- | --- |
-| Pedidos de Compra | `produtos/pedidocompra/` | **zero** (`PesquisarPedCompra` responde "Não existem registros") |
-| Nota de Entrada | `produtos/notaentrada/` | **1**, de 10/07/2025, com `produtos: []` e totais zerados |
-| Recebimento de NF-e | `produtos/recebimentonfe/` | **4.778** |
+| Serviço             | Endpoint                   | Registros nesta conta                                            |
+| ------------------- | -------------------------- | ---------------------------------------------------------------- |
+| Pedidos de Compra   | `produtos/pedidocompra/`   | **zero** (`PesquisarPedCompra` responde "Não existem registros") |
+| Nota de Entrada     | `produtos/notaentrada/`    | **1**, de 10/07/2025, com `produtos: []` e totais zerados        |
+| Recebimento de NF-e | `produtos/recebimentonfe/` | **4.778**                                                        |
 
 **A única fonte utilizável é o Recebimento de NF-e.** Pedido de compra e nota de entrada não são
 usados na operação — projetar em cima deles seria construir sobre um cadastro vazio.
@@ -471,13 +478,13 @@ usados na operação — projetar em cima deles seria construir sobre um cadastr
 Cada item de `ListarRecebimentos` traz **dois pares quantidade/unidade**: o que o fornecedor
 faturou e o que efetivamente entrou no estoque.
 
-| Campo | Onde | Significado |
-| --- | --- | --- |
-| `itensCabec.nQtdeNFe` / `cUnidadeNfe` | nota do fornecedor | 2 CX |
-| `itensAjustes.nQtdeRecebida` / `cUnidade` | entrada no estoque | 24 UN |
-| `itensCabec.nIdProduto` | — | código OMIE do produto: o elo com `product_integration_mappings` |
-| `itensCabec.cEAN` | — | EAN da nota; **não serve de chave** |
-| `cabec.cNumeroNFe`, `dEmissaoNFe`, `cNome` | — | a nota, a data e o fornecedor que sustentam a sugestão |
+| Campo                                      | Onde               | Significado                                                      |
+| ------------------------------------------ | ------------------ | ---------------------------------------------------------------- |
+| `itensCabec.nQtdeNFe` / `cUnidadeNfe`      | nota do fornecedor | 2 CX                                                             |
+| `itensAjustes.nQtdeRecebida` / `cUnidade`  | entrada no estoque | 24 UN                                                            |
+| `itensCabec.nIdProduto`                    | —                  | código OMIE do produto: o elo com `product_integration_mappings` |
+| `itensCabec.cEAN`                          | —                  | EAN da nota; **não serve de chave**                              |
+| `cabec.cNumeroNFe`, `dEmissaoNFe`, `cNome` | —                  | a nota, a data e o fornecedor que sustentam a sugestão           |
 
 A razão `nQtdeRecebida / nQtdeNFe` **é** o fator, e é documental: quem digitou a entrada
 declarou que aquela caixa tinha aquela quantidade. Não é semelhança de nome nem palpite de
@@ -528,15 +535,15 @@ alteração (`dDtAltDe`/`dDtAltAte`), útil para releitura incremental.
 
 Amostra de um terço do histórico, casando por `nIdProduto` contra os 4.431 produtos ativos:
 
-| | |
-| --- | --- |
-| itens com as duas quantidades | 7.028 |
-| itens sem `nIdProduto` (não casáveis) | 773 |
-| itens de produtos do nosso cadastro | 4.841 |
+|                                          |           |
+| ---------------------------------------- | --------- |
+| itens com as duas quantidades            | 7.028     |
+| itens sem `nIdProduto` (não casáveis)    | 773       |
+| itens de produtos do nosso cadastro      | 4.841     |
 | **produtos nossos com alguma evidência** | **1.257** |
-| — evidência consistente, fator > 1 | 205 |
-| — evidência conflitante | 10 |
-| — sempre comprado avulso (fator 1) | 1.042 |
+| — evidência consistente, fator > 1       | 205       |
+| — evidência conflitante                  | 10        |
+| — sempre comprado avulso (fator 1)       | 1.042     |
 
 Força da evidência nos 205 consistentes: **142 apoiados por 4 ou mais notas**, 34 por 2 ou 3,
 e **29 por uma nota só**. Um terço do histórico já resolve 205 produtos — o histórico completo
@@ -579,7 +586,7 @@ Duas armadilhas que a derivação precisa tratar:
 
 A API permite **240 requisições por minuto**, até 4 simultâneas em consultas, e **nenhuma
 simultânea em inclusão/alteração** — a gravação das características tem que ser serial.
-Requisição repetida é recusada com *"Consumo redundante detectado"* e só libera após 60s.
+Requisição repetida é recusada com _"Consumo redundante detectado"_ e só libera após 60s.
 
 `ListarRecebimentos` aceita **100 registros por página**: os 4.778 recebimentos cabem em
 **48 chamadas** (~10s cada, ~8 minutos de varredura completa). Depois da primeira carga,
@@ -609,13 +616,13 @@ evidência boa, então o texto vira só um aviso na tela.
 
 ### Classificação — e por que "avulso" não prova nada
 
-| Situação | O que significa | Vai para |
-| --- | --- | --- |
-| `SUGERIDO` | um único fator > 1 observado | fila de conferência |
-| `CONFLITO_EMBALAGEM` | dois fatores > 1, ambos legítimos | conferência, com escolha entre as opções |
-| `CADASTRO_GENERICO` | três ou mais fatores > 1, sem padrão | fila de correção de cadastro, **sem fator** |
-| `SO_AVULSO` | todas as notas 1:1 | conferência, sugerindo 1 **sem rótulo de confiança** |
-| `SEM_EVIDENCIA` | nenhuma nota no período | pendente, sem sugestão |
+| Situação             | O que significa                      | Vai para                                             |
+| -------------------- | ------------------------------------ | ---------------------------------------------------- |
+| `SUGERIDO`           | um único fator > 1 observado         | fila de conferência                                  |
+| `CONFLITO_EMBALAGEM` | dois fatores > 1, ambos legítimos    | conferência, com escolha entre as opções             |
+| `CADASTRO_GENERICO`  | três ou mais fatores > 1, sem padrão | fila de correção de cadastro, **sem fator**          |
+| `SO_AVULSO`          | todas as notas 1:1                   | conferência, sugerindo 1 **sem rótulo de confiança** |
+| `SEM_EVIDENCIA`      | nenhuma nota no período              | pendente, sem sugestão                               |
 
 Confiança sai do número de notas concordando: **4 ou mais** = alta, **2 a 3** = média, **1** =
 evidência única.
@@ -655,7 +662,7 @@ produz classificação errada, não apenas incompleta.**
    15 segundos (recebimento com muitos itens). A primeira versão dava `break`, e como a
    continuação também parava ali, **as 11 páginas seguintes nunca eram lidas — em execução
    nenhuma**. Hoje a página falha é registrada, a varredura segue, e o cursor avança pelas
-   páginas *tentadas*; três falhas seguidas (aí sim, internet caída) param o lote. Na
+   páginas _tentadas_; três falhas seguidas (aí sim, internet caída) param o lote. Na
    retentativa a página 37 passou de primeira.
 
 **A varredura só é idempotente começando da página 1**, que é quando a evidência anterior é
@@ -704,14 +711,14 @@ recebem candidato nenhum, o que é preferível a receber um errado.
 
 ### Como as três fontes se combinam
 
-| Situação | Resultado |
-| --- | --- |
-| notas e planilha no mesmo número | `CONFIANCA.MAXIMA` |
-| notas e planilha em números diferentes | **a planilha prevalece** — decisão do usuário |
-| só planilha, sem nota | sugere, como `EVIDENCIA_UNICA` |
-| notas 1:1 e planilha > 1 | a **planilha carrega o número**, e a confiança segue nula |
-| planilha divergente entre abas | não sugere nada |
-| descrição do produto (`CX C/12`, `DP12X28G`) | confirma, **nunca promove sozinha** |
+| Situação                                     | Resultado                                                 |
+| -------------------------------------------- | --------------------------------------------------------- |
+| notas e planilha no mesmo número             | `CONFIANCA.MAXIMA`                                        |
+| notas e planilha em números diferentes       | **a planilha prevalece** — decisão do usuário             |
+| só planilha, sem nota                        | sugere, como `EVIDENCIA_UNICA`                            |
+| notas 1:1 e planilha > 1                     | a **planilha carrega o número**, e a confiança segue nula |
+| planilha divergente entre abas               | não sugere nada                                           |
+| descrição do produto (`CX C/12`, `DP12X28G`) | confirma, **nunca promove sozinha**                       |
 
 **A planilha prevalece sobre as notas, por decisão do usuário** (23/08/2026): ela é a contagem
 física do almoxarifado, enquanto a nota reflete como o fornecedor faturou e como quem lançou o
@@ -782,6 +789,30 @@ Auditoria por produto em `integration_factor_decisions`: valor anterior, operaç
 resposta, quem aprovou, quando, e a **evidência congelada no momento da aprovação** — a varredura
 seguinte pode mudar a evidência, e a auditoria precisa dizer em que base se decidiu naquele dia.
 
+## Valor unitário da transferência
+
+A OMIE exige `valor` diferente de zero no ajuste, mesmo num `TRF`, que só move quantidade entre
+dois locais e não altera saldo financeiro nem custo médio. `valorUnitarioDoProduto()` resolve o
+valor em quatro fontes, nesta ordem:
+
+| Ordem | Fonte                                                  | `fonte_valor` | Por que nessa posição                                                                          |
+| ----- | ------------------------------------------------------ | ------------- | ---------------------------------------------------------------------------------------------- |
+| 1     | `product_integration_mappings.price_manual`            | `MANUAL`      | Decisão humana explícita; vence o ERP (a HEINEKEN veio 16 do cadastro e foi corrigida para 20) |
+| 2     | `product_integration_mappings.price`                   | `CADASTRO`    | Veio do próprio ERP na sincronização                                                           |
+| 3     | Última nota de compra em `integration_factor_evidence` | `NOTA`        | Documental, mas pode estar desatualizada                                                       |
+| 4     | `VALOR_SIMBOLICO` = R$ 0,01                            | `SIMBOLICO`   | Último recurso, só para o ajuste ser aceito                                                    |
+
+O piso de R$ 0,01 foi autorizado pelo usuário em 26/08/2026: antes dele, produto sem preço
+ficava em `ERRO` para sempre e, por ser o mais antigo da fila, ocupava as primeiras vagas de
+toda leitura — 44 lançamentos chegaram a travar a fila inteira.
+
+`fonte_valor` é gravado no `payload` do lançamento mas **nunca vai na chamada** — `corpo` vira
+`params` da API crua, e um campo desconhecido ali faz a OMIE recusar o ajuste. Para auditar
+quanto saiu com valor simbólico, filtre por `payload->>'fonte_valor' = 'SIMBOLICO'`.
+
+O resumo da tarefa traz `com_valor_simbolico`, então dá para acompanhar se a cobertura de preço
+está melhorando sem consultar o banco.
+
 ## Armadilhas conhecidas
 
 Cada uma custou tempo e está travada por teste:
@@ -803,7 +834,15 @@ Cada uma custou tempo e está travada por teste:
   (em minúsculo) e `codOrigem` — não `nCodMovimento`/`nQtde`/`dData`. Conferido contra a
   resposta real; mapear pelos nomes da documentação grava movimento com tudo nulo.
 - **Erro de credencial não é retentável.** Repetir uma chave inválida só gasta rate limit.
-- **Consulta idêntica repetida em menos de 60s é recusada** com *"Consumo redundante detectado"*.
+- **`IncluirAjusteEstoque` recusa valor zero** — _"O «Valor» informado deve ser diferente de
+  zero"_. Só aparece no envio real; em simulação o payload passa. Medido: 1.334 dos 4.435
+  mapeamentos têm preço zero no cadastro, então o caso é a regra, não a exceção.
+- **Preço humano não pode morar em `product_integration_mappings.price`.** A sincronização de
+  produtos faz `price = EXCLUDED.price` a cada rodada, então qualquer valor corrigido à mão
+  duraria até a próxima sincronização e sumiria em silêncio. Por isso existe `price_manual`,
+  coluna deliberadamente **fora** daquele upsert.
+
+- **Consulta idêntica repetida em menos de 60s é recusada** com _"Consumo redundante detectado"_.
   Não atrapalha um lote (cada produto é uma consulta diferente), mas derruba a conferência feita
   logo depois de gravar o mesmo produto — espace a releitura.
 - **Uma página que falha não pode abortar a varredura.** Medido: a página 37 de 48 do histórico

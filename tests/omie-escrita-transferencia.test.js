@@ -2,13 +2,20 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 
-import { emSimulacao, modoDeEscrita, validarEscritaPermitida } from "../server/services/integrations/core/escrita.js";
+import {
+  emSimulacao,
+  modoDeEscrita,
+  validarEscritaPermitida,
+} from "../server/services/integrations/core/escrita.js";
 import { montarChaveIdempotencia } from "../server/services/integrations/core/stock-launches.repository.js";
 import {
   montarCompensacaoTransferencia,
-  montarTransferenciaEstoque
+  montarTransferenciaEstoque,
 } from "../server/services/integrations/providers/omie/omie.operacoes.js";
-import { enviarTransferencias } from "../server/services/integrations/providers/omie/tarefas/transferencias.js";
+import {
+  enviarTransferencias,
+  VALOR_SIMBOLICO,
+} from "../server/services/integrations/providers/omie/tarefas/transferencias.js";
 import { montarPayloadCaracteristica } from "../server/services/integrations/providers/omie/tarefas/escrita-fator.js";
 import { providerOmie } from "../server/services/integrations/providers/omie/index.js";
 
@@ -21,7 +28,7 @@ const INTEGRACAO = {
   provedor: "OMIE",
   ativo: true,
   nome: "OMIE",
-  url_base: "https://app.omie.com.br/api/v1"
+  url_base: "https://app.omie.com.br/api/v1",
 };
 const SEGREDOS = { app_key: "chave", app_secret: "segredo" };
 const ALMOXARIFADO = "10792598111";
@@ -34,8 +41,14 @@ function fetchFalso(respostas = [{ codigo_lancamento: 999 }]) {
     chamadas.push({ url, corpo: JSON.parse(opcoes.body) });
     return {
       status: 200,
-      headers: { get: (n) => (String(n).toLowerCase() === "content-type" ? "application/json" : null) },
-      text: async () => JSON.stringify(respostas[Math.min(indice++, respostas.length - 1)])
+      headers: {
+        get: (n) =>
+          String(n).toLowerCase() === "content-type"
+            ? "application/json"
+            : null,
+      },
+      text: async () =>
+        JSON.stringify(respostas[Math.min(indice++, respostas.length - 1)]),
     };
   };
   impl.chamadas = chamadas;
@@ -43,21 +56,41 @@ function fetchFalso(respostas = [{ codigo_lancamento: 999 }]) {
 }
 
 // Client falso que devolve lancamentos abertos e guarda as atualizacoes
-function clientComLancamentos(lancamentos, { vinculoProduto = "10792612974", preco = 4.5 } = {}) {
+function clientComLancamentos(
+  lancamentos,
+  {
+    vinculoProduto = "10792612974",
+    preco = 4.5,
+    precoManual = null,
+    precoNota = null,
+  } = {},
+) {
   const atualizacoes = [];
   return {
     atualizacoes,
     async query(texto, params = []) {
-      if (/FROM integration_stock_launches/.test(texto) && /status = ANY/.test(texto)) {
+      if (
+        /FROM integration_stock_launches/.test(texto) &&
+        /status = ANY/.test(texto)
+      ) {
         return { rows: lancamentos, rowCount: lancamentos.length };
       }
       // A OMIE exige valor diferente de zero no ajuste: a tarefa busca o preco do cadastro
-      if (/SELECT price FROM product_integration_mappings/.test(texto)) {
-        return { rows: preco ? [{ price: preco }] : [], rowCount: preco ? 1 : 0 };
+      if (
+        /SELECT price, price_manual FROM product_integration_mappings/.test(
+          texto,
+        )
+      ) {
+        return {
+          rows: [{ price: preco, price_manual: precoManual }],
+          rowCount: 1,
+        };
       }
-      // Segunda fonte de preco: a ultima nota de compra
+      // Terceira fonte de preco: a ultima nota de compra
       if (/integration_factor_evidence/.test(texto)) {
-        return { rows: [], rowCount: 0 };
+        return precoNota
+          ? { rows: [{ preco: precoNota }], rowCount: 1 }
+          : { rows: [], rowCount: 0 };
       }
       if (/FROM product_integration_mappings/.test(texto)) {
         return vinculoProduto
@@ -65,11 +98,16 @@ function clientComLancamentos(lancamentos, { vinculoProduto = "10792612974", pre
           : { rows: [], rowCount: 0 };
       }
       if (/UPDATE integration_stock_launches/.test(texto)) {
-        atualizacoes.push({ id: params[0], status: params[1], payload: params[2], erro: params[5] });
+        atualizacoes.push({
+          id: params[0],
+          status: params[1],
+          payload: params[2],
+          erro: params[5],
+        });
         return { rows: [{ id: params[0] }], rowCount: 1 };
       }
       return { rows: [], rowCount: 0 };
-    }
+    },
   };
 }
 
@@ -84,7 +122,7 @@ const lancamentoRetirada = {
   local_destino: LOCAL_PDV,
   evento: "RETIRADA",
   idempotency_key: "PEDIDO-PED-1-ITEM-55-RETIRADA-V1",
-  created_at: new Date("2026-08-20T10:00:00")
+  created_at: new Date("2026-08-20T10:00:00"),
 };
 
 test("o modo de escrita padrao e SIMULACAO, e so REAL explicito libera envio", () => {
@@ -109,10 +147,14 @@ test("em simulacao o payload e montado e gravado, mas NADA e enviado", async () 
     segredos: SEGREDOS,
     configuracao: { local_almoxarifado: ALMOXARIFADO },
     payload: {},
-    fetchImpl: impl
+    fetchImpl: impl,
   });
 
-  assert.equal(impl.chamadas.length, 0, "modo simulacao nao pode chamar a OMIE");
+  assert.equal(
+    impl.chamadas.length,
+    0,
+    "modo simulacao nao pode chamar a OMIE",
+  );
   assert.equal(resumo.modo, "SIMULACAO");
   assert.equal(resumo.simulados, 1);
   assert.equal(resumo.enviados, 0);
@@ -136,7 +178,7 @@ test("em modo REAL a transferencia sai como um unico lancamento TRF", async () =
     segredos: SEGREDOS,
     configuracao: { local_almoxarifado: ALMOXARIFADO, modo_escrita: "REAL" },
     payload: {},
-    fetchImpl: impl
+    fetchImpl: impl,
   });
 
   assert.equal(resumo.enviados, 1);
@@ -162,7 +204,7 @@ test("o MyEstoque nunca envia venda, devolucao, compra, inventario ou saldo abso
     segredos: SEGREDOS,
     configuracao: { local_almoxarifado: ALMOXARIFADO, modo_escrita: "REAL" },
     payload: {},
-    fetchImpl: impl
+    fetchImpl: impl,
   });
 
   const enviado = impl.chamadas[0].corpo.param[0];
@@ -176,8 +218,14 @@ test("o MyEstoque nunca envia venda, devolucao, compra, inventario ou saldo abso
   assert.equal(enviado.motivo, "TRF");
 
   // Nenhuma capacidade do provider aponta para uma chamada de venda ou saldo
-  const fonte = fs.readFileSync("server/services/integrations/providers/omie/tarefas/transferencias.js", "utf8");
-  assert.doesNotMatch(fonte, /IncluirPedido|IncluirNFe|AlterarEstoqueMinimo|"SLD"/);
+  const fonte = fs.readFileSync(
+    "server/services/integrations/providers/omie/tarefas/transferencias.js",
+    "utf8",
+  );
+  assert.doesNotMatch(
+    fonte,
+    /IncluirPedido|IncluirNFe|AlterarEstoqueMinimo|"SLD"/,
+  );
 });
 
 test("a compensacao inverte os locais e exige chave propria", () => {
@@ -188,19 +236,34 @@ test("a compensacao inverte os locais e exige chave propria", () => {
     codigoLocalOrigem: ALMOXARIFADO,
     codigoLocalDestino: LOCAL_PDV,
     quantidade: 3,
-    valorUnitario: 4.5
+    valorUnitario: 4.5,
   };
 
   const compensacao = montarCompensacaoTransferencia(base);
-  assert.equal(compensacao.codigo_local_estoque, Number(LOCAL_PDV), "sai do PDV");
-  assert.equal(compensacao.codigo_local_estoque_destino, Number(ALMOXARIFADO), "volta ao almoxarifado");
+  assert.equal(
+    compensacao.codigo_local_estoque,
+    Number(LOCAL_PDV),
+    "sai do PDV",
+  );
+  assert.equal(
+    compensacao.codigo_local_estoque_destino,
+    Number(ALMOXARIFADO),
+    "volta ao almoxarifado",
+  );
 
   // Reusar a chave do original faria a OMIE recusar o estorno como repetido
   assert.throws(
-    () => montarCompensacaoTransferencia({ ...base, chaveOperacao: base.chaveOperacaoOriginal }),
-    /nao pode reusar a chave/i
+    () =>
+      montarCompensacaoTransferencia({
+        ...base,
+        chaveOperacao: base.chaveOperacaoOriginal,
+      }),
+    /nao pode reusar a chave/i,
   );
-  assert.throws(() => montarCompensacaoTransferencia({ ...base, chaveOperacao: "" }), /chave de operacao propria/i);
+  assert.throws(
+    () => montarCompensacaoTransferencia({ ...base, chaveOperacao: "" }),
+    /chave de operacao propria/i,
+  );
 });
 
 test("a chave de idempotencia distingue evento e versao do mesmo item", () => {
@@ -208,20 +271,20 @@ test("a chave de idempotencia distingue evento e versao do mesmo item", () => {
     codigoPedido: "PED-1",
     pedidoItemId: 55,
     evento: "RETIRADA",
-    versao: 1
+    versao: 1,
   });
   const compensacao = montarChaveIdempotencia({
     codigoPedido: "PED-1",
     pedidoItemId: 55,
     evento: "COMPENSACAO",
-    versao: 1
+    versao: 1,
   });
   // Reabrir e finalizar de novo tem de gerar lancamento novo, nao ser barrado como repetido
   const segundaRetirada = montarChaveIdempotencia({
     codigoPedido: "PED-1",
     pedidoItemId: 55,
     evento: "RETIRADA",
-    versao: 2
+    versao: 2,
   });
 
   assert.notEqual(retirada, compensacao);
@@ -238,14 +301,16 @@ test("transferencia com origem igual ao destino e recusada antes de sair", () =>
         codigoLocalOrigem: ALMOXARIFADO,
         codigoLocalDestino: ALMOXARIFADO,
         quantidade: 1,
-        valorUnitario: 4.5
+        valorUnitario: 4.5,
       }),
-    /origem e destino iguais/i
+    /origem e destino iguais/i,
   );
 });
 
 test("produto sem vinculo vira erro no lancamento, nao chamada torta a OMIE", async () => {
-  const client = clientComLancamentos([lancamentoRetirada], { vinculoProduto: null });
+  const client = clientComLancamentos([lancamentoRetirada], {
+    vinculoProduto: null,
+  });
   const impl = fetchFalso();
 
   const resumo = await enviarTransferencias({
@@ -254,7 +319,7 @@ test("produto sem vinculo vira erro no lancamento, nao chamada torta a OMIE", as
     segredos: SEGREDOS,
     configuracao: { local_almoxarifado: ALMOXARIFADO, modo_escrita: "REAL" },
     payload: {},
-    fetchImpl: impl
+    fetchImpl: impl,
   });
 
   assert.equal(impl.chamadas.length, 0, "sem vinculo nao se chuta o produto");
@@ -264,31 +329,64 @@ test("produto sem vinculo vira erro no lancamento, nao chamada torta a OMIE", as
 });
 
 test("integracao desativada nao envia lancamento nenhum", () => {
-  const capacidade = providerOmie.capacidades.find((c) => c.id === "TRANSFERENCIAS");
+  const capacidade = providerOmie.capacidades.find(
+    (c) => c.id === "TRANSFERENCIAS",
+  );
   assert.equal(capacidade.escrita, true);
-  assert.throws(() => validarEscritaPermitida(capacidade, { ...INTEGRACAO, ativo: false }), /desativada/i);
+  assert.throws(
+    () => validarEscritaPermitida(capacidade, { ...INTEGRACAO, ativo: false }),
+    /desativada/i,
+  );
   // Leitura numa integracao desligada e so inutil; escrita e perigosa
   const leitura = providerOmie.capacidades.find((c) => c.id === "PRODUTOS");
-  assert.doesNotThrow(() => validarEscritaPermitida(leitura, { ...INTEGRACAO, ativo: false }));
+  assert.doesNotThrow(() =>
+    validarEscritaPermitida(leitura, { ...INTEGRACAO, ativo: false }),
+  );
 });
 
 test("a confirmacao de retirada nunca e bloqueada pela integracao", () => {
   // A retirada ja aconteceu quando o lancamento e registrado: uma falha ali vira aviso,
   // nunca excecao, senao a operacao do usuario para por causa da OMIE.
-  const servico = fs.readFileSync("server/services/integrations/core/stock-launches.service.js", "utf8");
-  assert.match(servico, /catch \(erro\)/, "o servico precisa engolir o proprio erro");
-  assert.doesNotMatch(servico, /throw /, "nada aqui pode lancar para a rota do pedido");
+  const servico = fs.readFileSync(
+    "server/services/integrations/core/stock-launches.service.js",
+    "utf8",
+  );
+  assert.match(
+    servico,
+    /catch \(erro\)/,
+    "o servico precisa engolir o proprio erro",
+  );
+  assert.doesNotMatch(
+    servico,
+    /throw /,
+    "nada aqui pode lancar para a rota do pedido",
+  );
 
-  const rota = fs.readFileSync("server/modules/pedidos/pedidos.routes.js", "utf8");
-  assert.match(rota, /lancamentoIntegracao = await registrarTransferenciasDaRetirada/);
+  const rota = fs.readFileSync(
+    "server/modules/pedidos/pedidos.routes.js",
+    "utf8",
+  );
+  assert.match(
+    rota,
+    /lancamentoIntegracao = await registrarTransferenciasDaRetirada/,
+  );
 });
 
 test("o nucleo da escrita continua sem conhecer nenhuma API", () => {
-  const nucleo = fs.readFileSync("server/services/integrations/core/escrita.js", "utf8");
-  const repositorio = fs.readFileSync("server/services/integrations/core/stock-launches.repository.js", "utf8");
+  const nucleo = fs.readFileSync(
+    "server/services/integrations/core/escrita.js",
+    "utf8",
+  );
+  const repositorio = fs.readFileSync(
+    "server/services/integrations/core/stock-launches.repository.js",
+    "utf8",
+  );
   for (const src of [nucleo, repositorio]) {
     const semComentarios = src.replace(/^\s*\/\/.*$/gm, "");
-    assert.doesNotMatch(semComentarios, /\bOMIE\b|IncluirAjusteEstoque|app_key/i);
+    assert.doesNotMatch(
+      semComentarios,
+      /\bOMIE\b|IncluirAjusteEstoque|app_key/i,
+    );
   }
 });
 
@@ -296,9 +394,20 @@ test("o local do almoxarifado nao pode ser vinculado a um PDV", () => {
   // Aconteceu de verdade: o PDV CABANA foi vinculado ao local 10792598111 (ALMOXARIFADO).
   // A transferencia sairia com origem igual ao destino e a leitura de saldos daria ao PDV
   // o estoque inteiro do almoxarifado.
-  const rota = fs.readFileSync("server/modules/integrations/integrations.routes.js", "utf8");
-  assert.match(rota, /localAlmoxarifado === localId/, "a rota precisa recusar o local do almoxarifado");
-  assert.match(rota, /local do almoxarifado, nao de um PDV/i, "a mensagem precisa explicar o motivo");
+  const rota = fs.readFileSync(
+    "server/modules/integrations/integrations.routes.js",
+    "utf8",
+  );
+  assert.match(
+    rota,
+    /localAlmoxarifado === localId/,
+    "a rota precisa recusar o local do almoxarifado",
+  );
+  assert.match(
+    rota,
+    /local do almoxarifado, nao de um PDV/i,
+    "a mensagem precisa explicar o motivo",
+  );
 
   // E, mesmo que passasse, o payload recusa origem igual ao destino
   assert.throws(
@@ -309,9 +418,9 @@ test("o local do almoxarifado nao pode ser vinculado a um PDV", () => {
         codigoLocalOrigem: ALMOXARIFADO,
         codigoLocalDestino: ALMOXARIFADO,
         quantidade: 1,
-        valorUnitario: 4.5
+        valorUnitario: 4.5,
       }),
-    /origem e destino iguais/i
+    /origem e destino iguais/i,
   );
 });
 
@@ -322,12 +431,16 @@ test("o payload da caracteristica identifica por CODIGO, nunca por nome", () => 
   const corpo = montarPayloadCaracteristica({
     externalProductId: "10826765056",
     nCodCaract: 11277558200,
-    fator: 15
+    fator: 15,
   });
   assert.equal(corpo.nCodProd, 10826765056);
   assert.equal(corpo.nCodCaract, 11277558200);
   assert.equal(corpo.cConteudo, "15");
-  assert.equal("cNomeCaract" in corpo, false, "o nome nunca pode entrar no payload");
+  assert.equal(
+    "cNomeCaract" in corpo,
+    false,
+    "o nome nunca pode entrar no payload",
+  );
   // Conteudo vai como texto: o campo e string60 no ERP
   assert.equal(typeof corpo.cConteudo, "string");
 });
@@ -340,7 +453,10 @@ test("valor ja existente no ERP nunca e sobrescrito em silencio", async () => {
   const contexto = {
     client: {
       query: async (sql, params) => {
-        if (String(sql).includes("integration_factor_decisions") && String(sql).includes("UPDATE")) {
+        if (
+          String(sql).includes("integration_factor_decisions") &&
+          String(sql).includes("UPDATE")
+        ) {
           chamadas.push({ tipo: "auditoria", params });
           return { rowCount: 1 };
         }
@@ -348,24 +464,40 @@ test("valor ja existente no ERP nunca e sobrescrito em silencio", async () => {
           return { rows: [{ external_product_id: "1" }] };
         }
         return { rows: [] };
-      }
+      },
     },
-    integracao: { id: 1, url_base: "https://app.omie.com.br/api/v1/", ativo: true },
+    integracao: {
+      id: 1,
+      url_base: "https://app.omie.com.br/api/v1/",
+      ativo: true,
+    },
     segredos: { app_key: "k", app_secret: "s" },
     configuracao: { modo_escrita: "REAL" },
     payload: {},
     fetchImpl: async () =>
       new Response(
-        JSON.stringify({ listaCaracteristicas: [{ cNomeCaract: "UNIDADES_POR_EMBALAGEM", cConteudo: "15", nCodCaract: 99 }] }),
-        { status: 200, headers: { "content-type": "application/json" } }
-      )
+        JSON.stringify({
+          listaCaracteristicas: [
+            {
+              cNomeCaract: "UNIDADES_POR_EMBALAGEM",
+              cConteudo: "15",
+              nCodCaract: 99,
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
   };
 
   // Sem aprovados, o handler nem tenta: o que este teste trava e a leitura do payload acima,
   // garantindo que o conteudo existente chega ao codigo como "15" e nao como vazio.
   const atual = { cConteudo: "15" };
   assert.equal(String(atual.cConteudo ?? "").trim(), "15");
-  assert.notEqual(String(atual.cConteudo), "12", "12 nao pode substituir 15 sem decisao humana");
+  assert.notEqual(
+    String(atual.cConteudo),
+    "12",
+    "12 nao pode substituir 15 sem decisao humana",
+  );
 });
 
 test("transferencia sem valor unitario conhecido nao sai da maquina", () => {
@@ -381,9 +513,9 @@ test("transferencia sem valor unitario conhecido nao sai da maquina", () => {
         codigoLocalOrigem: ALMOXARIFADO,
         codigoLocalDestino: LOCAL_PDV,
         quantidade: 1,
-        valorUnitario: 0
+        valorUnitario: 0,
       }),
-    /valor unitario/i
+    /valor unitario/i,
   );
 });
 
@@ -395,7 +527,7 @@ test("com valor unitario, o ajuste leva o campo valor preenchido", () => {
     codigoLocalOrigem: ALMOXARIFADO,
     codigoLocalDestino: LOCAL_PDV,
     quantidade: 1,
-    valorUnitario: 4.476667
+    valorUnitario: 4.476667,
   });
   assert.equal(corpo.tipo, "TRF");
   assert.equal(corpo.valor, 4.476667);
@@ -406,10 +538,143 @@ test("lancamento em ERRO vai para o fim da fila, nunca bloqueia os novos", () =>
   // Medido em producao: 44 lancamentos sem preco, por serem os mais antigos, ocupavam as
   // primeiras vagas de toda leitura. Com o agendador lendo 25 por vez, nenhum lancamento
   // novo era alcancado -- a fila parava por inteiro.
-  const fonte = fs.readFileSync("server/services/integrations/core/stock-launches.repository.js", "utf8");
+  const fonte = fs.readFileSync(
+    "server/services/integrations/core/stock-launches.repository.js",
+    "utf8",
+  );
   assert.match(
     fonte,
     /ORDER BY \(status = 'ERRO'\), created_at/,
-    "listarAbertos precisa despriorizar quem esta em ERRO"
+    "listarAbertos precisa despriorizar quem esta em ERRO",
+  );
+});
+
+test("o preco informado por uma pessoa vence o que veio do ERP", async () => {
+  // A HEINEKEN veio 16 do cadastro e o usuario informou 20. price_manual e coluna a parte
+  // porque a sincronizacao de produtos sobrescreve `price` toda rodada -- um preco humano
+  // gravado la duraria ate a proxima sincronizacao e ninguem perceberia.
+  const client = clientComLancamentos([lancamentoRetirada], {
+    preco: 16,
+    precoManual: 20,
+  });
+
+  const resumo = await enviarTransferencias({
+    client,
+    integracao: INTEGRACAO,
+    segredos: SEGREDOS,
+    configuracao: {
+      local_almoxarifado: ALMOXARIFADO,
+      modo_escrita: "SIMULACAO",
+    },
+    payload: {},
+    fetchImpl: fetchFalso(),
+  });
+
+  assert.equal(resumo.com_valor_simbolico, 0);
+  assert.equal(JSON.parse(client.atualizacoes[0].payload).valor, 20);
+  assert.equal(
+    JSON.parse(client.atualizacoes[0].payload).fonte_valor,
+    "MANUAL",
+  );
+});
+
+test("price_manual fica fora do upsert da sincronizacao de produtos", () => {
+  // Se alguem incluir price_manual naquele ON CONFLICT, todo preco informado por uma pessoa
+  // vira zero na sincronizacao seguinte, em silencio.
+  const fonte = fs.readFileSync(
+    "server/services/integrations/providers/omie/tarefas/produtos.js",
+    "utf8",
+  );
+  assert.ok(
+    !/price_manual/.test(fonte),
+    "produtos.js nunca pode escrever em price_manual",
+  );
+});
+
+test("produto sem preco nenhum sai com valor simbolico, nao trava a fila", async () => {
+  // Autorizado pelo usuario em 26/08/2026. A transferencia e um ajuste TRF: move quantidade
+  // entre locais e nao mexe em saldo financeiro. Antes disso, 44 lancamentos sem preco
+  // ficavam em ERRO para sempre e ocupavam as primeiras vagas de toda leitura da fila.
+  const client = clientComLancamentos([lancamentoRetirada], {
+    preco: 0,
+    precoManual: null,
+  });
+
+  const resumo = await enviarTransferencias({
+    client,
+    integracao: INTEGRACAO,
+    segredos: SEGREDOS,
+    configuracao: {
+      local_almoxarifado: ALMOXARIFADO,
+      modo_escrita: "SIMULACAO",
+    },
+    payload: {},
+    fetchImpl: fetchFalso(),
+  });
+
+  assert.equal(resumo.com_valor_simbolico, 1);
+  assert.equal(
+    client.atualizacoes[0].status,
+    "SIMULADO",
+    "sem preco nao e mais erro",
+  );
+  assert.equal(
+    JSON.parse(client.atualizacoes[0].payload).valor,
+    VALOR_SIMBOLICO,
+  );
+  assert.equal(
+    JSON.parse(client.atualizacoes[0].payload).fonte_valor,
+    "SIMBOLICO",
+  );
+});
+
+test("a nota de compra ainda vale mais que o valor simbolico", async () => {
+  const client = clientComLancamentos([lancamentoRetirada], {
+    preco: 0,
+    precoNota: 3.25,
+  });
+
+  const resumo = await enviarTransferencias({
+    client,
+    integracao: INTEGRACAO,
+    segredos: SEGREDOS,
+    configuracao: {
+      local_almoxarifado: ALMOXARIFADO,
+      modo_escrita: "SIMULACAO",
+    },
+    payload: {},
+    fetchImpl: fetchFalso(),
+  });
+
+  assert.equal(
+    resumo.com_valor_simbolico,
+    0,
+    "o piso e ultimo recurso, nao atalho",
+  );
+  assert.equal(JSON.parse(client.atualizacoes[0].payload).valor, 3.25);
+  assert.equal(JSON.parse(client.atualizacoes[0].payload).fonte_valor, "NOTA");
+});
+
+test("fonte_valor e anotacao local e nunca vai na chamada a OMIE", async () => {
+  // `corpo` vira params da API crua: um campo desconhecido ali faz a OMIE recusar o ajuste.
+  const client = clientComLancamentos([lancamentoRetirada], { preco: 4.5 });
+  const impl = fetchFalso();
+
+  await enviarTransferencias({
+    client,
+    integracao: INTEGRACAO,
+    segredos: SEGREDOS,
+    configuracao: { local_almoxarifado: ALMOXARIFADO, modo_escrita: "REAL" },
+    payload: {},
+    fetchImpl: impl,
+  });
+
+  const enviado = impl.chamadas[0].corpo.param[0];
+  assert.equal(enviado.valor, 4.5);
+  assert.ok(!("fonte_valor" in enviado), "fonte_valor nao pode ir para a OMIE");
+  assert.equal(
+    JSON.parse(client.atualizacoes[0].payload).fonte_valor,
+    "CADASTRO",
+    "mas fica gravado",
   );
 });
