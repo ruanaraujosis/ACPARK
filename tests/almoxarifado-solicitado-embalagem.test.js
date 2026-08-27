@@ -18,10 +18,12 @@ test("obterFatoresEmLote busca por lista de SKUs, não por linha (evita N+1)", (
 
 test("GET /api/admin/orders anexa o fator de conversão em lote, depois da consulta principal", () => {
   assert.match(pedidosRoutes, /import \{ converterQuantidadeDoPedido, obterFatoresEmLote \}/);
-  const posConsulta = pedidosRoutes.indexOf("LIMIT \\$7 OFFSET \\$8".replace(/\\/g, ""));
-  const posFatores = pedidosRoutes.indexOf("obterFatoresEmLote(pool");
-  assert.ok(posFatores > -1, "a rota deveria chamar obterFatoresEmLote");
-  assert.ok(posFatores > posConsulta, "o fator precisa ser buscado depois da consulta principal de pedidos");
+  // Escopa à consulta paginada do Almoxarifado: /api/pdv/orders também usa obterFatoresEmLote,
+  // e um indexOf solto pegaria a ocorrência errada.
+  const posConsulta = pedidosRoutes.indexOf("LIMIT $7 OFFSET $8");
+  assert.ok(posConsulta > -1, "a consulta paginada de pedidos deveria existir");
+  const posFatores = pedidosRoutes.indexOf("obterFatoresEmLote(pool", posConsulta);
+  assert.ok(posFatores > -1, "a rota do Almoxarifado deveria chamar obterFatoresEmLote");
   assert.match(pedidosRoutes, /fator_conversao: info\.fator, fator_status: info\.status, embalagem: info\.embalagem/);
 });
 

@@ -362,12 +362,16 @@ export async function handlePedidosRoutes(req, res, context) {
     const body = await readBody(req);
     const orderCode = normalizeText(body.codigo_pedido, 80);
     const itens = Array.isArray(body.items) ? body.items : [];
-    if (!orderCode || !itens.length) return send(res, 400, { error: "Informe o pedido e ao menos um item." }), true;
+    const novos = Array.isArray(body.adicionar) ? body.adicionar : [];
+    if (!orderCode || (!itens.length && !novos.length)) {
+      return send(res, 400, { error: "Informe o pedido e ao menos um item." }), true;
+    }
 
     try {
       const resultado = await tx(async (client) => {
         const linhas = await client.query(
-          `SELECT id, sku_produto, quantidade_solicitada, status, pdv_id
+          // solicitante e observacao vem junto: um produto novo herda os dois do pedido
+          `SELECT id, sku_produto, quantidade_solicitada, status, pdv_id, solicitante, observacao
            FROM pedidos
            WHERE codigo_pedido = $1
            ORDER BY id
@@ -421,11 +425,89 @@ export async function handlePedidosRoutes(req, res, context) {
           alterados += 1;
         }
 
+        // Produtos novos entram na MESMA transação das edições: o pedido nunca fica num estado
+        // intermediário se algo falhar no meio (ex: produto que saiu da liberação do PDV).
+        let adicionados = 0;
+        const primeiraLinha = linhas.rows[0];
+        for (const novo of novos) {
+          const sku = normalizeText(novo.sku, 60);
+          const quantidade = asInt(novo.quantidade);
+          if (!sku || quantidade <= 0) {
+            const erro = new Error("Informe o produto e uma quantidade maior que zero.");
+            erro.statusCode = 400;
+            throw erro;
+          }
+
+          // Mesma checagem da criação do pedido: o produto precisa estar liberado para este PDV
+          // e ativo. Sem isso, o PDV poderia inserir qualquer SKU editando a requisição.
+          const liberado = await client.query(
+            `SELECT 1
+             FROM estoque_pdv e
+             JOIN produtos p ON p.sku = e.sku_produto
+             JOIN produto_categorias prc ON prc.sku_produto = p.sku
+             JOIN pdv_categorias pc ON pc.pdv_id = e.pdv_id AND pc.categoria = prc.categoria
+             WHERE e.pdv_id = $1 AND e.sku_produto = $2 AND e.permitido = TRUE AND p.ativo = TRUE
+             LIMIT 1`,
+            [user.pdvId, sku]
+          );
+          if (!liberado.rows.length) {
+            const erro = new Error("Produto não liberado para este PDV.");
+            erro.statusCode = 400;
+            throw erro;
+          }
+
+          // O PDV pode pedir por embalagem; o banco guarda sempre unidade (mesma regra da criação)
+          const conversao = await converterQuantidadeDoPedido(client, {
+            sku,
+            quantidade,
+            unidadeMedida: novo.unidade_medida
+          });
+
+          // Produto que já está no pedido soma, em vez de criar uma segunda linha do mesmo item
+          const jaExiste = await client.query(
+            `SELECT id FROM pedidos
+             WHERE codigo_pedido = $1 AND sku_produto = $2
+             ORDER BY id LIMIT 1
+             FOR UPDATE`,
+            [orderCode, sku]
+          );
+          if (jaExiste.rows[0]) {
+            await client.query(
+              `UPDATE pedidos
+               SET quantidade_solicitada = quantidade_solicitada + $2,
+                   pedido_editado = TRUE,
+                   pedido_editado_em = CURRENT_TIMESTAMP,
+                   pedido_editado_por = $3,
+                   version = COALESCE(version, 1) + 1,
+                   updated_at = CURRENT_TIMESTAMP
+               WHERE id = $1`,
+              [jaExiste.rows[0].id, conversao.unidades, user.name || "PDV"]
+            );
+          } else {
+            await client.query(
+              `INSERT INTO pedidos
+                (codigo_pedido, solicitante, sku_produto, pdv_id, quantidade_solicitada, observacao,
+                 status, pedido_editado, pedido_editado_em, pedido_editado_por)
+               VALUES ($1, $2, $3, $4, $5, $6, 'Pendente', TRUE, CURRENT_TIMESTAMP, $7)`,
+              [
+                orderCode,
+                primeiraLinha.solicitante,
+                sku,
+                user.pdvId,
+                conversao.unidades,
+                primeiraLinha.observacao,
+                user.name || "PDV"
+              ]
+            );
+          }
+          adicionados += 1;
+        }
+
         const restantes = await client.query(
           "SELECT count(*)::int AS n FROM pedidos WHERE codigo_pedido = $1",
           [orderCode]
         );
-        return { alterados, removidos, itensRestantes: restantes.rows[0].n };
+        return { alterados, removidos, adicionados, itensRestantes: restantes.rows[0].n };
       });
 
       await ensurePedidoAuditTable();
@@ -433,7 +515,7 @@ export async function handlePedidosRoutes(req, res, context) {
         codigoPedido: orderCode,
         acao: "pedido_editado_pdv",
         usuario: user.name || "PDV",
-        observacao: `PDV editou o pedido ainda pendente (${resultado.alterados} alterado(s), ${resultado.removidos} removido(s))`,
+        observacao: `PDV editou o pedido ainda pendente (${resultado.alterados} alterado(s), ${resultado.removidos} removido(s), ${resultado.adicionados} adicionado(s))`,
         dados: { origem: "pdv", ...resultado }
       }));
 
@@ -460,7 +542,7 @@ export async function handlePedidosRoutes(req, res, context) {
     const to = url.searchParams.get("to");
     const rows = await query(
       // p.id e p.version sao necessarios para o PDV editar o proprio pedido pendente
-      `SELECT p.id, p.version, p.codigo_pedido, p.data_hora, pr.nome AS produto, pr.qtd_total AS estoque_central, p.quantidade_solicitada,
+      `SELECT p.id, p.version, p.codigo_pedido, p.sku_produto, p.data_hora, pr.nome AS produto, pr.qtd_total AS estoque_central, p.quantidade_solicitada,
               p.quantidade_liberada,
               COALESCE(p.item_origem, 'PDV') AS item_origem,
               CASE
@@ -481,7 +563,14 @@ export async function handlePedidosRoutes(req, res, context) {
        ORDER BY p.data_hora ASC, p.id ASC`,
       [pdvId, from || null, to || null]
     );
-    send(res, 200, { orders: rows });
+    // O fator vai junto para o PDV ver e editar o pedido na mesma unidade em que pediu
+    // (embalagem), em vez do número em unidades que fica guardado no banco.
+    const fatoresPdv = await obterFatoresEmLote(pool, rows.map((linha) => linha.sku_produto));
+    const pedidosComFator = rows.map((linha) => {
+      const info = fatoresPdv.get(linha.sku_produto) || { fator: 1, status: "UNITARIO", embalagem: null };
+      return { ...linha, fator_conversao: info.fator, fator_status: info.status, embalagem: info.embalagem };
+    });
+    send(res, 200, { orders: pedidosComFator });
     return true;
   }
 

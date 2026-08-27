@@ -4573,6 +4573,51 @@ tr[data-item-id].is-marked-remove .pdv-item-qty {
   flex: 1 1 14rem;
 }
 
+/* Adicionar produto a um pedido pendente, na tela do PDV */
+.pdv-add-panel {
+  margin-top: 0.85rem;
+}
+
+.pdv-add-form {
+  display: grid;
+  /* Produto ocupa a sobra; quantidade fica com largura própria. Em tela estreita tudo empilha,
+     porque o PDV costuma operar em monitor pequeno. */
+  grid-template-columns: minmax(12rem, 1fr) 9rem auto;
+  gap: 0.65rem;
+  align-items: start;
+  margin-top: 0.65rem;
+  padding: 0.85rem;
+  border: 1px solid rgba(0, 123, 135, 0.16);
+  border-radius: 16px;
+  background: rgba(16, 182, 199, 0.05);
+}
+
+/* O botão alinha com os campos, não com o rótulo de apoio abaixo deles */
+.pdv-add-form .pdv-add-confirm {
+  margin-top: 1.55rem;
+}
+
+/* Diz o que o número significa naquele produto (ex: "fardo com 15 un cada") */
+.pdv-add-unidade-info,
+.pdv-qty-unidade {
+  display: block;
+  margin-top: 0.2rem;
+  color: #63728a;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+@media (max-width: 720px) {
+  .pdv-add-form {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Produto adicionado e ainda não salvo: fica claro que só entra ao salvar */
+tr[data-novo="true"] {
+  background: rgba(100, 169, 68, 0.1);
+}
+
 .order-source-badge {
   display: inline-flex;
   align-items: center;

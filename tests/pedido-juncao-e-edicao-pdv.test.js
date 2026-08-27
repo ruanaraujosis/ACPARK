@@ -94,7 +94,8 @@ test("só o card Pendente ganha campos editáveis e botão de salvar", () => {
   const inicio = app.indexOf("function pdvOrderCard(group)");
   const corpo = app.slice(inicio, app.indexOf("\n}\n", inicio));
   assert.match(corpo, /first\.status === "Pendente"/);
-  assert.match(corpo, /pdv-item-qty/);
+  // O campo em si é montado por pdvCampoQuantidade (que traduz unidade -> embalagem)
+  assert.match(corpo, /pdvCampoQuantidade\(o\)/);
   assert.match(corpo, /pdv-save-order/);
   // Os controles ficam dentro do ramo de Pendente, antes dos ramos dos outros status
   const posPendente = corpo.indexOf('first.status === "Pendente"\n        ?');
@@ -122,4 +123,66 @@ test("a remoção só é aplicada ao salvar, permitindo desfazer", () => {
   const corpo = app.slice(inicio, inicio + 1200);
   assert.match(corpo, /linha\.dataset\.remover = marcado \? "false" : "true"/);
   assert.match(corpo, /is-marked-remove/);
+});
+
+// ===== PDV adiciona produto ao pedido pendente =====
+
+test("produto adicionado passa pela mesma validação de liberação da criação do pedido", () => {
+  // Sem isso, bastaria editar a requisição para inserir qualquer SKU no pedido.
+  assert.match(corpoRotaPdv, /JOIN pdv_categorias pc ON pc\.pdv_id = e\.pdv_id AND pc\.categoria = prc\.categoria/);
+  assert.match(corpoRotaPdv, /e\.permitido = TRUE AND p\.ativo = TRUE/);
+  assert.match(corpoRotaPdv, /Produto não liberado para este PDV/);
+});
+
+test("produto adicionado usa a mesma conversão de unidade da criação do pedido", () => {
+  assert.match(corpoRotaPdv, /converterQuantidadeDoPedido\(client, \{/);
+});
+
+// Corpo inteiro da rota de edicao do PDV, para as asserções abaixo não dependerem de um
+// tamanho fixo de fatia (a rota cresce conforme ganha regras)
+const inicioRotaPdv = rotas.indexOf('url.pathname === "/api/pdv/order-items"');
+const corpoRotaPdv = rotas.slice(inicioRotaPdv, rotas.indexOf("\n  }\n", inicioRotaPdv));
+
+test("produto já presente soma na linha existente em vez de duplicar", () => {
+  assert.match(corpoRotaPdv, /SET quantidade_solicitada = quantidade_solicitada \+ \$2/);
+});
+
+test("edições e adições acontecem na mesma transação", () => {
+  // O pedido nao pode ficar num estado intermediario se algo falhar no meio.
+  const posTx = corpoRotaPdv.indexOf("await tx(async (client)");
+  const posAdicao = corpoRotaPdv.indexOf("for (const novo of novos)");
+  const posFimTx = corpoRotaPdv.indexOf("itensRestantes: restantes.rows[0].n");
+  assert.ok(posTx > -1, "a rota precisa abrir transacao");
+  assert.ok(posAdicao > posTx, "o laco de adicao precisa vir depois da abertura da transacao");
+  assert.ok(posAdicao < posFimTx, "o laco de adicao precisa estar dentro da mesma transacao das edicoes");
+});
+
+// ===== PDV sempre pede em embalagem =====
+
+test("a tela do PDV mostra e edita a quantidade em embalagens", () => {
+  assert.match(app, /function pdvUnidadeDoItem\(item\)/);
+  assert.match(app, /valorNoCampo: exato \? unidades \/ fator : unidades/);
+  // Ao salvar, converte de volta para unidade (o banco guarda sempre em unidade)
+  assert.match(app, /quantidade_solicitada: Number\.isFinite\(digitado\) \? digitado \* fator : 0/);
+});
+
+test("quantidade que não é múltiplo exato da embalagem continua em unidades", () => {
+  // Converter ali obrigaria a arredondar, e arredondar mudaria em silencio o que o PDV pediu.
+  const inicio = app.indexOf("function pdvUnidadeDoItem");
+  const corpo = app.slice(inicio, app.indexOf("\n}\n", inicio));
+  assert.match(corpo, /const exato = temEmbalagem && unidades % fator === 0/);
+  assert.match(corpo, /emEmbalagem: exato/);
+});
+
+test("o formulário de adicionar não oferece escolha de unidade (sempre embalagem)", () => {
+  assert.doesNotMatch(app, /class="pdv-add-unidade"/, "nao deveria haver seletor de unidade");
+  assert.match(app, /const unidade = produto\.fator_status === "INVALIDO" \? "UNIDADE" : "EMBALAGEM"/);
+});
+
+test("/api/pdv/orders devolve o fator, sem o qual a tela não saberia converter", () => {
+  const inicio = rotas.indexOf('url.pathname === "/api/pdv/orders"');
+  const trecho = rotas.slice(inicio, inicio + 3000);
+  assert.match(trecho, /obterFatoresEmLote/);
+  assert.match(trecho, /fator_conversao: info\.fator/);
+  assert.match(trecho, /SELECT p\.id, p\.version, p\.codigo_pedido, p\.sku_produto/);
 });

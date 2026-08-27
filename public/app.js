@@ -979,6 +979,77 @@ function syncMineOrderList(visibleGroups, activeStatus) {
   }
 }
 
+// Produtos liberados para o PDV, carregados sob demanda e reaproveitados.
+// Não entram no carregamento da tela "Meus pedidos" de propósito: são ~500 linhas (~50ms) e a
+// tela recarrega sozinha a cada 7s — buscar sempre custaria caro para uma lista que a maioria
+// dos acessos nem abre. Só busca quando o PDV clica em "Adicionar produto".
+let produtosLiberadosCache = null;
+async function produtosLiberadosDoPdv() {
+  produtosLiberadosCache ||= request("/api/pdv/products", { silentLoading: true })
+    .then((data) => data.products || [])
+    .catch((erro) => {
+      produtosLiberadosCache = null; // deixa tentar de novo no próximo clique
+      throw erro;
+    });
+  return produtosLiberadosCache;
+}
+
+// O PDV pede em embalagem; o banco guarda em unidade. Este é o ponto único que traduz um para
+// o outro na tela de edição do pedido pendente.
+//
+// Quando a quantidade guardada não é múltiplo exato da embalagem (item incluído pelo
+// Almoxarifado, ou fator que mudou no cadastro depois do pedido), o campo continua em unidade
+// de propósito: converter aí obrigaria a arredondar, e arredondar mudaria em silêncio o que o
+// PDV pediu.
+function pdvUnidadeDoItem(item) {
+  const fator = Number(item.fator_conversao);
+  const temEmbalagem = item.fator_status !== "INVALIDO" && Number.isSafeInteger(fator) && fator > 1;
+  const unidades = Number(item.quantidade_solicitada || 0);
+  const exato = temEmbalagem && unidades % fator === 0;
+  return {
+    emEmbalagem: exato,
+    fator: temEmbalagem ? fator : 1,
+    valorNoCampo: exato ? unidades / fator : unidades,
+    unidades
+  };
+}
+
+// Campo de quantidade do item, já na unidade em que o PDV pediu
+function pdvCampoQuantidade(item) {
+  const { emEmbalagem, fator, valorNoCampo, unidades } = pdvUnidadeDoItem(item);
+  const rotulo = emEmbalagem
+    ? `${esc(item.embalagem || "emb")} de ${fator} un = <strong>${unidades} un</strong>`
+    : "un";
+  return `
+    <input class="pdv-item-qty" type="number" min="1" step="1" inputmode="numeric"
+      value="${esc(valorNoCampo)}" data-fator="${esc(emEmbalagem ? fator : 1)}"
+      aria-label="Quantidade de ${esc(item.produto)}${emEmbalagem ? " em embalagens" : " em unidades"}">
+    <small class="pdv-qty-unidade">${rotulo}</small>`;
+}
+
+// Monta a linha de um produto que o PDV acabou de adicionar, ainda não salvo.
+// Fica marcada como nova para o PDV ver o que vai entrar e poder desistir antes de salvar.
+function linhaProdutoNovoPdv(produto, quantidade, unidadeMedida) {
+  const fator = Number(produto.fator_conversao);
+  const temEmbalagem = produto.fator_status !== "INVALIDO" && Number.isSafeInteger(fator) && fator > 1;
+  const emEmbalagem = unidadeMedida === "EMBALAGEM" && temEmbalagem;
+  const unidades = emEmbalagem ? quantidade * fator : quantidade;
+  const detalhe = emEmbalagem
+    ? `${quantidade} ${esc(produto.embalagem || "embalagem(ns)")} = ${unidades} un`
+    : `${unidades} un`;
+  return `
+    <tr data-novo="true" data-sku="${esc(produto.sku)}" data-quantidade="${esc(quantidade)}" data-unidade="${esc(emEmbalagem ? "EMBALAGEM" : "UNIDADE")}">
+      <td>${esc(produto.nome)} <span class="order-source-badge">Novo</span></td>
+      <td class="release-number-cell">${esc(produto.estoque_central ?? "-")}</td>
+      <td class="release-number-cell">${detalhe}</td>
+      <td class="order-panel-row-action">
+        <button class="release-remove-control pdv-descarta-novo" type="button" title="Tirar do pedido" aria-label="Tirar ${esc(produto.nome)} do pedido">
+          <span aria-hidden="true">&#128465;</span>
+        </button>
+      </td>
+    </tr>`;
+}
+
 // Envia as alterações que o PDV fez no próprio pedido pendente.
 // Itens marcados para remoção e quantidades alteradas vão juntos numa chamada só, para o pedido
 // nunca ficar num estado intermediário se a conexão cair no meio.
@@ -988,21 +1059,30 @@ async function salvarEdicaoPedidoPdv(botao) {
   const linhas = [...card.querySelectorAll("tr[data-item-id]")];
   const items = linhas.map((tr) => {
     const input = tr.querySelector(".pdv-item-qty");
-    const quantidade = Number(input?.value);
+    const digitado = Number(input?.value);
+    // O campo está em embalagens quando o item tem uma; o backend guarda sempre em unidade
+    const fator = Number(input?.dataset.fator) || 1;
     return {
       id: tr.dataset.itemId,
-      quantidade_solicitada: Number.isFinite(quantidade) ? quantidade : 0,
+      quantidade_solicitada: Number.isFinite(digitado) ? digitado * fator : 0,
       remover: tr.dataset.remover === "true"
     };
   });
+  // Produtos que o PDV adicionou nesta edição e ainda não foram salvos
+  const adicionar = [...card.querySelectorAll('tr[data-novo="true"]')].map((tr) => ({
+    sku: tr.dataset.sku,
+    quantidade: Number(tr.dataset.quantidade),
+    unidade_medida: tr.dataset.unidade
+  }));
 
   // Lista vazia significa tela dessincronizada, não "removeu tudo" — `[].every()` é true e daria
   // a mensagem errada. Recarregar é mais útil do que insistir num estado que já não existe.
-  if (!items.length) {
+  if (!items.length && !adicionar.length) {
     toast("Não foi possível ler os itens do pedido. Atualize a página e tente novamente.", "error");
     return;
   }
-  if (items.every((item) => item.remover)) {
+  // Só bloqueia se o pedido fosse ficar sem nenhum produto: remover tudo mas adicionar outro é válido
+  if (items.length && items.every((item) => item.remover) && !adicionar.length) {
     toast("Um pedido precisa ter ao menos um produto. Para cancelar tudo, fale com o Almoxarifado.", "error");
     return;
   }
@@ -1017,7 +1097,7 @@ async function salvarEdicaoPedidoPdv(botao) {
   try {
     await request("/api/pdv/order-items", {
       method: "PATCH",
-      body: JSON.stringify({ codigo_pedido: card.dataset.order, items })
+      body: JSON.stringify({ codigo_pedido: card.dataset.order, items, adicionar })
     });
     toast("Pedido atualizado.");
     await viewMine({ status: "Pendente" });
@@ -1048,6 +1128,106 @@ function bindPdvOrderEdit(root = document) {
     botao.dataset.bound = "true";
     botao.addEventListener("click", () => salvarEdicaoPedidoPdv(botao));
   });
+
+  // Abre o formulário e só então busca a lista de produtos (uma vez por sessão)
+  root.querySelectorAll(".pdv-add-toggle").forEach((botao) => {
+    if (botao.dataset.bound === "true") return;
+    botao.dataset.bound = "true";
+    botao.addEventListener("click", async () => {
+      const painel = botao.closest(".pdv-add-panel");
+      const form = painel.querySelector(".pdv-add-form");
+      const abrindo = form.classList.contains("hidden");
+      form.classList.toggle("hidden", !abrindo);
+      if (!abrindo) return;
+
+      const seletor = form.querySelector(".pdv-add-sku");
+      if (seletor.dataset.carregado === "true") return;
+      try {
+        const produtos = await produtosLiberadosDoPdv();
+        seletor.innerHTML = `<option value="">Escolha o produto</option>`
+          + produtos.map((p) => `<option value="${esc(p.sku)}">${esc(p.nome)}</option>`).join("");
+        seletor.dataset.carregado = "true";
+        atualizarUnidadesProdutoNovo(form);
+      } catch {
+        seletor.innerHTML = `<option value="">Não foi possível carregar os produtos</option>`;
+        toast("Não foi possível carregar a lista de produtos. Tente de novo.", "error");
+      }
+    });
+  });
+
+  // Trocar de produto troca as unidades disponíveis: só quem tem fator válido oferece embalagem
+  root.querySelectorAll(".pdv-add-sku").forEach((seletor) => {
+    if (seletor.dataset.bound === "true") return;
+    seletor.dataset.bound = "true";
+    seletor.addEventListener("change", () => atualizarUnidadesProdutoNovo(seletor.closest(".pdv-add-form")));
+  });
+
+  root.querySelectorAll(".pdv-add-confirm").forEach((botao) => {
+    if (botao.dataset.bound === "true") return;
+    botao.dataset.bound = "true";
+    botao.addEventListener("click", () => adicionarProdutoAoPedidoPdv(botao));
+  });
+
+  // Tira da tela um produto que ainda não foi salvo (nada a desfazer no servidor)
+  root.querySelectorAll(".pdv-descarta-novo").forEach((botao) => {
+    if (botao.dataset.bound === "true") return;
+    botao.dataset.bound = "true";
+    botao.addEventListener("click", () => botao.closest("tr")?.remove());
+  });
+}
+
+// O PDV sempre pede em embalagem: em vez de escolher a unidade, a tela mostra o que aquele
+// número significa no produto escolhido. Produto sem embalagem cadastrada tem fator 1, então
+// "1 embalagem" e "1 unidade" são a mesma coisa e a conta não muda.
+async function atualizarUnidadesProdutoNovo(form) {
+  if (!form) return;
+  const aviso = form.querySelector(".pdv-add-unidade-info");
+  const sku = form.querySelector(".pdv-add-sku")?.value;
+  if (!sku) {
+    aviso.textContent = "escolha o produto";
+    return;
+  }
+  const produtos = await produtosLiberadosDoPdv().catch(() => []);
+  const produto = produtos.find((p) => String(p.sku) === String(sku));
+  const fator = Number(produto?.fator_conversao);
+  const temEmbalagem = produto && produto.fator_status !== "INVALIDO" && Number.isSafeInteger(fator) && fator > 1;
+  aviso.textContent = temEmbalagem
+    ? `${(produto.embalagem || "embalagem").toLowerCase()} com ${fator} un cada`
+    : "unidades";
+}
+
+// Coloca o produto escolhido na tabela do card, ainda sem salvar
+async function adicionarProdutoAoPedidoPdv(botao) {
+  const form = botao.closest(".pdv-add-form");
+  const card = botao.closest("[data-order]");
+  const sku = form.querySelector(".pdv-add-sku")?.value;
+  const quantidade = Number(form.querySelector(".pdv-add-qty")?.value);
+
+  if (!sku) {
+    toast("Escolha um produto para adicionar.", "error");
+    return;
+  }
+  if (!Number.isFinite(quantidade) || quantidade <= 0) {
+    toast("Informe uma quantidade maior que zero.", "error");
+    return;
+  }
+
+  const produtos = await produtosLiberadosDoPdv().catch(() => []);
+  const produto = produtos.find((p) => String(p.sku) === String(sku));
+  if (!produto) {
+    toast("Produto não encontrado na sua lista. Atualize a página e tente novamente.", "error");
+    return;
+  }
+
+  // Sempre em embalagem: produto sem embalagem cadastrada tem fator 1, então dá no mesmo.
+  // Fator inválido é a única exceção -- ali o backend recusa embalagem e só aceita unidade.
+  const unidade = produto.fator_status === "INVALIDO" ? "UNIDADE" : "EMBALAGEM";
+  const corpo = card.querySelector("tbody");
+  if (!corpo) return;
+  corpo.insertAdjacentHTML("beforeend", linhaProdutoNovoPdv(produto, quantidade, unidade));
+  bindPdvOrderEdit(card);
+  form.querySelector(".pdv-add-qty").value = "1";
+  toast(`${produto.nome} entra no pedido ao salvar.`);
 }
 
 // Monta o HTML do card de pedido no PDV
@@ -1091,11 +1271,7 @@ function pdvOrderCard(group) {
         <tr data-item-id="${esc(o.id)}">
           <td>${esc(o.produto)} ${o.item_origem === "ALMOX" ? `<span class="order-source-badge">Almox</span>` : ""}</td>
           <td class="release-number-cell">${centralStockValue(o)}</td>
-          <td class="release-number-cell">
-            <input class="pdv-item-qty" type="number" min="1" step="1" inputmode="numeric"
-              value="${esc(o.quantidade_solicitada)}" data-original="${esc(o.quantidade_solicitada)}"
-              aria-label="Quantidade de ${esc(o.produto)}">
-          </td>
+          <td class="release-number-cell">${pdvCampoQuantidade(o)}</td>
           <td class="order-panel-row-action">
             <button class="release-remove-control pdv-remove-item" type="button" data-item-id="${esc(o.id)}"
               title="Remover do pedido" aria-label="Remover ${esc(o.produto)} do pedido">
@@ -1119,7 +1295,21 @@ function pdvOrderCard(group) {
           <td>${o.quantidade_liberada}</td>
           <td>${pendingReleaseQty(o)}</td>
         </tr>`))}
-      ${first.status === "Pendente" ? `<div class="order-card-actions no-print">
+      ${first.status === "Pendente" ? `
+      <div class="pdv-add-panel no-print">
+        <button class="btn secondary pdv-add-toggle" type="button">+ Adicionar produto</button>
+        <div class="pdv-add-form hidden">
+          <label class="grid gap-1 text-sm font-bold">Produto
+            <select class="pdv-add-sku"><option value="">Carregando produtos...</option></select>
+          </label>
+          <label class="grid gap-1 text-sm font-bold">Quantidade
+            <input class="pdv-add-qty" type="number" min="1" step="1" value="1" inputmode="numeric" />
+            <small class="pdv-add-unidade-info">escolha o produto</small>
+          </label>
+          <button class="btn pdv-add-confirm" type="button">Adicionar ao pedido</button>
+        </div>
+      </div>
+      <div class="order-card-actions no-print">
         <span class="pdv-edit-hint text-sm text-slate-500">Você pode ajustar este pedido enquanto o Almoxarifado não começar a separar.</span>
         <button class="btn pdv-save-order" type="button">Salvar alterações</button>
       </div>` : ""}
