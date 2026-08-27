@@ -874,6 +874,7 @@ async function viewMine(filters = {}) {
     await viewMine({ from, to, status: button.dataset.mineStatus });
   }));
   bindOrderToggles();
+  bindPdvOrderEdit();
   document.querySelectorAll(".view-order-withdrawal").forEach((btn) => btn.addEventListener("click", () => {
     const card = btn.closest("[data-order]");
     openOrderWithdrawalReceipt({
@@ -959,6 +960,7 @@ function syncMineOrderList(visibleGroups, activeStatus) {
     }
     else list.appendChild(next);
     bindOrderToggles(next);
+    bindPdvOrderEdit(next);
     next.querySelectorAll(".view-order-withdrawal").forEach((btn) => btn.addEventListener("click", () => {
       const card = btn.closest("[data-order]");
       openOrderWithdrawalReceipt({
@@ -975,6 +977,77 @@ function syncMineOrderList(visibleGroups, activeStatus) {
   if (!list.querySelector(".order-accordion")) {
     list.innerHTML = `<div class="card">Não há pedidos ${esc(activeStatus.toLowerCase())} no período.</div>`;
   }
+}
+
+// Envia as alterações que o PDV fez no próprio pedido pendente.
+// Itens marcados para remoção e quantidades alteradas vão juntos numa chamada só, para o pedido
+// nunca ficar num estado intermediário se a conexão cair no meio.
+async function salvarEdicaoPedidoPdv(botao) {
+  const card = botao.closest("[data-order]");
+  if (!card) return;
+  const linhas = [...card.querySelectorAll("tr[data-item-id]")];
+  const items = linhas.map((tr) => {
+    const input = tr.querySelector(".pdv-item-qty");
+    const quantidade = Number(input?.value);
+    return {
+      id: tr.dataset.itemId,
+      quantidade_solicitada: Number.isFinite(quantidade) ? quantidade : 0,
+      remover: tr.dataset.remover === "true"
+    };
+  });
+
+  // Lista vazia significa tela dessincronizada, não "removeu tudo" — `[].every()` é true e daria
+  // a mensagem errada. Recarregar é mais útil do que insistir num estado que já não existe.
+  if (!items.length) {
+    toast("Não foi possível ler os itens do pedido. Atualize a página e tente novamente.", "error");
+    return;
+  }
+  if (items.every((item) => item.remover)) {
+    toast("Um pedido precisa ter ao menos um produto. Para cancelar tudo, fale com o Almoxarifado.", "error");
+    return;
+  }
+  if (items.some((item) => !item.remover && item.quantidade_solicitada <= 0)) {
+    toast("Informe uma quantidade maior que zero, ou remova o produto do pedido.", "error");
+    return;
+  }
+
+  const textoAnterior = botao.textContent;
+  botao.disabled = true;
+  botao.textContent = "Salvando...";
+  try {
+    await request("/api/pdv/order-items", {
+      method: "PATCH",
+      body: JSON.stringify({ codigo_pedido: card.dataset.order, items })
+    });
+    toast("Pedido atualizado.");
+    await viewMine({ status: "Pendente" });
+  } catch (error) {
+    toast(error.message || "Não foi possível atualizar o pedido.", "error");
+  } finally {
+    botao.disabled = false;
+    botao.textContent = textoAnterior;
+  }
+}
+
+// Liga os controles de edição do pedido pendente no card do PDV
+function bindPdvOrderEdit(root = document) {
+  root.querySelectorAll(".pdv-remove-item").forEach((botao) => {
+    if (botao.dataset.bound === "true") return;
+    botao.dataset.bound = "true";
+    botao.addEventListener("click", () => {
+      const linha = botao.closest("tr");
+      // Marca visualmente e só remove de fato ao salvar, para o PDV poder desistir
+      const marcado = linha.dataset.remover === "true";
+      linha.dataset.remover = marcado ? "false" : "true";
+      linha.classList.toggle("is-marked-remove", !marcado);
+      botao.setAttribute("title", marcado ? "Remover do pedido" : "Desfazer remoção");
+    });
+  });
+  root.querySelectorAll(".pdv-save-order").forEach((botao) => {
+    if (botao.dataset.bound === "true") return;
+    botao.dataset.bound = "true";
+    botao.addEventListener("click", () => salvarEdicaoPedidoPdv(botao));
+  });
 }
 
 // Monta o HTML do card de pedido no PDV
@@ -1011,15 +1084,34 @@ function pdvOrderCard(group) {
       ${first.observacao ? `<p class="mb-3 rounded bg-amber-50 p-2 text-sm text-amber-900">${esc(first.observacao)}</p>` : ""}
       ${isWithdrawalStatus ? `<div class="release-alert card"><strong>Pedido pronto para retirada.</strong><p>Compareça ao almoxarifado para conferência e assinatura no dispositivo do almoxarifado.</p></div>` : ""}
       ${first.status === "Finalizado" && first.retirada_assinatura ? `<div class="order-card-actions no-print"><button class="btn secondary view-order-withdrawal" type="button" data-order="${esc(first.codigo_pedido)}" data-signature="${esc(first.retirada_assinatura)}" data-responsible="${esc(first.retirada_responsavel || "")}" data-date="${esc(first.retirada_em ? moneyDate(first.retirada_em) : "")}" data-user="${esc(first.retirada_usuario_almoxarifado || "")}" data-pdv="${esc(state.user?.name || "")}" data-items='${withdrawalItemsAttribute(orderReleasedItems(group))}'>Visualizar comprovante de retirada</button></div>` : ""}
-      ${["Aguardando Retirada", "Finalizado"].includes(first.status)
-        ? table(["Produto", "Estoque central", "Quantidade solicitada", "Quantidade liberada"], visibleItems.map((o) => `
+      ${first.status === "Pendente"
+        ? // Pendente é o único status que o PDV pode corrigir sozinho: o Almoxarifado ainda não
+          // começou a separar. Fora daqui a tabela é só leitura, e o backend recusa a edição.
+          table(["Produto", "Estoque central", "Quantidade", ""], visibleItems.map((o) => `
+        <tr data-item-id="${esc(o.id)}">
+          <td>${esc(o.produto)} ${o.item_origem === "ALMOX" ? `<span class="order-source-badge">Almox</span>` : ""}</td>
+          <td class="release-number-cell">${centralStockValue(o)}</td>
+          <td class="release-number-cell">
+            <input class="pdv-item-qty" type="number" min="1" step="1" inputmode="numeric"
+              value="${esc(o.quantidade_solicitada)}" data-original="${esc(o.quantidade_solicitada)}"
+              aria-label="Quantidade de ${esc(o.produto)}">
+          </td>
+          <td class="order-panel-row-action">
+            <button class="release-remove-control pdv-remove-item" type="button" data-item-id="${esc(o.id)}"
+              title="Remover do pedido" aria-label="Remover ${esc(o.produto)} do pedido">
+              <span aria-hidden="true">&#128465;</span>
+            </button>
+          </td>
+        </tr>`))
+        : ["Aguardando Retirada", "Finalizado"].includes(first.status)
+          ? table(["Produto", "Estoque central", "Quantidade solicitada", "Quantidade liberada"], visibleItems.map((o) => `
         <tr>
           <td>${esc(o.produto)} ${o.item_origem === "ALMOX" ? `<span class="order-source-badge">Almox</span>` : ""}</td>
           <td class="release-number-cell">${centralStockValue(o)}</td>
           <td>${o.quantidade_solicitada}</td>
           <td>${o.quantidade_liberada}</td>
         </tr>`))
-        : table(["Produto", "Estoque central", "Solicitado", "Liberado", "Falta enviar"], visibleItems.map((o) => `
+          : table(["Produto", "Estoque central", "Solicitado", "Liberado", "Falta enviar"], visibleItems.map((o) => `
         <tr>
           <td>${esc(o.produto)} ${o.item_origem === "ALMOX" ? `<span class="order-source-badge">Almox</span>` : ""}</td>
           <td class="release-number-cell">${centralStockValue(o)}</td>
@@ -1027,6 +1119,10 @@ function pdvOrderCard(group) {
           <td>${o.quantidade_liberada}</td>
           <td>${pendingReleaseQty(o)}</td>
         </tr>`))}
+      ${first.status === "Pendente" ? `<div class="order-card-actions no-print">
+        <span class="pdv-edit-hint text-sm text-slate-500">Você pode ajustar este pedido enquanto o Almoxarifado não começar a separar.</span>
+        <button class="btn pdv-save-order" type="button">Salvar alterações</button>
+      </div>` : ""}
     </div>
   </article>`;
 }

@@ -8,6 +8,11 @@ import { converterQuantidadeDoPedido, obterFatoresEmLote } from "../../services/
 import { publishOrderAlert, publishOrderStatusChange } from "../../services/order-alerts/order-alerts.events.js";
 import { normalizeOrderStatus, orderStatuses } from "./pedidos.service.js";
 
+// Janela em que um novo envio do mesmo PDV entra no pedido anterior em vez de abrir outro card.
+// Contada a partir do primeiro envio (fixa, não deslizante): passado esse tempo o pedido está
+// fechado e o Almoxarifado pode separar sabendo que ele não vai mais crescer.
+const JANELA_JUNCAO_MINUTOS = Number(process.env.PEDIDO_JANELA_JUNCAO_MINUTOS || 20);
+
 let pedidoEditColumnsReady = null;
 let pedidoIdempotencyReady = null;
 let pedidoDraftReady = null;
@@ -220,7 +225,28 @@ export async function handlePedidosRoutes(req, res, context) {
         throw error;
       }
 
-      const orderCode = code("PED");
+      // Pedido do mesmo PDV feito logo em seguida entra no pedido anterior, em vez de abrir um
+      // card novo no Almoxarifado. Acontece o tempo todo na prática: o PDV manda o pedido, lembra
+      // de um item e manda outro. Só vale enquanto o pedido ainda está Pendente (ninguém começou
+      // a separar) e dentro da janela contada a partir do PRIMEIRO envio -- janela fixa, para o
+      // Almoxarifado ter certeza de que, passado esse tempo, aquele pedido não cresce mais.
+      // O HAVING é essencial: um pedido pode ter itens em status misto (o painel move item a
+      // item). Se um único item já saiu de Pendente, o Almoxarifado começou a mexer naquele
+      // pedido e ele não pode mais receber itens novos por junção.
+      const aberto = await client.query(
+        `SELECT codigo_pedido
+         FROM pedidos
+         WHERE pdv_id = $1
+           AND criado_em >= CURRENT_TIMESTAMP - ($2 || ' minutes')::interval
+         GROUP BY codigo_pedido
+         HAVING bool_and(status = 'Pendente')
+         ORDER BY min(criado_em) ASC
+         LIMIT 1`,
+        [user.pdvId, String(JANELA_JUNCAO_MINUTOS)]
+      );
+      const orderCode = aberto.rows[0]?.codigo_pedido || code("PED");
+      const juntouAoAnterior = Boolean(aberto.rows[0]?.codigo_pedido);
+
       for (const item of items) {
         const sku = normalizeText(item.sku, 60);
         const qty = asInt(item.quantidade);
@@ -255,12 +281,37 @@ export async function handlePedidosRoutes(req, res, context) {
           unidadeMedida: item.unidade_medida
         });
 
-        await client.query(
-          `INSERT INTO pedidos
-            (codigo_pedido, solicitante, sku_produto, pdv_id, quantidade_solicitada, observacao)
-           VALUES ($1, $2, $3, $4, $5, $6)`,
-          [orderCode, solicitante, sku, user.pdvId, conversao.unidades, observacao]
-        );
+        // Produto que já está no pedido soma na linha existente em vez de duplicar: o
+        // Almoxarifado separa uma vez só, com o total certo. FOR UPDATE evita que dois envios
+        // simultâneos do mesmo PDV leiam a mesma linha e uma das somas se perca.
+        const existente = juntouAoAnterior
+          ? await client.query(
+            `SELECT id, quantidade_solicitada
+             FROM pedidos
+             WHERE codigo_pedido = $1 AND sku_produto = $2 AND status = 'Pendente'
+             ORDER BY id
+             LIMIT 1
+             FOR UPDATE`,
+            [orderCode, sku]
+          )
+          : { rows: [] };
+
+        if (existente.rows[0]) {
+          await client.query(
+            `UPDATE pedidos
+             SET quantidade_solicitada = quantidade_solicitada + $2,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE id = $1`,
+            [existente.rows[0].id, conversao.unidades]
+          );
+        } else {
+          await client.query(
+            `INSERT INTO pedidos
+              (codigo_pedido, solicitante, sku_produto, pdv_id, quantidade_solicitada, observacao)
+             VALUES ($1, $2, $3, $4, $5, $6)`,
+            [orderCode, solicitante, sku, user.pdvId, conversao.unidades, observacao]
+          );
+        }
       }
       await client.query(
         `UPDATE pedido_idempotencia
@@ -273,6 +324,7 @@ export async function handlePedidosRoutes(req, res, context) {
       return {
         codigo: orderCode,
         repeated: false,
+        juntouAoAnterior,
         alert: {
           orderId: orderCode,
           orderNumber: orderCode,
@@ -285,9 +337,118 @@ export async function handlePedidosRoutes(req, res, context) {
       };
     });
     if (!result.repeated && result.alert) {
-      publishOrderAlert("NEW_PENDING_ORDER", result.alert);
+      // Entrou num pedido que já existia: atualiza a tela do Almoxarifado, mas sem tocar o
+      // alarme de pedido novo -- o card já está lá e o alarme repetido viraria ruído.
+      publishOrderAlert(result.juntouAoAnterior ? "ORDER_ITEMS_UPDATED" : "NEW_PENDING_ORDER", result.alert);
     }
-    send(res, result.repeated ? 200 : 201, { ok: true, codigo: result.codigo, repeated: result.repeated });
+    send(res, result.repeated ? 200 : 201, {
+      ok: true,
+      codigo: result.codigo,
+      repeated: result.repeated,
+      juntouAoAnterior: result.juntouAoAnterior
+    });
+    return true;
+  }
+
+  // O PDV corrige o próprio pedido enquanto ele ainda não foi tocado pelo Almoxarifado.
+  //
+  // Duas travas, checadas no servidor e nunca só na tela:
+  //   1. o pedido tem que ser DESTE PDV (não basta estar logado como PDV);
+  //   2. TODOS os itens do pedido precisam estar em Pendente -- se um único item já saiu, a
+  //      separação começou e o pedido está fora do alcance do PDV.
+  if (url.pathname === "/api/pdv/order-items" && method === "PATCH") {
+    if (user.role !== "pdv") return send(res, 403, { error: "Entre como PDV para editar o pedido." }), true;
+    await ensurePedidoEditColumns();
+    const body = await readBody(req);
+    const orderCode = normalizeText(body.codigo_pedido, 80);
+    const itens = Array.isArray(body.items) ? body.items : [];
+    if (!orderCode || !itens.length) return send(res, 400, { error: "Informe o pedido e ao menos um item." }), true;
+
+    try {
+      const resultado = await tx(async (client) => {
+        const linhas = await client.query(
+          `SELECT id, sku_produto, quantidade_solicitada, status, pdv_id
+           FROM pedidos
+           WHERE codigo_pedido = $1
+           ORDER BY id
+           FOR UPDATE`,
+          [orderCode]
+        );
+        if (!linhas.rows.length) {
+          const erro = new Error("Pedido não encontrado.");
+          erro.statusCode = 404;
+          throw erro;
+        }
+        if (linhas.rows.some((linha) => linha.pdv_id !== user.pdvId)) {
+          const erro = new Error("Este pedido é de outro PDV.");
+          erro.statusCode = 403;
+          throw erro;
+        }
+        if (linhas.rows.some((linha) => normalizeOrderStatus(linha.status) !== "Pendente")) {
+          const erro = new Error("O Almoxarifado já começou a separar este pedido. Fale com o almoxarifado para ajustar.");
+          erro.statusCode = 409;
+          throw erro;
+        }
+
+        const porId = new Map(linhas.rows.map((linha) => [String(linha.id), linha]));
+        let alterados = 0;
+        let removidos = 0;
+
+        for (const item of itens) {
+          const linha = porId.get(String(item.id));
+          // Item que não é deste pedido é ignorado em silêncio de propósito: a tela pode estar
+          // desatualizada (outro envio juntou itens), e falhar tudo por causa disso seria pior
+          if (!linha) continue;
+          const quantidade = asInt(item.quantidade_solicitada);
+
+          if (item.remover === true || quantidade <= 0) {
+            await client.query("DELETE FROM pedidos WHERE id = $1", [linha.id]);
+            removidos += 1;
+            continue;
+          }
+          if (quantidade === Number(linha.quantidade_solicitada)) continue;
+          await client.query(
+            `UPDATE pedidos
+             SET quantidade_solicitada = $2,
+                 pedido_editado = TRUE,
+                 pedido_editado_em = CURRENT_TIMESTAMP,
+                 pedido_editado_por = $3,
+                 version = COALESCE(version, 1) + 1,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE id = $1`,
+            [linha.id, quantidade, user.name || "PDV"]
+          );
+          alterados += 1;
+        }
+
+        const restantes = await client.query(
+          "SELECT count(*)::int AS n FROM pedidos WHERE codigo_pedido = $1",
+          [orderCode]
+        );
+        return { alterados, removidos, itensRestantes: restantes.rows[0].n };
+      });
+
+      await ensurePedidoAuditTable();
+      await tx(async (client) => registrarAuditoriaStatus(client, {
+        codigoPedido: orderCode,
+        acao: "pedido_editado_pdv",
+        usuario: user.name || "PDV",
+        observacao: `PDV editou o pedido ainda pendente (${resultado.alterados} alterado(s), ${resultado.removidos} removido(s))`,
+        dados: { origem: "pdv", ...resultado }
+      }));
+
+      // Atualiza a tela do Almoxarifado na hora, sem alarme sonoro (o card já está lá)
+      publishOrderAlert("ORDER_ITEMS_UPDATED", {
+        orderId: orderCode,
+        orderNumber: orderCode,
+        pointId: user.pdvId,
+        pointName: user.name || "PDV",
+        origin: "PDV"
+      });
+      send(res, 200, { ok: true, ...resultado });
+    } catch (erro) {
+      send(res, erro.statusCode || 500, { error: erro.message || "Não foi possível editar o pedido." });
+    }
     return true;
   }
 
@@ -298,7 +459,8 @@ export async function handlePedidosRoutes(req, res, context) {
     const from = url.searchParams.get("from");
     const to = url.searchParams.get("to");
     const rows = await query(
-      `SELECT p.codigo_pedido, p.data_hora, pr.nome AS produto, pr.qtd_total AS estoque_central, p.quantidade_solicitada,
+      // p.id e p.version sao necessarios para o PDV editar o proprio pedido pendente
+      `SELECT p.id, p.version, p.codigo_pedido, p.data_hora, pr.nome AS produto, pr.qtd_total AS estoque_central, p.quantidade_solicitada,
               p.quantidade_liberada,
               COALESCE(p.item_origem, 'PDV') AS item_origem,
               CASE

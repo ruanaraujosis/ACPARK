@@ -4552,6 +4552,27 @@ body.has-order-panel {
   text-decoration-color: rgba(127, 29, 29, 0.62);
 }
 
+/* Item que o PDV marcou para sair do pedido pendente: a remoção só acontece ao salvar, então
+   precisa ficar claro na tela o que vai embora — e dá para desfazer clicando de novo. */
+tr[data-item-id].is-marked-remove {
+  background: rgba(239, 68, 68, 0.075);
+}
+
+tr[data-item-id].is-marked-remove td:first-child {
+  text-decoration: line-through;
+  text-decoration-thickness: 2px;
+  text-decoration-color: rgba(127, 29, 29, 0.62);
+}
+
+tr[data-item-id].is-marked-remove .pdv-item-qty {
+  opacity: 0.45;
+}
+
+/* Ação de salvar do pedido pendente no PDV: dica à esquerda, botão à direita */
+.order-card-actions .pdv-edit-hint {
+  flex: 1 1 14rem;
+}
+
 .order-source-badge {
   display: inline-flex;
   align-items: center;

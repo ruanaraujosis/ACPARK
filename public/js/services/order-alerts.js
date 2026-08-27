@@ -445,6 +445,12 @@ export async function startOrderAlerts(options = {}) {
       toast("Novo pedido recebido.");
     }
   });
+  // Itens de um pedido que já existe mudaram (PDV somou itens dentro da janela de junção, ou
+  // editou o pedido ainda Pendente). Atualiza a tela na hora, mas de propósito NÃO dispara o
+  // alarme sonoro: o card já está na tela e repetir o som a cada ajuste viraria ruído.
+  eventSource.addEventListener("ORDER_ITEMS_UPDATED", () => {
+    runAutoRefreshNow();
+  });
   // Mudança de etapa: atualiza a tela na hora, sem esperar o ciclo de 12s do fallback
   eventSource.addEventListener("ORDER_STATUS_CHANGED", (message) => {
     let evento = {};
