@@ -1202,26 +1202,26 @@ function bindPdvOrderEdit(root = document) {
       form.classList.toggle("hidden", !abrindo);
       if (!abrindo) return;
 
-      const seletor = form.querySelector(".pdv-add-sku");
-      if (seletor.dataset.carregado === "true") return;
+      const busca = form.querySelector(".pdv-add-search");
+      if (busca.dataset.carregado === "true") return;
       try {
         const produtos = await produtosLiberadosDoPdv();
-        seletor.innerHTML = `<option value="">Escolha o produto</option>`
-          + produtos.map((p) => `<option value="${esc(p.sku)}">${esc(p.nome)}</option>`).join("");
-        seletor.dataset.carregado = "true";
-        atualizarUnidadesProdutoNovo(form);
+        preencherSugestoesPdvAdd(form, produtos);
+        busca.disabled = false;
+        busca.placeholder = "Digite o nome ou SKU do produto";
+        busca.dataset.carregado = "true";
       } catch {
-        seletor.innerHTML = `<option value="">Não foi possível carregar os produtos</option>`;
+        busca.placeholder = "Não foi possível carregar os produtos";
         toast("Não foi possível carregar a lista de produtos. Tente de novo.", "error");
       }
     });
   });
 
-  // Trocar de produto troca as unidades disponíveis: só quem tem fator válido oferece embalagem
-  root.querySelectorAll(".pdv-add-sku").forEach((seletor) => {
-    if (seletor.dataset.bound === "true") return;
-    seletor.dataset.bound = "true";
-    seletor.addEventListener("change", () => atualizarUnidadesProdutoNovo(seletor.closest(".pdv-add-form")));
+  // Digitar filtra a mesma lista de sugestões da tela "Novo pedido"
+  root.querySelectorAll(".pdv-add-search").forEach((busca) => {
+    if (busca.dataset.bound === "true") return;
+    busca.dataset.bound = "true";
+    busca.addEventListener("input", () => filtrarSugestoesPdvAdd(busca.closest(".pdv-add-form")));
   });
 
   root.querySelectorAll(".pdv-add-confirm").forEach((botao) => {
@@ -1236,6 +1236,45 @@ function bindPdvOrderEdit(root = document) {
     botao.dataset.bound = "true";
     botao.addEventListener("click", () => botao.closest("tr")?.remove());
   });
+}
+
+// Monta a lista de sugestões (mesmo markup e classes da busca de produto da tela "Novo pedido")
+function preencherSugestoesPdvAdd(form, produtos) {
+  const caixa = form.querySelector(".pdv-add-suggestions");
+  const productLabel = (produto) => `${produto.sku} - ${produto.nome}`;
+  const productSearch = (produto) => `${produto.sku} ${produto.nome} ${produto.categoria || ""}`.toLowerCase();
+  caixa.innerHTML = produtos.map((produto) => `
+      <button class="category-product-suggestion" type="button" data-sku="${esc(produto.sku)}" data-label="${esc(productLabel(produto))}" data-search="${esc(productSearch(produto))}">
+        <strong>${esc(produto.nome)}</strong>
+        <span>${esc(produto.sku)} | ${esc(produto.categoria || "-")}</span>
+      </button>`).join("") || `<p class="text-sm text-slate-500">Nenhum produto liberado para este PDV.</p>`;
+  caixa.querySelectorAll(".category-product-suggestion").forEach((item) => item.addEventListener("click", () => {
+    const busca = form.querySelector(".pdv-add-search");
+    const sku = form.querySelector(".pdv-add-sku");
+    busca.value = item.dataset.label || "";
+    busca.dataset.selectedLabel = busca.value;
+    sku.value = item.dataset.sku || "";
+    caixa.classList.add("hidden");
+    atualizarUnidadesProdutoNovo(form);
+  }));
+}
+
+// Filtra as sugestões já carregadas conforme o PDV digita — igual à tela "Novo pedido"
+function filtrarSugestoesPdvAdd(form) {
+  if (!form) return;
+  const busca = form.querySelector(".pdv-add-search");
+  const sku = form.querySelector(".pdv-add-sku");
+  const caixa = form.querySelector(".pdv-add-suggestions");
+  const termo = String(busca.value || "").trim().toLowerCase();
+  if (busca.dataset.selectedLabel !== busca.value) sku.value = "";
+  let visiveis = 0;
+  caixa.querySelectorAll(".category-product-suggestion").forEach((item) => {
+    const mostra = termo.length > 0 && item.dataset.search.includes(termo);
+    item.classList.toggle("hidden", !mostra);
+    if (mostra) visiveis += 1;
+  });
+  caixa.classList.toggle("hidden", termo.length === 0 || visiveis === 0);
+  if (!termo) atualizarUnidadesProdutoNovo(form);
 }
 
 // O PDV sempre pede em embalagem: em vez de escolher a unidade, a tela mostra o que aquele
@@ -1289,6 +1328,11 @@ async function adicionarProdutoAoPedidoPdv(botao) {
   corpo.insertAdjacentHTML("beforeend", linhaProdutoNovoPdv(produto, quantidade, unidade));
   bindPdvOrderEdit(card);
   form.querySelector(".pdv-add-qty").value = "1";
+  const busca = form.querySelector(".pdv-add-search");
+  busca.value = "";
+  busca.dataset.selectedLabel = "";
+  form.querySelector(".pdv-add-sku").value = "";
+  form.querySelector(".pdv-add-suggestions").classList.add("hidden");
   toast(`${produto.nome} entra no pedido ao salvar.`);
 }
 
@@ -1373,9 +1417,12 @@ function pdvOrderCard(group) {
       <div class="pdv-add-panel no-print">
         <button class="btn secondary pdv-add-toggle" type="button">+ Adicionar produto</button>
         <div class="pdv-add-form hidden">
-          <label class="grid gap-1 text-sm font-bold">Produto
-            <select class="pdv-add-sku"><option value="">Carregando produtos...</option></select>
-          </label>
+          <div class="category-product-picker">
+            <label class="category-add-label">Produto</label>
+            <input class="pdv-add-search category-add-product-search" type="search" placeholder="Carregando produtos..." autocomplete="off" disabled />
+            <input class="pdv-add-sku" type="hidden" />
+            <div class="category-product-suggestions hidden pdv-add-suggestions"></div>
+          </div>
           <label class="grid gap-1 text-sm font-bold">Quantidade
             <input class="pdv-add-qty" type="number" min="1" step="1" value="1" inputmode="numeric" />
             <small class="pdv-add-unidade-info">escolha o produto</small>
