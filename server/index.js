@@ -14,6 +14,7 @@ import { handleIntegrationWebhookRoutes, handleIntegrationsRoutes } from "./modu
 import { handleOrderAlertRoutes } from "./modules/order-alerts/order-alerts.routes.js";
 import { handleBackupRoutes } from "./modules/backup/backup.routes.js";
 import { handleSetupRoutes } from "./modules/setup/setup.routes.js";
+import { handleInventariosRoutes } from "./modules/inventarios/inventarios.routes.js";
 import { executarTick, iniciarAgendador } from "./services/integrations/core/scheduler.js";
 import { comprimirSePossivel, marcarSuporteGzip, normalizeCategories, normalizeCategoryList, normalizeText, readBody, send } from "./utils/http.js";
 
@@ -300,6 +301,7 @@ async function api(req, res) {
   if (await handleIntegrationsRoutes(req, res, { method, requireUser, url, user })) return;
   if (await handleOrderAlertRoutes(req, res, { method, url, user })) return;
   if (await handleBackupRoutes(req, res, { method, requireUser, url, user })) return;
+  if (await handleInventariosRoutes(req, res, { method, requireUser, url, user })) return;
 
   // CRUD de produtos manuais; produtos de origem OMIE não podem ser criados/editados/excluídos aqui
   if (url.pathname === "/api/admin/products") {
