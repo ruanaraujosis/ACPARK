@@ -94,8 +94,9 @@ test("só o card Pendente ganha campos editáveis e botão de salvar", () => {
   const inicio = app.indexOf("function pdvOrderCard(group)");
   const corpo = app.slice(inicio, app.indexOf("\n}\n", inicio));
   assert.match(corpo, /first\.status === "Pendente"/);
-  // O campo em si é montado por pdvCampoQuantidade (que traduz unidade -> embalagem)
-  assert.match(corpo, /pdvCampoQuantidade\(o\)/);
+  // A linha é montada pela função compartilhada com a tela "Novo pedido"
+  assert.match(corpo, /linhaProdutoPedidoPdv\(/);
+  assert.match(corpo, /classeCampo: "pdv-item-qty"/);
   assert.match(corpo, /pdv-save-order/);
   // Os controles ficam dentro do ramo de Pendente, antes dos ramos dos outros status
   const posPendente = corpo.indexOf('first.status === "Pendente"\n        ?');
@@ -110,11 +111,13 @@ test("o botão de salvar não carrega data-order (senão closest() acha o botão
 });
 
 test("lista de itens vazia não é confundida com 'removeu tudo'", () => {
+  // Corpo inteiro da função, para a asserção não depender de um tamanho fixo de fatia
   const inicio = app.indexOf("async function salvarEdicaoPedidoPdv");
-  const corpo = app.slice(inicio, inicio + 1600);
+  const corpo = app.slice(inicio, app.indexOf("\n}\n", inicio));
   const posVazio = corpo.indexOf("!items.length");
   const posTodosRemovidos = corpo.indexOf("items.every((item) => item.remover)");
   assert.ok(posVazio > -1, "precisa tratar lista vazia");
+  assert.ok(posTodosRemovidos > -1, "precisa tratar 'removeu tudo'");
   assert.ok(posVazio < posTodosRemovidos, "a checagem de lista vazia precisa vir antes do every()");
 });
 
