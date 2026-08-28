@@ -23,26 +23,30 @@ test("o catálogo do inventário usa a MESMA regra de liberação do pedido", ()
   assert.match(rotas, /e\.permitido = TRUE AND p\.ativo = TRUE/);
 });
 
-test("a conversão para unidade acontece no servidor, não na tela", () => {
-  // Converter só no navegador deixaria uma tela desatualizada (ou uma chamada direta)
-  // gravar número em outra unidade sem ninguém perceber.
-  assert.match(rotas, /converterQuantidadeDoPedido\(client, \{ sku, quantidade: numero, unidadeMedida \}\)/);
+test("a contagem é sempre em unidade — não há conversão de embalagem", () => {
+  // Decisão do usuário: o PDV conta o que está na prateleira, uma a uma. Diferente do
+  // pedido, que oferece embalagem. Nenhum fator pode entrar nesse caminho.
+  assert.doesNotMatch(rotas, /converterQuantidadeDoPedido/, "o inventário não converte embalagem");
+  assert.doesNotMatch(rotas, /fator_conversao/, "o fator não deve nem ser carregado na tela de contagem");
 });
 
-test("zero é aceito sem exigir fator válido", () => {
-  // Zero é zero em qualquer unidade. Exigir fator aqui impediria zerar justamente o produto
-  // com cadastro problemático — que é onde a contagem mais importa.
-  const corpo = rotas.slice(rotas.indexOf("async function paraUnidades"), rotas.indexOf("\n}\n", rotas.indexOf("async function paraUnidades")));
-  const posZero = corpo.indexOf("if (numero === 0) return 0;");
-  const posConversao = corpo.indexOf("converterQuantidadeDoPedido");
-  assert.ok(posZero > -1, "zero precisa de tratamento próprio");
-  assert.ok(posZero < posConversao, "o atalho do zero precisa vir antes da conversão");
+test("unidade diferente de UNIDADE é recusada, nunca ignorada em silêncio", () => {
+  // Ignorar faria uma tela desatualizada mandando "EMBALAGEM" gravar 2 onde havia 30.
+  const corpo = rotas.slice(rotas.indexOf("function quantidadeContadaEmUnidades"));
+  assert.match(corpo, /String\(unidadeMedida\)\.toUpperCase\(\) !== "UNIDADE"/);
+  assert.match(corpo, /A contagem de inventário é sempre em unidades/);
+  // A recusa vem antes de qualquer leitura da quantidade
+  const posRecusa = corpo.indexOf('!== "UNIDADE"');
+  const posQuantidade = corpo.indexOf("const numero = Number(quantidade)");
+  assert.ok(posRecusa < posQuantidade, "a unidade precisa ser validada antes do número");
 });
 
 test("branco e zero são valores diferentes ao gravar", () => {
   // quantidade ausente vira NULL ("não contado"); zero digitado vira 0 ("contado como zero").
-  const corpo = rotas.slice(rotas.indexOf("async function paraUnidades"));
+  const corpo = rotas.slice(rotas.indexOf("function quantidadeContadaEmUnidades"));
   assert.match(corpo, /if \(quantidade === null \|\| quantidade === undefined \|\| quantidade === ""\) return null;/);
+  // Zero passa pela validação numérica e volta como 0, não como null
+  assert.doesNotMatch(corpo, /!numero\b/, "não pode usar teste de veracidade: 0 é falsy e viraria 'não contado'");
 });
 
 test("apagar a quantidade apaga também o carimbo de data", () => {

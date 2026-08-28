@@ -73,7 +73,7 @@ function shell(content, actions = "") {
   const shouldShowHero = state.currentView === "dashboard";
   const items = role === "admin"
     ? [["dashboard", "Dashboard"], ["products", "Estoque central"], ["stock", "Estoque PDVs"], ["release", "Liberação"], ["damages", "Devoluções de avarias"], ["integrations", "Integrações"], ["history", "Histórico"], ["damage-history", "Histórico de Devoluções"], ["auto", "Autopedidos"], ["config", "Config"]]
-    : [["order", "Novo pedido"], ["mine", "Meus pedidos"], ["my-stock", "Meu estoque"], ["damage-return", "Nova devolução de avaria"]];
+    : [["order", "Novo pedido"], ["mine", "Meus pedidos"], ["my-stock", "Meu estoque"], ["inventario", "Inventário"], ["damage-return", "Nova devolução de avaria"]];
 
   app.innerHTML = `
     <div class="app-shell min-h-screen">
@@ -355,6 +355,7 @@ async function route(view) {
       order: viewOrder,
       mine: viewMine,
       "my-stock": viewMyStock,
+      inventario: viewInventario,
       "damage-return": viewDamageReturn,
       dashboard: viewDashboard,
       products: viewProductsV2,
@@ -9764,3 +9765,233 @@ initializeAuth({ loadBootstrap, route });
 
 
 
+
+// ===== Inventário do PDV (contagem física) =====
+//
+// A contagem é SEMPRE em unidade: sem seletor de embalagem, diferente da tela de pedido.
+// O PDV conta o que está na prateleira, uma a uma.
+
+// Campo em branco é "não contado" e é diferente de zero digitado. Essa distinção decide se o
+// produto é tocado na OMIE, então ela nunca pode virar 0 por conveniência de tela.
+function contagemDigitada(valor) {
+  const texto = String(valor ?? "").trim();
+  if (!texto) return null;
+  const numero = Number(texto);
+  return Number.isFinite(numero) && numero >= 0 ? numero : null;
+}
+
+// Linha de um produto na contagem
+function linhaContagemInventario(produto, contado, somenteLeitura) {
+  const valor = contado?.quantidade_contada;
+  const preenchido = valor !== null && valor !== undefined;
+  const categorias = String(produto.categoria || "")
+    .split(",")
+    .map((c) => c.trim().toLowerCase())
+    .filter(Boolean)
+    .join("|");
+  return `
+    <tr class="inventario-linha ${preenchido ? "is-contado" : ""}"
+        data-sku="${esc(produto.sku)}"
+        data-busca="${esc(`${produto.sku} ${produto.nome} ${produto.categoria || ""}`.toLowerCase())}"
+        data-categorias="${esc(categorias)}">
+      <td class="inventario-produto">${esc(produto.nome)}<span class="inventario-sku">${esc(produto.sku)}</span></td>
+      <td class="inventario-categoria">${esc(produto.categoria || "-")}</td>
+      <td><input class="inventario-qtd" type="number" min="0" step="1" inputmode="numeric"
+        placeholder="—" value="${preenchido ? esc(valor) : ""}"
+        aria-label="Quantidade contada de ${esc(produto.nome)}"${somenteLeitura ? " disabled" : ""} /></td>
+      <td class="inventario-data">${contado?.contado_em ? moneyDate(contado.contado_em) : `<span class="inventario-nao-contado">não contado</span>`}</td>
+    </tr>`;
+}
+
+// Resumo do que foi contado, lido da tela a cada digitação
+function resumoContagemNaTela() {
+  const linhas = [...document.querySelectorAll(".inventario-linha")];
+  const contados = linhas.filter((tr) => contagemDigitada(tr.querySelector(".inventario-qtd")?.value) !== null).length;
+  return { total: linhas.length, contados, semContagem: linhas.length - contados };
+}
+
+// Atualiza o contador do topo sem redesenhar a tabela
+function atualizarResumoInventario() {
+  const alvo = document.querySelector("#inventario-resumo");
+  if (!alvo) return;
+  const { total, contados, semContagem } = resumoContagemNaTela();
+  alvo.innerHTML = `<strong>${contados}</strong> de ${total} contados`
+    + (semContagem ? ` &middot; <span class="inventario-pendente">${semContagem} sem contagem</span>` : "");
+}
+
+// View: contagem de inventário do PDV
+async function viewInventario(options = {}) {
+  const data = await request("/api/pdv/inventario", { silentLoading: Boolean(options.auto) });
+  const { janela, inventario, itens = [], produtos = [] } = data;
+  const contagens = new Map(itens.map((item) => [item.sku_produto, item]));
+  const somenteLeitura = Boolean(inventario) && inventario.status !== "Em contagem";
+
+  const categorias = [...new Set(produtos.flatMap((p) => String(p.categoria || "").split(",").map((c) => c.trim()).filter(Boolean)))]
+    .sort((a, b) => a.localeCompare(b, "pt-BR"));
+
+  // Sem contagem aberta: mostra o estado da janela em vez de um formulário mudo
+  if (!inventario) {
+    shell(`
+      <section class="card">
+        <p class="eyebrow">Contagem de estoque</p>
+        <h3 class="section-title text-xl font-black">Inventário</h3>
+        ${janela.liberado
+          ? `<p class="mt-3 text-sm text-slate-600">Nenhuma contagem aberta. Ao iniciar, a lista dos seus produtos aparece para você preencher.</p>
+             <button class="btn mt-3" id="inventario-iniciar" type="button">Iniciar contagem</button>`
+          : `<div class="release-alert card mt-3"><strong>${esc(janela.motivo)}</strong>
+             <p>O Almoxarifado libera a contagem na data do inventário.</p></div>`}
+      </section>`);
+    document.querySelector("#inventario-iniciar")?.addEventListener("click", iniciarContagemInventario);
+    return;
+  }
+
+  shell(`
+    <section class="card inventario-card">
+      <div class="inventario-topo">
+        <div>
+          <p class="eyebrow">Contagem de estoque</p>
+          <h3 class="section-title text-xl font-black">Inventário ${esc(inventario.codigo_inventario)}</h3>
+          <span class="status-chip">${esc(inventario.status)}</span>
+        </div>
+        <div id="inventario-resumo" class="inventario-resumo"></div>
+      </div>
+
+      ${somenteLeitura
+        ? `<div class="release-alert card"><strong>Contagem enviada ao Almoxarifado.</strong>
+           <p>A partir daqui quem ajusta é o Almoxarifado. Você será avisado quando precisar assinar.</p></div>`
+        : `<p class="inventario-ajuda text-sm text-slate-600">Conte <strong>em unidades</strong>, não em embalagens. Deixe em branco o que você não contou — em branco é diferente de zero.</p>`}
+
+      <div class="inventario-filtros">
+        <input id="inventario-busca" type="search" placeholder="Buscar por nome ou SKU" aria-label="Buscar produto" />
+        <select id="inventario-categoria" aria-label="Filtrar por categoria">
+          <option value="">Todas as categorias</option>
+          ${categorias.map((c) => `<option value="${esc(c.toLowerCase())}">${esc(c)}</option>`).join("")}
+        </select>
+        <label class="inventario-so-pendentes"><input type="checkbox" id="inventario-pendentes" /> Só os não contados</label>
+      </div>
+
+      <div class="table-wrap inventario-tabela">
+        ${produtos.length
+          ? table(["Produto", "Categoria", "Contagem (un)", "Contado em"],
+              produtos.map((p) => linhaContagemInventario(p, contagens.get(p.sku), somenteLeitura)))
+          : `<p class="text-sm text-slate-500">Nenhum produto liberado para este PDV.</p>`}
+      </div>
+
+      ${somenteLeitura ? "" : `
+      <div class="order-card-actions no-print">
+        <span class="text-sm text-slate-500">O que você digita é salvo para continuar depois.</span>
+        <button class="btn secondary" id="inventario-salvar" type="button">Salvar contagem</button>
+        <button class="btn" id="inventario-enviar" type="button">Enviar ao Almoxarifado</button>
+      </div>`}
+    </section>`);
+
+  atualizarResumoInventario();
+  bindInventarioPdv(inventario.codigo_inventario);
+}
+
+// Liga filtros, busca e ações da tela de contagem
+function bindInventarioPdv(codigo) {
+  const aplicarFiltros = () => {
+    const termo = String(document.querySelector("#inventario-busca")?.value || "").trim().toLowerCase();
+    const categoria = String(document.querySelector("#inventario-categoria")?.value || "").trim().toLowerCase();
+    const soPendentes = document.querySelector("#inventario-pendentes")?.checked;
+    document.querySelectorAll(".inventario-linha").forEach((tr) => {
+      const casaBusca = !termo || tr.dataset.busca.includes(termo);
+      const casaCategoria = !categoria || String(tr.dataset.categorias || "").split("|").includes(categoria);
+      const pendente = contagemDigitada(tr.querySelector(".inventario-qtd")?.value) === null;
+      tr.classList.toggle("hidden", !casaBusca || !casaCategoria || (soPendentes && !pendente));
+    });
+  };
+  document.querySelector("#inventario-busca")?.addEventListener("input", aplicarFiltros);
+  document.querySelector("#inventario-categoria")?.addEventListener("change", aplicarFiltros);
+  document.querySelector("#inventario-pendentes")?.addEventListener("change", aplicarFiltros);
+
+  // Digitar marca a linha e atualiza o resumo, sem redesenhar (perderia o que não foi salvo)
+  document.querySelectorAll(".inventario-qtd").forEach((campo) => {
+    campo.addEventListener("input", () => {
+      campo.closest("tr")?.classList.toggle("is-contado", contagemDigitada(campo.value) !== null);
+      atualizarResumoInventario();
+    });
+  });
+
+  document.querySelector("#inventario-salvar")?.addEventListener("click", (e) => salvarContagemInventario(e.currentTarget, codigo));
+  document.querySelector("#inventario-enviar")?.addEventListener("click", (e) => enviarContagemInventario(e.currentTarget, codigo));
+}
+
+// Abre a contagem
+async function iniciarContagemInventario() {
+  try {
+    await request("/api/pdv/inventario", { method: "POST" });
+    await viewInventario();
+  } catch (error) {
+    toast(error.message || "Não foi possível iniciar a contagem.", "error");
+  }
+}
+
+// Lê a tabela inteira. Manda também os campos em branco, para que apagar uma contagem
+// chegue ao servidor como "não contado" em vez de ficar com o valor antigo.
+function itensDaTelaInventario() {
+  return [...document.querySelectorAll(".inventario-linha")].map((tr) => ({
+    sku: tr.dataset.sku,
+    quantidade: contagemDigitada(tr.querySelector(".inventario-qtd")?.value),
+    unidade_medida: "UNIDADE"
+  }));
+}
+
+// Salvamento parcial
+async function salvarContagemInventario(botao, codigo) {
+  const textoAnterior = botao.textContent;
+  botao.disabled = true;
+  botao.textContent = "Salvando...";
+  try {
+    await request("/api/pdv/inventario", {
+      method: "PATCH",
+      body: JSON.stringify({ codigo_inventario: codigo, itens: itensDaTelaInventario() })
+    });
+    toast("Contagem salva. Você pode continuar depois.");
+  } catch (error) {
+    toast(error.message || "Não foi possível salvar a contagem.", "error");
+  } finally {
+    botao.disabled = false;
+    botao.textContent = textoAnterior;
+  }
+}
+
+// Envio: salva antes e confirma com o resumo, porque depois disso o PDV não edita mais
+async function enviarContagemInventario(botao, codigo) {
+  const { total, contados, semContagem } = resumoContagemNaTela();
+  if (!contados) {
+    toast("Conte ao menos um produto antes de enviar.", "error");
+    return;
+  }
+  const confirmado = await confirmSystem({
+    title: "Enviar contagem ao Almoxarifado?",
+    message: `Você contou ${contados} de ${total} produtos`
+      + (semContagem ? `, e ${semContagem} ficaram sem contagem (não serão alterados).` : ".")
+      + " Depois de enviar, só o Almoxarifado pode alterar esta contagem.",
+    confirmLabel: "Enviar contagem"
+  });
+  if (!confirmado) return;
+
+  const textoAnterior = botao.textContent;
+  botao.disabled = true;
+  botao.textContent = "Enviando...";
+  try {
+    // Salva antes de enviar para não perder o que foi digitado e ainda não salvo
+    await request("/api/pdv/inventario", {
+      method: "PATCH",
+      body: JSON.stringify({ codigo_inventario: codigo, itens: itensDaTelaInventario() })
+    });
+    await request("/api/pdv/inventario/enviar", {
+      method: "POST",
+      body: JSON.stringify({ codigo_inventario: codigo })
+    });
+    toast("Contagem enviada ao Almoxarifado.");
+    await viewInventario();
+  } catch (error) {
+    toast(error.message || "Não foi possível enviar a contagem.", "error");
+  } finally {
+    botao.disabled = false;
+    botao.textContent = textoAnterior;
+  }
+}

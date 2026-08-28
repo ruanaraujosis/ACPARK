@@ -5,25 +5,22 @@
 // servidor, não da tela: chamada direta à rota também é recusada.
 import { query, tx, code } from "../../db.js";
 import { readBody, send } from "../../utils/http.js";
-import { converterQuantidadeDoPedido } from "../../services/integrations/core/fator-conversao.repository.js";
 import { estadoDaJanela } from "../../services/inventarios/janela-contagem.service.js";
 import { auditarInventario, ensureInventarioTables, STATUS_ABERTOS, STATUS_INVENTARIO } from "./inventarios.schema.js";
 
 // Produtos que o PDV pode contar: a mesma regra de liberação usada no pedido
 // (estoque_pdv x produto_categorias x pdv_categorias). Duplicar essa regra com outro
 // critério faria o inventário enxergar um catálogo diferente do que o PDV pede.
+// Sem fator de conversão de propósito: a contagem é em unidade, e exibir "fardo c/ 15"
+// ao lado do campo só convidaria a digitar fardos.
 const SQL_PRODUTOS_DO_PDV = `
   SELECT p.sku, p.nome,
          COALESCE(string_agg(DISTINCT prc.categoria, ', ' ORDER BY prc.categoria), '') AS categoria,
-         e.quantidade AS saldo_atual,
-         MAX(m.fator_conversao) AS fator_conversao,
-         MAX(m.embalagem) AS embalagem,
-         MAX(m.fator_status) AS fator_status
+         e.quantidade AS saldo_atual
   FROM estoque_pdv e
   JOIN produtos p ON p.sku = e.sku_produto
   JOIN produto_categorias prc ON prc.sku_produto = p.sku
   JOIN pdv_categorias pc ON pc.pdv_id = e.pdv_id AND pc.categoria = prc.categoria
-  LEFT JOIN product_integration_mappings m ON m.sku_produto = p.sku AND m.active = TRUE
   WHERE e.pdv_id = $1 AND e.permitido = TRUE AND p.ativo = TRUE
   GROUP BY p.sku, p.nome, e.quantidade
   ORDER BY p.nome`;
@@ -53,10 +50,19 @@ async function itensDoInventario(executar, inventarioId) {
   );
 }
 
-// Converte o que veio da tela para UNIDADES. O banco guarda sempre unidade; a tela é que
-// oferece embalagem. Converter aqui, e não no navegador, evita que uma tela desatualizada
-// (ou uma chamada direta) grave um número em outra unidade sem ninguém perceber.
-async function paraUnidades(client, { sku, quantidade, unidadeMedida }) {
+// Valida a quantidade contada. O inventário é SEMPRE em unidade — diferente do pedido, que
+// oferece embalagem. Contar por embalagem obrigaria a multiplicar por um fator para depois
+// conferir contra o saldo real; a contagem física é do que está na prateleira, uma a uma.
+//
+// Uma unidade de medida diferente de UNIDADE é recusada em vez de ignorada: uma tela
+// desatualizada mandando "EMBALAGEM" seria lida como unidade e gravaria 2 onde havia 30.
+function quantidadeContadaEmUnidades({ sku, quantidade, unidadeMedida }) {
+  if (unidadeMedida && String(unidadeMedida).toUpperCase() !== "UNIDADE") {
+    const erro = new Error(`A contagem de inventário é sempre em unidades (produto ${sku}).`);
+    erro.statusCode = 400;
+    throw erro;
+  }
+  // Ausente é "não contado" e continua diferente de zero digitado
   if (quantidade === null || quantidade === undefined || quantidade === "") return null;
   const numero = Number(quantidade);
   if (!Number.isFinite(numero) || numero < 0) {
@@ -64,10 +70,7 @@ async function paraUnidades(client, { sku, quantidade, unidadeMedida }) {
     erro.statusCode = 400;
     throw erro;
   }
-  // Zero é zero em qualquer unidade; não precisa de fator válido para ser contado como zero
-  if (numero === 0) return 0;
-  const convertido = await converterQuantidadeDoPedido(client, { sku, quantidade: numero, unidadeMedida });
-  return convertido.unidades;
+  return numero;
 }
 
 export async function handleInventariosRoutes(req, res, context) {
@@ -151,7 +154,7 @@ export async function handleInventariosRoutes(req, res, context) {
         for (const item of itens) {
           const sku = String(item?.sku || "").trim();
           if (!sku) continue;
-          const unidades = await paraUnidades(client, {
+          const unidades = quantidadeContadaEmUnidades({
             sku,
             quantidade: item?.quantidade,
             unidadeMedida: item?.unidade_medida

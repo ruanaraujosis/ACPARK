@@ -6502,3 +6502,124 @@ td input[type="number"] {
 .importar-planilha-label {
   cursor: pointer;
 }
+
+/* ===== Inventário do PDV (contagem física) ===== */
+
+.inventario-topo {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 0.75rem;
+}
+
+/* Contador "X de Y contados": o PDV precisa saber o quanto falta sem rolar a lista */
+.inventario-resumo {
+  padding: 0.5rem 0.9rem;
+  border: 1px solid rgba(0, 123, 135, 0.16);
+  border-radius: 14px;
+  background: rgba(16, 182, 199, 0.07);
+  color: var(--ac-teal-dark);
+  font-size: 0.9rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.inventario-pendente {
+  color: #b45309;
+  font-weight: 900;
+}
+
+.inventario-ajuda {
+  margin-bottom: 0.75rem;
+}
+
+.inventario-filtros {
+  display: grid;
+  grid-template-columns: minmax(12rem, 1fr) 14rem auto;
+  gap: 0.6rem;
+  align-items: center;
+  margin-bottom: 0.75rem;
+}
+
+.inventario-so-pendentes {
+  display: inline-flex;
+  gap: 0.4rem;
+  align-items: center;
+  color: var(--ac-teal-dark);
+  font-size: 0.86rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+/* A lista costuma ser longa; rolar dentro do cartão mantém o resumo e as ações à vista */
+.inventario-tabela {
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.inventario-tabela table {
+  min-width: 640px;
+}
+
+/* Cabeçalho fixo para não perder a referência da coluna ao rolar centenas de produtos */
+.inventario-tabela thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+.inventario-produto {
+  display: grid;
+  gap: 0.1rem;
+  font-weight: 700;
+}
+
+.inventario-sku,
+.inventario-categoria {
+  color: #64748b;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.inventario-tabela th:nth-child(3),
+.inventario-tabela td:nth-child(3) {
+  width: 8.5rem;
+}
+
+.inventario-tabela th:nth-child(4),
+.inventario-tabela td:nth-child(4) {
+  width: 11rem;
+  white-space: nowrap;
+}
+
+.inventario-qtd {
+  width: 100%;
+  text-align: right;
+}
+
+/* Linha já contada ganha marca discreta: ajuda a achar o que falta numa lista longa */
+.inventario-linha.is-contado {
+  background: rgba(16, 182, 199, 0.06);
+}
+
+.inventario-linha.is-contado .inventario-qtd {
+  border-color: rgba(0, 123, 135, 0.42);
+  font-weight: 800;
+}
+
+.inventario-nao-contado {
+  color: #94a3b8;
+  font-style: italic;
+}
+
+@media (max-width: 720px) {
+  .inventario-filtros {
+    grid-template-columns: 1fr;
+  }
+
+  .inventario-resumo {
+    width: 100%;
+  }
+}
