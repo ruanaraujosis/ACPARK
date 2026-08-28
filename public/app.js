@@ -72,7 +72,7 @@ function shell(content, actions = "") {
   const displayName = role === "admin" ? "Almoxarifado" : state.user?.name;
   const shouldShowHero = state.currentView === "dashboard";
   const items = role === "admin"
-    ? [["dashboard", "Dashboard"], ["products", "Estoque central"], ["stock", "Estoque PDVs"], ["release", "Liberação"], ["damages", "Devoluções de avarias"], ["integrations", "Integrações"], ["history", "Histórico"], ["damage-history", "Histórico de Devoluções"], ["auto", "Autopedidos"], ["config", "Config"]]
+    ? [["dashboard", "Dashboard"], ["products", "Estoque central"], ["stock", "Estoque PDVs"], ["inventarios", "Inventários"], ["release", "Liberação"], ["damages", "Devoluções de avarias"], ["integrations", "Integrações"], ["history", "Histórico"], ["damage-history", "Histórico de Devoluções"], ["auto", "Autopedidos"], ["config", "Config"]]
     : [["order", "Novo pedido"], ["mine", "Meus pedidos"], ["my-stock", "Meu estoque"], ["inventario", "Inventário"], ["damage-return", "Nova devolução de avaria"]];
 
   app.innerHTML = `
@@ -361,6 +361,7 @@ async function route(view) {
       products: viewProductsV2,
       stock: viewStock,
       release: viewRelease,
+      inventarios: viewInventarios,
       damages: viewDamagesAdmin,
       integrations: viewIntegrations,
       history: () => viewHistory(false),
@@ -9994,4 +9995,490 @@ async function enviarContagemInventario(botao, codigo) {
     botao.disabled = false;
     botao.textContent = textoAnterior;
   }
+}
+
+// ===== Aba INVENTÁRIOS do Almoxarifado =====
+
+// Rótulo curto do estado da contagem, para caber na coluna sem quebrar
+const ROTULO_STATUS_INVENTARIO = {
+  "Em contagem": "PDV contando",
+  Enviado: "Aguardando conferência",
+  "Aguardando assinatura": "Aguardando assinatura do PDV",
+  Confirmado: "Confirmado"
+};
+
+// Estado da tela, para o detalhe aberto sobreviver ao recarregamento da lista
+const inventarioAdmin = { codigoAberto: null, filtroStatus: "" };
+
+// View: lista de inventários de todos os PDVs
+async function viewInventarios(options = {}) {
+  const filtro = inventarioAdmin.filtroStatus;
+  const dados = await request(`/api/admin/inventarios${filtro ? `?status=${encodeURIComponent(filtro)}` : ""}`,
+    { silentLoading: Boolean(options.auto) });
+  const { inventarios = [], janela } = dados;
+
+  shell(`
+    <section class="card">
+      <div class="inventario-topo">
+        <div>
+          <p class="eyebrow">Contagem de estoque</p>
+          <h3 class="section-title text-xl font-black">Inventários</h3>
+        </div>
+        ${blocoJanelaContagem(janela)}
+      </div>
+
+      <div class="inventario-filtros">
+        <select id="inventarios-status" aria-label="Filtrar por estado">
+          <option value="">Todos os estados</option>
+          ${Object.keys(ROTULO_STATUS_INVENTARIO).map((s) =>
+            `<option value="${esc(s)}" ${filtro === s ? "selected" : ""}>${esc(ROTULO_STATUS_INVENTARIO[s])}</option>`).join("")}
+        </select>
+      </div>
+
+      ${inventarios.length
+        ? table(["PDV", "Código", "Estado", "Contados", "Contagem", "Ação"], inventarios.map((inv) => `
+          <tr class="${inv.contagem_antiga ? "inventario-antigo" : ""}">
+            <td><strong>${esc(inv.pdv_nome)}</strong></td>
+            <td class="inventario-sku">${esc(inv.codigo_inventario)}</td>
+            <td><span class="status-chip">${esc(ROTULO_STATUS_INVENTARIO[inv.status] || inv.status)}</span></td>
+            <td>${inv.contados} de ${inv.itens}</td>
+            <td>${textoIdadeContagem(inv)}</td>
+            <td><button class="btn secondary inventario-abrir" type="button" data-codigo="${esc(inv.codigo_inventario)}">Abrir</button></td>
+          </tr>`))
+        : `<p class="text-sm text-slate-500">Nenhum inventário ${filtro ? "neste estado" : "registrado"}.</p>`}
+    </section>
+    <section id="inventario-detalhe"></section>`);
+
+  bindInventariosAdmin();
+  if (inventarioAdmin.codigoAberto) await abrirDetalheInventario(inventarioAdmin.codigoAberto);
+}
+
+// Há quanto tempo a contagem foi feita. É o dado que sustenta o alerta de contagem velha:
+// entre contar e lançar na OMIE o PDV segue vendendo, e o ajuste apagaria essas vendas.
+function textoIdadeContagem(inv) {
+  if (inv.dias_desde_contagem === null || inv.dias_desde_contagem === undefined) return "<span class='text-slate-400'>—</span>";
+  const dias = Number(inv.dias_desde_contagem);
+  const texto = dias === 0 ? "hoje" : dias === 1 ? "ontem" : `há ${dias} dias`;
+  return inv.contagem_antiga ? `<span class="inventario-alerta-idade">${texto}</span>` : texto;
+}
+
+// Alternador de bloqueio + agendamento
+function blocoJanelaContagem(janela) {
+  return `
+    <div class="inventario-janela ${janela.liberado ? "is-liberada" : "is-bloqueada"}">
+      <div class="inventario-janela-linha">
+        <label class="inventario-switch">
+          <input type="checkbox" id="inventario-bloqueio" ${janela.bloqueioManual ? "" : "checked"} />
+          <span class="inventario-switch-trilho"><span class="inventario-switch-bolinha"></span></span>
+          <span class="inventario-switch-texto">${janela.liberado ? "Contagem liberada" : "Contagem bloqueada"}</span>
+        </label>
+      </div>
+      <div class="inventario-janela-linha">
+        <label class="inventario-agenda-rotulo" for="inventario-agenda">Próximo inventário</label>
+        <input type="date" id="inventario-agenda" value="${esc(janela.dataAgendada || "")}" />
+      </div>
+      <p class="inventario-janela-nota">${janela.diaAgendado
+        ? "Hoje é o dia agendado: a contagem está liberada automaticamente."
+        : "Na data agendada a contagem libera sozinha e volta a travar no fim do dia."}</p>
+    </div>`;
+}
+
+// Liga filtros, alternador e abertura de detalhe
+function bindInventariosAdmin() {
+  document.querySelector("#inventarios-status")?.addEventListener("change", async (e) => {
+    inventarioAdmin.filtroStatus = e.currentTarget.value;
+    await viewInventarios();
+  });
+
+  document.querySelector("#inventario-bloqueio")?.addEventListener("change", async (e) => {
+    // O checkbox marcado significa LIBERADO; a chave guardada é o bloqueio
+    await salvarJanelaContagem({ bloqueado: !e.currentTarget.checked });
+  });
+
+  document.querySelector("#inventario-agenda")?.addEventListener("change", async (e) => {
+    await salvarJanelaContagem({ agendado_para: e.currentTarget.value });
+  });
+
+  document.querySelectorAll(".inventario-abrir").forEach((botao) =>
+    botao.addEventListener("click", () => abrirDetalheInventario(botao.dataset.codigo)));
+}
+
+// Grava a janela e redesenha, para o rótulo refletir o estado real vindo do servidor
+async function salvarJanelaContagem(mudanca) {
+  try {
+    await request("/api/admin/inventario/janela", { method: "PUT", body: JSON.stringify(mudanca) });
+    toast("Janela de contagem atualizada.");
+    await viewInventarios();
+  } catch (error) {
+    toast(error.message || "Não foi possível atualizar a janela de contagem.", "error");
+    await viewInventarios();
+  }
+}
+
+// Detalhe: itens com saldo atual ao lado, edição, adição, remoção e confirmação
+async function abrirDetalheInventario(codigo) {
+  inventarioAdmin.codigoAberto = codigo;
+  const alvo = document.querySelector("#inventario-detalhe");
+  if (!alvo) return;
+  let dados;
+  try {
+    dados = await request(`/api/admin/inventario?codigo=${encodeURIComponent(codigo)}`, { silentLoading: true });
+  } catch (error) {
+    toast(error.message || "Não foi possível abrir o inventário.", "error");
+    return;
+  }
+  const { inventario, itens = [], historico = [] } = dados;
+  const editavel = inventario.status === "Enviado";
+
+  alvo.innerHTML = `
+    <div class="card inventario-detalhe-card" data-codigo="${esc(inventario.codigo_inventario)}">
+      <div class="inventario-topo">
+        <div>
+          <p class="eyebrow">Inventário</p>
+          <h4 class="section-title text-lg font-black">${esc(inventario.codigo_inventario)}</h4>
+          <span class="status-chip">${esc(ROTULO_STATUS_INVENTARIO[inventario.status] || inventario.status)}</span>
+        </div>
+        <button class="order-panel-timeline-open inventario-historico-abrir" type="button"
+          aria-label="Histórico de edição do inventário" title="Histórico de edição do inventário">🕐</button>
+      </div>
+
+      ${dados.contagem_antiga ? `<div class="release-alert card inventario-aviso-antiga">
+        <strong>Esta contagem foi feita há ${dados.dias_desde_contagem} dias.</strong>
+        <p>O PDV continuou vendendo desde então. O ajuste vai gravar o número contado, e as vendas
+        do período não estarão refletidas nele. Confira antes de confirmar.</p></div>` : ""}
+
+      ${editavel ? "" : `<div class="release-alert card"><strong>Somente leitura.</strong>
+        <p>${inventario.status === "Em contagem"
+          ? "O PDV ainda está contando."
+          : "Contagem confirmada. Para corrigir, é preciso abrir um novo inventário."}</p></div>`}
+
+      <div class="table-wrap inventario-tabela">
+        ${table(["Produto", "Contado (un)", "Saldo atual", "Diferença", "Contado em", "Ação"], itens.map((item) => {
+          const contado = item.quantidade_contada;
+          const temContagem = contado !== null && contado !== undefined;
+          const diferenca = temContagem ? Number(contado) - Number(item.saldo_atual || 0) : null;
+          return `
+          <tr class="inventario-item-linha" data-id="${item.id}" data-sku="${esc(item.sku_produto)}">
+            <td class="inventario-produto">${esc(item.produto || item.sku_produto)}<span class="inventario-sku">${esc(item.sku_produto)}${item.origem === "ALMOX" ? " · adicionado pelo Almoxarifado" : ""}</span></td>
+            <td><input class="inventario-admin-qtd" type="number" min="0" step="1" inputmode="numeric"
+              value="${temContagem ? esc(contado) : ""}" placeholder="—"
+              aria-label="Quantidade contada de ${esc(item.produto || item.sku_produto)}" ${editavel ? "" : "disabled"} /></td>
+            <td class="inventario-saldo">${Number(item.saldo_atual || 0)}</td>
+            <td class="inventario-diferenca">${diferenca === null ? "<span class='text-slate-400'>não contado</span>"
+              : `<span class="${diferenca === 0 ? "inventario-dif-zero" : diferenca > 0 ? "inventario-dif-mais" : "inventario-dif-menos"}">${diferenca > 0 ? "+" : ""}${diferenca}</span>`}</td>
+            <td class="inventario-data">${item.contado_em ? moneyDate(item.contado_em) : "<span class='text-slate-400'>—</span>"}</td>
+            <td>${editavel ? `<button class="icon-action danger inventario-remover-item" type="button"
+              title="Remover do inventário" aria-label="Remover ${esc(item.sku_produto)} do inventário">&times;</button>` : ""}</td>
+          </tr>`;
+        }))}
+      </div>
+
+      ${editavel ? `
+      <div class="pdv-add-panel no-print">
+        <button class="btn secondary inventario-add-toggle" type="button">+ Adicionar produto</button>
+        <div class="pdv-add-form inventario-add-form hidden">
+          <div class="category-product-picker">
+            <label class="category-add-label">Produto</label>
+            <input class="inventario-add-search category-add-product-search" type="search"
+              placeholder="Carregando produtos..." autocomplete="off" disabled />
+            <input class="inventario-add-sku" type="hidden" />
+            <div class="category-product-suggestions hidden inventario-add-suggestions"></div>
+          </div>
+          <label class="grid gap-1 text-sm font-bold">Contagem (un)
+            <input class="inventario-add-qty" type="number" min="0" step="1" value="0" inputmode="numeric" />
+          </label>
+          <button class="btn inventario-add-confirm" type="button">Adicionar</button>
+        </div>
+      </div>
+
+      <div class="order-card-actions no-print">
+        <span class="text-sm text-slate-500">Confirmar não ajusta o estoque: pede a assinatura do PDV.</span>
+        <button class="btn danger secondary inventario-excluir" type="button">Excluir inventário</button>
+        <button class="btn secondary inventario-salvar" type="button">Salvar correções</button>
+        <button class="btn inventario-confirmar" type="button">Confirmar e pedir assinatura</button>
+      </div>` : `
+      <div class="order-card-actions no-print">
+        ${inventario.status === "Em contagem"
+          ? `<button class="btn danger secondary inventario-excluir" type="button">Excluir inventário</button>` : ""}
+      </div>`}
+    </div>`;
+
+  bindDetalheInventario(inventario.codigo_inventario, historico);
+  alvo.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+// Liga as ações do detalhe
+function bindDetalheInventario(codigo, historico) {
+  const card = document.querySelector(".inventario-detalhe-card");
+  if (!card) return;
+
+  card.querySelector(".inventario-historico-abrir")?.addEventListener("click", () =>
+    abrirHistoricoInventario(codigo, historico));
+
+  // Remoção só é aplicada ao salvar, para o Almoxarifado poder desistir
+  card.querySelectorAll(".inventario-remover-item").forEach((botao) =>
+    botao.addEventListener("click", () => {
+      const linha = botao.closest("tr");
+      const marcado = linha.dataset.remover === "true";
+      linha.dataset.remover = marcado ? "false" : "true";
+      linha.classList.toggle("is-marked-remove", !marcado);
+      botao.setAttribute("title", marcado ? "Remover do inventário" : "Desfazer remoção");
+    }));
+
+  card.querySelector(".inventario-salvar")?.addEventListener("click", (e) => salvarCorrecoesInventario(e.currentTarget, codigo));
+  card.querySelector(".inventario-confirmar")?.addEventListener("click", (e) => confirmarInventario(e.currentTarget, codigo));
+  card.querySelector(".inventario-excluir")?.addEventListener("click", () => excluirInventario(codigo));
+
+  // Busca de produto para adicionar, no mesmo formato usado no pedido pendente do PDV
+  card.querySelector(".inventario-add-toggle")?.addEventListener("click", async () => {
+    const form = card.querySelector(".inventario-add-form");
+    const abrindo = form.classList.contains("hidden");
+    form.classList.toggle("hidden", !abrindo);
+    if (!abrindo) return;
+    const busca = form.querySelector(".inventario-add-search");
+    if (busca.dataset.carregado === "true") return;
+    try {
+      const dados = await request("/api/admin/products", { silentLoading: true });
+      preencherSugestoesInventario(form, dados.products || []);
+      busca.disabled = false;
+      busca.placeholder = "Digite o nome ou SKU do produto";
+      busca.dataset.carregado = "true";
+    } catch {
+      busca.placeholder = "Não foi possível carregar os produtos";
+      toast("Não foi possível carregar a lista de produtos.", "error");
+    }
+  });
+
+  card.querySelector(".inventario-add-search")?.addEventListener("input", () =>
+    filtrarSugestoesInventario(card.querySelector(".inventario-add-form")));
+  card.querySelector(".inventario-add-confirm")?.addEventListener("click", (e) =>
+    adicionarProdutoAoInventario(e.currentTarget, codigo));
+}
+
+// Sugestões de produto (mesmas classes da busca do pedido)
+function preencherSugestoesInventario(form, produtos) {
+  const caixa = form.querySelector(".inventario-add-suggestions");
+  caixa.innerHTML = produtos.map((p) => `
+    <button class="category-product-suggestion" type="button" data-sku="${esc(p.sku)}"
+      data-label="${esc(`${p.sku} - ${p.nome}`)}" data-search="${esc(`${p.sku} ${p.nome} ${p.categoria || ""}`.toLowerCase())}">
+      <strong>${esc(p.nome)}</strong><span>${esc(p.sku)} | ${esc(p.categoria || "-")}</span>
+    </button>`).join("") || `<p class="text-sm text-slate-500">Nenhum produto no cadastro.</p>`;
+  caixa.querySelectorAll(".category-product-suggestion").forEach((item) =>
+    item.addEventListener("click", () => {
+      const busca = form.querySelector(".inventario-add-search");
+      busca.value = item.dataset.label || "";
+      busca.dataset.selectedLabel = busca.value;
+      form.querySelector(".inventario-add-sku").value = item.dataset.sku || "";
+      caixa.classList.add("hidden");
+    }));
+}
+
+function filtrarSugestoesInventario(form) {
+  if (!form) return;
+  const busca = form.querySelector(".inventario-add-search");
+  const caixa = form.querySelector(".inventario-add-suggestions");
+  const termo = String(busca.value || "").trim().toLowerCase();
+  if (busca.dataset.selectedLabel !== busca.value) form.querySelector(".inventario-add-sku").value = "";
+  let visiveis = 0;
+  caixa.querySelectorAll(".category-product-suggestion").forEach((item) => {
+    const mostra = termo.length > 0 && item.dataset.search.includes(termo);
+    item.classList.toggle("hidden", !mostra);
+    if (mostra) visiveis += 1;
+  });
+  caixa.classList.toggle("hidden", termo.length === 0 || visiveis === 0);
+}
+
+// Adiciona o produto escolhido à contagem
+async function adicionarProdutoAoInventario(botao, codigo) {
+  const form = botao.closest(".inventario-add-form");
+  const sku = form.querySelector(".inventario-add-sku")?.value;
+  if (!sku) {
+    toast("Escolha um produto para adicionar.", "error");
+    return;
+  }
+  const quantidade = contagemDigitada(form.querySelector(".inventario-add-qty")?.value);
+  try {
+    await request("/api/admin/inventario/itens", {
+      method: "PATCH",
+      body: JSON.stringify({ codigo_inventario: codigo, adicionar: [{ sku, quantidade, unidade_medida: "UNIDADE" }] })
+    });
+    toast("Produto adicionado ao inventário.");
+    await abrirDetalheInventario(codigo);
+  } catch (error) {
+    toast(error.message || "Não foi possível adicionar o produto.", "error");
+  }
+}
+
+// Salva correções de quantidade e remoções marcadas
+async function salvarCorrecoesInventario(botao, codigo) {
+  const itens = [...document.querySelectorAll(".inventario-item-linha")].map((tr) => ({
+    id: Number(tr.dataset.id),
+    quantidade: contagemDigitada(tr.querySelector(".inventario-admin-qtd")?.value),
+    unidade_medida: "UNIDADE",
+    remover: tr.dataset.remover === "true"
+  }));
+  if (!itens.length) {
+    toast("Não há itens para salvar.", "error");
+    return;
+  }
+  const textoAnterior = botao.textContent;
+  botao.disabled = true;
+  botao.textContent = "Salvando...";
+  try {
+    const r = await request("/api/admin/inventario/itens", {
+      method: "PATCH",
+      body: JSON.stringify({ codigo_inventario: codigo, itens })
+    });
+    toast(`Correções salvas: ${r.editados} alterada(s), ${r.removidos} removida(s).`);
+    await abrirDetalheInventario(codigo);
+  } catch (error) {
+    toast(error.message || "Não foi possível salvar as correções.", "error");
+  } finally {
+    botao.disabled = false;
+    botao.textContent = textoAnterior;
+  }
+}
+
+// Confirma a contagem: passa a pedir a assinatura do PDV, sem ajustar estoque ainda
+async function confirmarInventario(botao, codigo) {
+  const antiga = document.querySelector(".inventario-aviso-antiga");
+  const confirmado = await confirmSystem({
+    title: "Confirmar contagem?",
+    message: "O PDV será chamado para assinar. O estoque só é ajustado depois da assinatura."
+      + (antiga ? " Atenção: esta contagem já tem alguns dias, e as vendas do período não estão refletidas nela." : ""),
+    confirmLabel: "Confirmar e pedir assinatura",
+    danger: Boolean(antiga)
+  });
+  if (!confirmado) return;
+
+  const textoAnterior = botao.textContent;
+  botao.disabled = true;
+  botao.textContent = "Confirmando...";
+  try {
+    await request("/api/admin/inventario/confirmar", {
+      method: "POST",
+      body: JSON.stringify({ codigo_inventario: codigo })
+    });
+    toast("Contagem confirmada. O PDV foi chamado para assinar.");
+    await viewInventarios();
+  } catch (error) {
+    toast(error.message || "Não foi possível confirmar a contagem.", "error");
+  } finally {
+    botao.disabled = false;
+    botao.textContent = textoAnterior;
+  }
+}
+
+// Exclui o inventário inteiro, exigindo justificativa
+async function excluirInventario(codigo) {
+  const motivo = await pedirMotivoExclusaoInventario(codigo);
+  if (!motivo) return;
+  try {
+    await request("/api/admin/inventario", {
+      method: "DELETE",
+      body: JSON.stringify({ codigo_inventario: codigo, motivo })
+    });
+    toast("Inventário excluído.");
+    inventarioAdmin.codigoAberto = null;
+    await viewInventarios();
+  } catch (error) {
+    toast(error.message || "Não foi possível excluir o inventário.", "error");
+  }
+}
+
+// Caixa de justificativa da exclusão. Sem motivo não há exclusão — o servidor também recusa.
+function pedirMotivoExclusaoInventario(codigo) {
+  return new Promise((resolve) => {
+    document.querySelector(".system-confirm-modal")?.remove();
+    const modal = document.createElement("div");
+    modal.className = "system-confirm-modal";
+    modal.innerHTML = `
+      <div class="system-confirm-dialog" role="dialog" aria-modal="true" aria-label="Excluir inventário ${esc(codigo)}">
+        <div class="system-confirm-head">
+          <div>
+            <p class="eyebrow">Confirmação</p>
+            <h3>Excluir inventário ${esc(codigo)}?</h3>
+          </div>
+          <button class="icon-action system-confirm-cancel" type="button" aria-label="Fechar">&times;</button>
+        </div>
+        <p>A contagem e todos os itens somem. A trilha de auditoria fica registrada com o motivo.</p>
+        <div class="system-confirm-field">
+          <label class="grid gap-1 text-sm font-bold">Motivo da exclusão
+            <textarea class="inventario-motivo" rows="3" placeholder="Explique por que este inventário está sendo excluído"></textarea>
+          </label>
+        </div>
+        <div class="order-card-actions">
+          <button class="btn secondary system-confirm-cancel" type="button">Cancelar</button>
+          <button class="btn danger inventario-motivo-ok" type="button">Excluir inventário</button>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+    const fechar = (valor) => {
+      modal.remove();
+      resolve(valor);
+    };
+    modal.querySelectorAll(".system-confirm-cancel").forEach((b) => b.addEventListener("click", () => fechar(null)));
+    modal.addEventListener("click", (e) => {
+      if (e.target === modal) fechar(null);
+    });
+    modal.querySelector(".inventario-motivo-ok").addEventListener("click", () => {
+      const motivo = modal.querySelector(".inventario-motivo").value.trim();
+      if (!motivo) {
+        toast("Informe o motivo da exclusão.", "error");
+        return;
+      }
+      fechar(motivo);
+    });
+  });
+}
+
+// Histórico de edição, no mesmo formato de modal usado no painel de pedidos
+function abrirHistoricoInventario(codigo, historico = []) {
+  // Mesmo modal do relatório de edição do pedido, para não criar uma segunda linguagem visual
+  const modal = document.createElement("div");
+  modal.className = "photo-viewer order-timeline-modal";
+  modal.innerHTML = `
+    <div class="photo-viewer-dialog" role="dialog" aria-modal="true" aria-label="Histórico de edição do inventário ${esc(codigo)}">
+      <div class="photo-viewer-head">
+        <div>
+          <p class="eyebrow">Relatório de edição</p>
+          <h3>Inventário ${esc(codigo)}</h3>
+        </div>
+        <button class="icon-btn close-order-timeline" type="button" aria-label="Fechar">&times;</button>
+      </div>
+      <div class="order-timeline-body">
+        ${historico.length
+          ? `<ol class="order-panel-timeline-list">${historico.map((linha) => {
+              const mudou = linha.valor_anterior !== null || linha.valor_novo !== null;
+              return `
+              <li>
+                <strong>${esc(rotuloAcaoInventario(linha.acao))}</strong>
+                ${linha.sku_produto ? `<span class="order-panel-timeline-path">${esc(linha.sku_produto)}</span>` : ""}
+                ${mudou ? `<span class="order-panel-timeline-path">${esc(linha.valor_anterior ?? "—")} → ${esc(linha.valor_novo ?? "—")}</span>` : ""}
+                <small>${esc(linha.usuario || "-")} · ${esc(moneyDate(linha.criado_em))}</small>
+                ${linha.observacao ? `<small>${esc(linha.observacao)}</small>` : ""}
+              </li>`;
+            }).join("")}</ol>`
+          : `<p class="order-panel-timeline-empty">Nenhuma alteração registrada.</p>`}
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  modal.querySelector(".close-order-timeline").addEventListener("click", () => modal.remove());
+  modal.addEventListener("click", (e) => {
+    if (e.target === modal) modal.remove();
+  });
+}
+
+// Nomes legíveis das ações registradas na auditoria
+function rotuloAcaoInventario(acao) {
+  return {
+    inventario_aberto: "Contagem aberta",
+    inventario_enviado: "Contagem enviada pelo PDV",
+    quantidade_corrigida: "Quantidade corrigida",
+    item_adicionado: "Produto adicionado",
+    item_removido: "Produto removido",
+    inventario_confirmado: "Contagem confirmada",
+    inventario_excluido: "Inventário excluído",
+    janela_alterada: "Janela de contagem alterada"
+  }[acao] || acao;
 }

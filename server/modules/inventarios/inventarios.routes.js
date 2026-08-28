@@ -1,12 +1,17 @@
 // Rotas de inventário (contagem física de estoque).
 //
-// Nesta primeira parte, só o lado do PDV: consultar a janela e o inventário aberto, contar,
-// salvar parcial e enviar. A partir de "Enviado" o PDV perde a edição — e a trava é do
-// servidor, não da tela: chamada direta à rota também é recusada.
-import { query, tx, code } from "../../db.js";
-import { readBody, send } from "../../utils/http.js";
+// Lado do PDV: consultar a janela e o inventário aberto, contar, salvar parcial e enviar.
+// A partir de "Enviado" o PDV perde a edição — e a trava é do servidor, não da tela:
+// chamada direta à rota também é recusada.
+//
+// Lado do Almoxarifado (rotasDoAlmoxarifado, no fim do arquivo): enxerga todos os
+// inventários, corrige quantidade, adiciona/remove produto, exclui a contagem com
+// justificativa, controla a janela e confirma — o que pede a assinatura do PDV.
+import { query, tx, code, asInt } from "../../db.js";
+import { normalizeText, readBody, send } from "../../utils/http.js";
 import { estadoDaJanela } from "../../services/inventarios/janela-contagem.service.js";
-import { auditarInventario, ensureInventarioTables, STATUS_ABERTOS, STATUS_INVENTARIO } from "./inventarios.schema.js";
+import { publishOrderAlert } from "../../services/order-alerts/order-alerts.events.js";
+import { auditarInventario, CHAVE_AGENDAMENTO, CHAVE_BLOQUEIO, ensureInventarioTables, STATUS_ABERTOS, STATUS_INVENTARIO } from "./inventarios.schema.js";
 
 // Produtos que o PDV pode contar: a mesma regra de liberação usada no pedido
 // (estoque_pdv x produto_categorias x pdv_categorias). Duplicar essa regra com outro
@@ -75,9 +80,13 @@ function quantidadeContadaEmUnidades({ sku, quantidade, unidadeMedida }) {
 
 export async function handleInventariosRoutes(req, res, context) {
   const { method, requireUser, url, user } = context;
-  if (!url.pathname.startsWith("/api/pdv/inventario")) return false;
+  const doPdv = url.pathname.startsWith("/api/pdv/inventario");
+  const doAdmin = url.pathname.startsWith("/api/admin/inventario");
+  if (!doPdv && !doAdmin) return false;
 
   await ensureInventarioTables();
+
+  if (doAdmin) return rotasDoAlmoxarifado(req, res, context);
 
   // Estado da tela de contagem do PDV: janela, inventário aberto e produtos liberados
   if (url.pathname === "/api/pdv/inventario" && method === "GET") {
@@ -286,4 +295,428 @@ async function resumoDaContagem(client, inventarioId, pdvId) {
   const total = liberados.rows[0].n;
   const jaContados = contados.rows[0].n;
   return { total, contados: jaContados, sem_contagem: Math.max(total - jaContados, 0) };
+}
+
+// ===== Aba INVENTÁRIOS do Almoxarifado =====
+//
+// O Almoxarifado enxerga todos os inventários, corrige o que o PDV contou, adiciona ou
+// remove produto e pode excluir a contagem inteira. Cada alteração guarda valor anterior e
+// valor novo — sem isso não há como saber depois se um número veio da contagem ou de uma
+// correção feita aqui.
+
+// Quantos dias a contagem pode ter antes de virar risco.
+//
+// Entre a contagem e o lançamento na OMIE o PDV continua vendendo, e o sistema de vendas dá
+// baixa no mesmo local. Quanto mais velha a contagem, maior a diferença que o ajuste vai
+// apagar. Não bloqueia — avisa, porque quem decide é o Almoxarifado.
+const DIAS_CONTAGEM_ANTIGA = 2;
+
+// Lista de inventários com os totais já calculados, para a tela não somar linha a linha
+const SQL_LISTA_INVENTARIOS = `
+  SELECT i.id, i.codigo_inventario, i.pdv_id, i.status,
+         COALESCE(p.nome, 'Almoxarifado') AS pdv_nome,
+         i.criado_por, i.criado_em, i.enviado_por, i.enviado_em,
+         i.confirmado_por, i.confirmado_em, i.assinado_por, i.assinado_em,
+         COUNT(it.id) FILTER (WHERE it.quantidade_contada IS NOT NULL)::int AS contados,
+         COUNT(it.id)::int AS itens,
+         MIN(it.contado_em) AS contagem_mais_antiga
+  FROM inventarios i
+  LEFT JOIN pdvs p ON p.id = i.pdv_id
+  LEFT JOIN inventario_itens it ON it.inventario_id = i.id
+  WHERE ($1::text IS NULL OR i.status = $1)
+    AND ($2::int IS NULL OR i.pdv_id = $2)
+  GROUP BY i.id, p.nome
+  ORDER BY i.criado_em DESC
+  LIMIT 200`;
+
+// Itens do inventário com o saldo atual ao lado, para o Almoxarifado ver a divergência
+const SQL_ITENS_DETALHE = `
+  SELECT it.id, it.sku_produto, it.quantidade_contada, it.contado_em, it.origem,
+         pr.nome AS produto,
+         COALESCE(e.quantidade, 0) AS saldo_atual
+  FROM inventario_itens it
+  LEFT JOIN produtos pr ON pr.sku = it.sku_produto
+  LEFT JOIN estoque_pdv e ON e.sku_produto = it.sku_produto AND e.pdv_id = $2
+  WHERE it.inventario_id = $1
+  ORDER BY pr.nome NULLS LAST, it.sku_produto`;
+
+// Há quantos dias a contagem mais antiga foi feita
+function idadeEmDias(data) {
+  if (!data) return null;
+  const ms = Date.now() - new Date(data).getTime();
+  return Number.isFinite(ms) ? Math.floor(ms / 86400000) : null;
+}
+
+// Trava o inventário pelo código e devolve a linha. Sem filtro de PDV: o Almoxarifado
+// enxerga todos.
+async function travarInventario(client, codigo) {
+  const alvo = await client.query(
+    "SELECT * FROM inventarios WHERE codigo_inventario = $1 FOR UPDATE",
+    [String(codigo || "")]
+  );
+  const inventario = alvo.rows[0];
+  if (!inventario) {
+    const erro = new Error("Inventário não encontrado.");
+    erro.statusCode = 404;
+    throw erro;
+  }
+  return inventario;
+}
+
+// O Almoxarifado edita a partir de "Enviado". Antes disso o PDV ainda está contando, e
+// mexer por baixo faria a tela dele perder o que digitou. Depois de confirmado, a contagem
+// está esperando assinatura ou já virou ajuste — corrigir aí é abrir novo inventário.
+function exigirEditavelPeloAlmoxarifado(inventario) {
+  if (inventario.status !== STATUS_INVENTARIO.ENVIADO) {
+    const erro = new Error(
+      inventario.status === STATUS_INVENTARIO.EM_CONTAGEM
+        ? "O PDV ainda está contando. Aguarde o envio para editar."
+        : "Esta contagem já foi confirmada. Para corrigir, abra um novo inventário."
+    );
+    erro.statusCode = 409;
+    throw erro;
+  }
+}
+
+async function rotasDoAlmoxarifado(req, res, context) {
+  const { method, requireUser, url, user } = context;
+  const usuario = user?.name || "Almoxarifado";
+
+  // Janela de contagem: estado atual + agendamento
+  if (url.pathname === "/api/admin/inventario/janela") {
+    if (!requireUser(req, res, "admin")) return true;
+
+    if (method === "GET") {
+      send(res, 200, await estadoDaJanela());
+      return true;
+    }
+
+    if (method === "PUT") {
+      const corpo = await readBody(req);
+      const anterior = await estadoDaJanela();
+
+      // Só grava o que veio: mexer no alternador não pode apagar o agendamento sem querer
+      if (corpo?.bloqueado !== undefined) {
+        await query(
+          `INSERT INTO configuracoes (chave, valor) VALUES ($1, $2)
+           ON CONFLICT (chave) DO UPDATE SET valor = $2`,
+          [CHAVE_BLOQUEIO, corpo.bloqueado ? "true" : "false"]
+        );
+      }
+      if (corpo?.agendado_para !== undefined) {
+        const data = String(corpo.agendado_para || "").slice(0, 10);
+        if (data && !/^\d{4}-\d{2}-\d{2}$/.test(data)) {
+          send(res, 400, { error: "Data de agendamento inválida." });
+          return true;
+        }
+        await query(
+          `INSERT INTO configuracoes (chave, valor) VALUES ($1, $2)
+           ON CONFLICT (chave) DO UPDATE SET valor = $2`,
+          [CHAVE_AGENDAMENTO, data]
+        );
+      }
+
+      const atual = await estadoDaJanela();
+      await tx((client) =>
+        auditarInventario(client, {
+          acao: "janela_alterada",
+          usuario,
+          valorAnterior: `bloqueio=${anterior.bloqueioManual} agendamento=${anterior.dataAgendada || "-"}`,
+          valorNovo: `bloqueio=${atual.bloqueioManual} agendamento=${atual.dataAgendada || "-"}`,
+          dados: { origem: "admin" }
+        })
+      );
+      send(res, 200, atual);
+      return true;
+    }
+  }
+
+  // Lista de inventários de todos os PDVs
+  if (url.pathname === "/api/admin/inventarios" && method === "GET") {
+    if (!requireUser(req, res, "admin")) return true;
+    const status = url.searchParams.get("status") || null;
+    const pdvId = asInt(url.searchParams.get("pdvId")) || null;
+    const linhas = await query(SQL_LISTA_INVENTARIOS, [status, pdvId]);
+    send(res, 200, {
+      inventarios: linhas.map((linha) => ({
+        ...linha,
+        dias_desde_contagem: idadeEmDias(linha.contagem_mais_antiga),
+        contagem_antiga: idadeEmDias(linha.contagem_mais_antiga) >= DIAS_CONTAGEM_ANTIGA
+      })),
+      janela: await estadoDaJanela()
+    });
+    return true;
+  }
+
+  // Detalhe de um inventário, com saldo atual ao lado de cada contagem
+  if (url.pathname === "/api/admin/inventario" && method === "GET") {
+    if (!requireUser(req, res, "admin")) return true;
+    const codigo = url.searchParams.get("codigo");
+    const linhas = await query("SELECT * FROM inventarios WHERE codigo_inventario = $1", [codigo]);
+    const inventario = linhas[0];
+    if (!inventario) {
+      send(res, 404, { error: "Inventário não encontrado." });
+      return true;
+    }
+    const itens = await query(SQL_ITENS_DETALHE, [inventario.id, inventario.pdv_id]);
+    const historico = await query(
+      `SELECT acao, usuario, valor_anterior, valor_novo, sku_produto, observacao, criado_em
+       FROM inventario_auditoria WHERE inventario_id = $1 ORDER BY criado_em DESC, id DESC`,
+      [inventario.id]
+    );
+    const maisAntiga = itens.reduce((menor, item) => {
+      if (!item.contado_em) return menor;
+      return !menor || new Date(item.contado_em) < new Date(menor) ? item.contado_em : menor;
+    }, null);
+    send(res, 200, {
+      inventario,
+      itens,
+      historico,
+      dias_desde_contagem: idadeEmDias(maisAntiga),
+      contagem_antiga: idadeEmDias(maisAntiga) >= DIAS_CONTAGEM_ANTIGA
+    });
+    return true;
+  }
+
+  // Edita quantidade, adiciona produto ou remove item — tudo auditado
+  if (url.pathname === "/api/admin/inventario/itens" && method === "PATCH") {
+    if (!requireUser(req, res, "admin")) return true;
+    const corpo = await readBody(req);
+    try {
+      const resultado = await tx(async (client) => {
+        const inventario = await travarInventario(client, corpo?.codigo_inventario);
+        exigirEditavelPeloAlmoxarifado(inventario);
+
+        let editados = 0;
+        let removidos = 0;
+        let adicionados = 0;
+
+        // Alterações e remoções de itens já existentes
+        for (const item of Array.isArray(corpo?.itens) ? corpo.itens : []) {
+          const atual = await client.query(
+            "SELECT * FROM inventario_itens WHERE id = $1 AND inventario_id = $2 FOR UPDATE",
+            [asInt(item?.id), inventario.id]
+          );
+          const linha = atual.rows[0];
+          if (!linha) continue;
+
+          if (item?.remover) {
+            await client.query("DELETE FROM inventario_itens WHERE id = $1", [linha.id]);
+            await auditarInventario(client, {
+              inventarioId: inventario.id,
+              codigoInventario: inventario.codigo_inventario,
+              itemId: linha.id,
+              sku: linha.sku_produto,
+              acao: "item_removido",
+              usuario,
+              valorAnterior: linha.quantidade_contada,
+              valorNovo: null,
+              observacao: item?.motivo || null,
+              dados: { origem: "admin" }
+            });
+            removidos += 1;
+            continue;
+          }
+
+          const nova = quantidadeContadaEmUnidades({
+            sku: linha.sku_produto,
+            quantidade: item?.quantidade,
+            unidadeMedida: item?.unidade_medida
+          });
+          // Números iguais não viram registro de auditoria: poluiria a trilha sem informar nada
+          const igual = String(linha.quantidade_contada ?? "") === String(nova ?? "");
+          if (igual) continue;
+
+          await client.query(
+            `UPDATE inventario_itens
+             SET quantidade_contada = $2,
+                 contado_em = CASE WHEN $2::numeric IS NULL THEN NULL ELSE COALESCE(contado_em, CURRENT_TIMESTAMP) END,
+                 atualizado_em = CURRENT_TIMESTAMP
+             WHERE id = $1`,
+            [linha.id, nova]
+          );
+          await auditarInventario(client, {
+            inventarioId: inventario.id,
+            codigoInventario: inventario.codigo_inventario,
+            itemId: linha.id,
+            sku: linha.sku_produto,
+            acao: "quantidade_corrigida",
+            usuario,
+            valorAnterior: linha.quantidade_contada,
+            valorNovo: nova,
+            observacao: item?.motivo || null,
+            dados: { origem: "admin" }
+          });
+          editados += 1;
+        }
+
+        // Produtos que o Almoxarifado acrescentou à contagem
+        for (const novo of Array.isArray(corpo?.adicionar) ? corpo.adicionar : []) {
+          const sku = String(novo?.sku || "").trim();
+          if (!sku) continue;
+          const existe = await client.query("SELECT 1 FROM produtos WHERE sku = $1", [sku]);
+          if (!existe.rowCount) {
+            const erro = new Error(`Produto ${sku} não existe no cadastro.`);
+            erro.statusCode = 400;
+            throw erro;
+          }
+          const quantidade = quantidadeContadaEmUnidades({
+            sku,
+            quantidade: novo?.quantidade,
+            unidadeMedida: novo?.unidade_medida
+          });
+          const inserido = await client.query(
+            `INSERT INTO inventario_itens (inventario_id, sku_produto, quantidade_contada, contado_em, origem)
+             VALUES ($1, $2, $3, CASE WHEN $3::numeric IS NULL THEN NULL ELSE CURRENT_TIMESTAMP END, 'ALMOX')
+             ON CONFLICT (inventario_id, sku_produto) DO UPDATE
+               SET quantidade_contada = EXCLUDED.quantidade_contada,
+                   contado_em = EXCLUDED.contado_em,
+                   atualizado_em = CURRENT_TIMESTAMP
+             RETURNING id`,
+            [inventario.id, sku, quantidade]
+          );
+          await auditarInventario(client, {
+            inventarioId: inventario.id,
+            codigoInventario: inventario.codigo_inventario,
+            itemId: inserido.rows[0].id,
+            sku,
+            acao: "item_adicionado",
+            usuario,
+            valorAnterior: null,
+            valorNovo: quantidade,
+            observacao: novo?.motivo || null,
+            dados: { origem: "admin" }
+          });
+          adicionados += 1;
+        }
+
+        await client.query("UPDATE inventarios SET atualizado_em = CURRENT_TIMESTAMP WHERE id = $1", [inventario.id]);
+        return { editados, removidos, adicionados };
+      });
+      send(res, 200, resultado);
+    } catch (error) {
+      if (error.statusCode) {
+        send(res, error.statusCode, { error: error.message });
+        return true;
+      }
+      throw error;
+    }
+    return true;
+  }
+
+  // Exclui o inventário inteiro. Exige justificativa, no mesmo rigor da exclusão de pedido.
+  if (url.pathname === "/api/admin/inventario" && method === "DELETE") {
+    if (!requireUser(req, res, "admin")) return true;
+    const corpo = await readBody(req);
+    const motivo = normalizeText(corpo?.motivo, 300);
+    if (!motivo) {
+      send(res, 400, { error: "Informe o motivo da exclusão do inventário." });
+      return true;
+    }
+    try {
+      const resultado = await tx(async (client) => {
+        const inventario = await travarInventario(client, corpo?.codigo_inventario);
+        if (inventario.status === STATUS_INVENTARIO.CONFIRMADO) {
+          const erro = new Error("Inventário confirmado não pode ser excluído: o ajuste já foi aplicado.");
+          erro.statusCode = 409;
+          throw erro;
+        }
+        const contagem = await client.query(
+          "SELECT COUNT(*)::int AS n FROM inventario_itens WHERE inventario_id = $1 AND quantidade_contada IS NOT NULL",
+          [inventario.id]
+        );
+        // A auditoria guarda o código, não só o id: a trilha precisa sobreviver à exclusão
+        await auditarInventario(client, {
+          inventarioId: null,
+          codigoInventario: inventario.codigo_inventario,
+          acao: "inventario_excluido",
+          usuario,
+          valorAnterior: inventario.status,
+          valorNovo: null,
+          observacao: motivo,
+          dados: { origem: "admin", pdv_id: inventario.pdv_id, contados: contagem.rows[0].n }
+        });
+        await client.query("DELETE FROM inventarios WHERE id = $1", [inventario.id]);
+        return { codigo_inventario: inventario.codigo_inventario, contados: contagem.rows[0].n };
+      });
+      send(res, 200, resultado);
+    } catch (error) {
+      if (error.statusCode) {
+        send(res, error.statusCode, { error: error.message });
+        return true;
+      }
+      throw error;
+    }
+    return true;
+  }
+
+  // CONFIRMAR: valida a contagem e passa a pedir a assinatura do PDV.
+  // Não ajusta estoque nenhum ainda — o ajuste só acontece depois que o PDV assina.
+  if (url.pathname === "/api/admin/inventario/confirmar" && method === "POST") {
+    if (!requireUser(req, res, "admin")) return true;
+    const corpo = await readBody(req);
+    try {
+      const resultado = await tx(async (client) => {
+        const inventario = await travarInventario(client, corpo?.codigo_inventario);
+        if (inventario.status !== STATUS_INVENTARIO.ENVIADO) {
+          const erro = new Error(`Só é possível confirmar uma contagem enviada (esta está em "${inventario.status}").`);
+          erro.statusCode = 409;
+          throw erro;
+        }
+        const contagem = await client.query(
+          `SELECT COUNT(*) FILTER (WHERE quantidade_contada IS NOT NULL)::int AS contados,
+                  MIN(contado_em) AS mais_antiga
+           FROM inventario_itens WHERE inventario_id = $1`,
+          [inventario.id]
+        );
+        const { contados, mais_antiga: maisAntiga } = contagem.rows[0];
+        if (!contados) {
+          const erro = new Error("Esta contagem não tem nenhum produto contado.");
+          erro.statusCode = 400;
+          throw erro;
+        }
+
+        await client.query(
+          `UPDATE inventarios SET status = $2, confirmado_em = CURRENT_TIMESTAMP, confirmado_por = $3,
+                                  atualizado_em = CURRENT_TIMESTAMP
+           WHERE id = $1`,
+          [inventario.id, STATUS_INVENTARIO.AGUARDANDO_ASSINATURA, usuario]
+        );
+        await auditarInventario(client, {
+          inventarioId: inventario.id,
+          codigoInventario: inventario.codigo_inventario,
+          acao: "inventario_confirmado",
+          usuario,
+          valorAnterior: STATUS_INVENTARIO.ENVIADO,
+          valorNovo: STATUS_INVENTARIO.AGUARDANDO_ASSINATURA,
+          dados: { origem: "admin", contados, dias_desde_contagem: idadeEmDias(maisAntiga) }
+        });
+        return {
+          codigo_inventario: inventario.codigo_inventario,
+          pdv_id: inventario.pdv_id,
+          contados,
+          dias_desde_contagem: idadeEmDias(maisAntiga)
+        };
+      });
+
+      // O Almoxarifado vê a mudança na hora; o polling segue como plano B.
+      // O aviso ao PDV entra junto com a tela de assinatura.
+      publishOrderAlert("INVENTARIO_STATUS_CHANGED", {
+        codigoInventario: resultado.codigo_inventario,
+        pdvId: resultado.pdv_id,
+        status: STATUS_INVENTARIO.AGUARDANDO_ASSINATURA,
+        usuario
+      });
+      send(res, 200, resultado);
+    } catch (error) {
+      if (error.statusCode) {
+        send(res, error.statusCode, { error: error.message });
+        return true;
+      }
+      throw error;
+    }
+    return true;
+  }
+
+  return false;
 }

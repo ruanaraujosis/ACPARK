@@ -6623,3 +6623,159 @@ td input[type="number"] {
     width: 100%;
   }
 }
+
+/* ===== Aba INVENTÁRIOS do Almoxarifado ===== */
+
+/* Painel da janela de contagem: alternador + agendamento, no canto do cabeçalho */
+.inventario-janela {
+  display: grid;
+  gap: 0.5rem;
+  min-width: 17rem;
+  padding: 0.75rem 0.9rem;
+  border: 1px solid rgba(0, 123, 135, 0.16);
+  border-radius: 16px;
+  background: rgba(16, 182, 199, 0.05);
+}
+
+.inventario-janela.is-bloqueada {
+  border-color: rgba(180, 83, 9, 0.28);
+  background: rgba(251, 191, 36, 0.09);
+}
+
+.inventario-janela-linha {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.inventario-agenda-rotulo {
+  color: var(--ac-teal-dark);
+  font-size: 0.84rem;
+  font-weight: 800;
+}
+
+.inventario-janela-nota {
+  color: #63728a;
+  font-size: 0.76rem;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+/* Alternador liga/desliga da contagem */
+.inventario-switch {
+  display: inline-flex;
+  gap: 0.55rem;
+  align-items: center;
+  cursor: pointer;
+  user-select: none;
+}
+
+/* O checkbox real fica escondido, mas continua sendo ele que recebe foco e teclado */
+.inventario-switch input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
+.inventario-switch-trilho {
+  position: relative;
+  flex: none;
+  width: 2.6rem;
+  height: 1.45rem;
+  border-radius: 999px;
+  background: #cbd5e1;
+  transition: background 0.16s ease;
+}
+
+.inventario-switch-bolinha {
+  position: absolute;
+  top: 0.17rem;
+  left: 0.19rem;
+  width: 1.11rem;
+  height: 1.11rem;
+  border-radius: 50%;
+  background: white;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.3);
+  transition: transform 0.16s ease;
+}
+
+.inventario-switch input:checked + .inventario-switch-trilho {
+  background: var(--ac-teal, #007b87);
+}
+
+.inventario-switch input:checked + .inventario-switch-trilho .inventario-switch-bolinha {
+  transform: translateX(1.15rem);
+}
+
+.inventario-switch input:focus-visible + .inventario-switch-trilho {
+  outline: 2px solid var(--ac-teal-dark);
+  outline-offset: 2px;
+}
+
+.inventario-switch-texto {
+  color: var(--ac-teal-dark);
+  font-size: 0.86rem;
+  font-weight: 800;
+}
+
+/* Contagem velha: entre contar e lançar, o PDV seguiu vendendo */
+.inventario-alerta-idade {
+  color: #b45309;
+  font-weight: 900;
+}
+
+.inventario-antigo td {
+  background: rgba(251, 191, 36, 0.07);
+}
+
+.inventario-aviso-antiga {
+  border-color: rgba(180, 83, 9, 0.3);
+  background: rgba(251, 191, 36, 0.1);
+}
+
+/* Diferença entre o contado e o saldo atual */
+.inventario-diferenca {
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.inventario-dif-zero {
+  color: #64748b;
+}
+
+.inventario-dif-mais {
+  color: #047857;
+}
+
+.inventario-dif-menos {
+  color: #b91c1c;
+}
+
+.inventario-saldo {
+  color: #475569;
+  font-weight: 700;
+}
+
+.inventario-admin-qtd {
+  width: 100%;
+  text-align: right;
+}
+
+.inventario-detalhe-card {
+  margin-top: 1rem;
+}
+
+/* Linha marcada para remoção: some só ao salvar, para dar chance de desistir */
+.inventario-item-linha.is-marked-remove td {
+  opacity: 0.45;
+  text-decoration: line-through;
+}
+
+@media (max-width: 720px) {
+  .inventario-janela {
+    width: 100%;
+    min-width: 0;
+  }
+}

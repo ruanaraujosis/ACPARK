@@ -5,13 +5,22 @@ import fs from "node:fs";
 const app = fs.readFileSync("public/app.js", "utf8");
 const css = fs.readFileSync("public/styles.css", "utf8");
 
-test("a tela de inventário está no menu do PDV e no roteador", () => {
+test("cada perfil vê a sua aba de inventário, nunca a do outro", () => {
+  // São duas telas diferentes: "inventario" (o PDV contando) e "inventarios" (o
+  // Almoxarifado conferindo). Trocá-las de menu daria ao PDV a conferência de todos os
+  // PDVs, e ao Almoxarifado um formulário de contagem que ele não usa.
   assert.match(app, /\["inventario", "Inventário"\]/);
   assert.match(app, /inventario: viewInventario,/);
-  // Só o PDV conta: a lista do admin não pode ganhar a aba por engano
-  const menus = app.slice(app.indexOf("const items = role === \"admin\""), app.indexOf("app.innerHTML"));
-  const linhaAdmin = menus.slice(0, menus.indexOf(": ["));
-  assert.doesNotMatch(linhaAdmin, /inventario/);
+
+  const menus = app.slice(app.indexOf('const items = role === "admin"'), app.indexOf("app.innerHTML"));
+  const separador = menus.indexOf("\n    : [");
+  const menuAdmin = menus.slice(0, separador);
+  const menuPdv = menus.slice(separador);
+
+  assert.match(menuAdmin, /"inventarios"/, "o Almoxarifado tem a aba de conferência");
+  assert.doesNotMatch(menuAdmin, /"inventario"(?!s)/, "a tela de contagem do PDV não é do Almoxarifado");
+  assert.match(menuPdv, /"inventario"(?!s)/, "o PDV tem a tela de contagem");
+  assert.doesNotMatch(menuPdv, /"inventarios"/, "o PDV não pode ver a conferência de todos os PDVs");
 });
 
 test("não existe seletor de unidade na contagem", () => {

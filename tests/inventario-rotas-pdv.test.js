@@ -12,7 +12,9 @@ test("as rotas de inventário estão registradas no servidor", () => {
 
 test("toda rota de inventário do PDV exige papel de PDV", () => {
   // Sem isso, o Almoxarifado (ou qualquer sessão) alcançaria a contagem de um PDV qualquer.
-  const guardas = [...rotas.matchAll(/requireUser\(req, res, "(\w+)"\)/g)].map((m) => m[1]);
+  // Recorta só a seção do PDV: as rotas do Almoxarifado moram no mesmo arquivo e exigem admin.
+  const secaoPdv = rotas.slice(0, rotas.indexOf("// ===== Aba INVENTÁRIOS do Almoxarifado ====="));
+  const guardas = [...secaoPdv.matchAll(/requireUser\(req, res, "(\w+)"\)/g)].map((m) => m[1]);
   assert.ok(guardas.length >= 4, `esperava uma guarda por rota, achei ${guardas.length}`);
   assert.ok(guardas.every((papel) => papel === "pdv"), `todas precisam exigir pdv: ${guardas.join(", ")}`);
 });
