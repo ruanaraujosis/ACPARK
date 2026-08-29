@@ -172,6 +172,10 @@ function shell(content, actions = "") {
     stopOrderAlerts();
     // Sem isto a conexao SSE do PDV sobreviveria ao logout, ainda ligada ao PDV anterior
     desconectarEventosDoPdv();
+    // Fechamento de aviso vale so para a sessao: quem entrar depois ve tudo de novo
+    reiniciarAvisosDaSessao();
+    document.querySelector("#aviso-banners")?.remove();
+    document.querySelector(".aviso-sino")?.remove();
     await request("/api/auth/logout", { method: "POST" });
     state.user = null;
     renderLogin();
@@ -384,6 +388,8 @@ async function route(view) {
       });
     }
     await views[view]();
+    // Avisos entram depois da tela: sino e banner sobrevivem a troca de aba
+    carregarAvisos();
     if (state.user?.role === "admin") {
       await startOrderAlerts({
         route,
@@ -10668,4 +10674,99 @@ function bindAssinaturaInventario(codigo) {
       botao.textContent = textoAnterior;
     }
   });
+}
+
+// ===== Avisos (sino ao lado do menu + banner) =====
+
+// Avisos fechados NESTA sessão. Fica em memória de propósito: o requisito é que o aviso
+// reapareça a cada novo login, mesmo já tendo sido fechado antes. Guardar em localStorage
+// faria o fechamento durar para sempre; sessionStorage sobreviveria à troca de usuário na
+// mesma aba. Uma variável limpa no login é exatamente "vale só para a sessão atual".
+let avisosFechados = new Set();
+let avisosCarregados = [];
+
+// Chamado ao entrar: o que foi fechado antes volta a aparecer
+function reiniciarAvisosDaSessao() {
+  avisosFechados = new Set();
+  avisosCarregados = [];
+}
+
+// Busca os avisos ativos e desenha sino e banner
+async function carregarAvisos() {
+  if (!state.user) return;
+  try {
+    const dados = await request("/api/avisos", { silentLoading: true });
+    avisosCarregados = dados.avisos || [];
+  } catch {
+    // Aviso não é crítico: falhar ao buscar não pode atrapalhar a tela que o usuário abriu
+    return;
+  }
+  desenharAvisos();
+}
+
+// Quais ainda estão à mostra
+function avisosVisiveis() {
+  return avisosCarregados.filter((aviso) => !avisosFechados.has(aviso.id));
+}
+
+// Desenha o sino (com contador) e o banner do canto superior direito
+function desenharAvisos() {
+  const visiveis = avisosVisiveis();
+  const wrap = document.querySelector(".menu-wrap");
+  if (wrap) {
+    let sino = wrap.querySelector(".aviso-sino");
+    if (!avisosCarregados.length) sino?.remove();
+    else {
+      if (!sino) {
+        sino = document.createElement("button");
+        sino.className = "aviso-sino";
+        sino.type = "button";
+        // Entra antes do ☰, como pede o requisito ("ao lado do menu de três barras")
+        wrap.insertBefore(sino, wrap.firstChild);
+        sino.addEventListener("click", () => {
+          // Clicar no sino traz de volta tudo que foi fechado nesta sessão
+          avisosFechados = new Set();
+          desenharAvisos();
+        });
+      }
+      sino.innerHTML = `
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M12 3a5 5 0 0 0-5 5v3.2c0 .5-.2 1-.5 1.4L5 14.6h14l-1.5-2a2.3 2.3 0 0 1-.5-1.4V8a5 5 0 0 0-5-5Z"/>
+          <path d="M10 18a2 2 0 0 0 4 0"/>
+        </svg>
+        ${visiveis.length ? `<span class="aviso-sino-contador">${visiveis.length}</span>` : ""}`;
+      sino.setAttribute("aria-label", visiveis.length
+        ? `${visiveis.length} aviso(s) do Almoxarifado`
+        : "Avisos do Almoxarifado (nenhum aberto)");
+      sino.classList.toggle("tem-aviso", visiveis.length > 0);
+    }
+  }
+
+  // Banner fixado no canto superior direito, um cartão por aviso
+  document.querySelector("#aviso-banners")?.remove();
+  if (!visiveis.length) return;
+  const caixa = document.createElement("div");
+  caixa.id = "aviso-banners";
+  caixa.className = "aviso-banners";
+  caixa.setAttribute("aria-live", "polite");
+  // Empilha em vez de sobrepor: com vários avisos, um em cima do outro esconderia os demais
+  caixa.innerHTML = visiveis
+    .map(
+      (aviso) => `
+      <article class="aviso-banner ${aviso.tipo === "INVENTARIO_AGENDADO" ? "is-inventario" : ""}" data-aviso="${aviso.id}">
+        <div class="aviso-banner-texto">
+          <strong>${esc(aviso.titulo || "Aviso")}</strong>
+          <p>${esc(aviso.mensagem)}</p>
+        </div>
+        <button class="aviso-banner-fechar" type="button" data-aviso="${aviso.id}" aria-label="Fechar aviso">&times;</button>
+      </article>`
+    )
+    .join("");
+  document.body.appendChild(caixa);
+  caixa.querySelectorAll(".aviso-banner-fechar").forEach((botao) =>
+    botao.addEventListener("click", () => {
+      avisosFechados.add(Number(botao.dataset.aviso));
+      desenharAvisos();
+    })
+  );
 }

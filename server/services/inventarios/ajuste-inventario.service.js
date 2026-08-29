@@ -49,13 +49,32 @@ export async function localDoInventario(client, { pdvId, configuracao = {} }) {
 // Roda dentro da transação da assinatura: se algo falhar aqui, a assinatura também não vale,
 // e o inventário continua "Aguardando assinatura" para ser tentado de novo.
 export async function aplicarAjusteLocal(client, inventario) {
+  // Percorre o CATÁLOGO do PDV, não as linhas de inventario_itens.
+  //
+  // A diferença decide o resultado do inventário: "sem contagem é zerado" tem de valer para
+  // todo produto que o PDV deveria ter contado, e não só para os que ganharam linha. Um
+  // produto que nunca foi tocado na tela não tem linha nenhuma — percorrendo só as linhas,
+  // ele sobreviveria calado, contrariando a regra.
+  //
+  // O UNION traz também o que o Almoxarifado acrescentou à contagem e que pode não estar
+  // mais no catálogo liberado.
   const { rows: itens } = await client.query(
-    `SELECT it.id, it.sku_produto, it.quantidade_contada,
+    `WITH catalogo AS (
+       SELECT e.sku_produto
+       FROM estoque_pdv e
+       JOIN produtos p ON p.sku = e.sku_produto
+       JOIN produto_categorias prc ON prc.sku_produto = p.sku
+       JOIN pdv_categorias pc ON pc.pdv_id = e.pdv_id AND pc.categoria = prc.categoria
+       WHERE e.pdv_id = $2 AND e.permitido = TRUE AND p.ativo = TRUE
+       UNION
+       SELECT sku_produto FROM inventario_itens WHERE inventario_id = $1
+     )
+     SELECT it.id, c.sku_produto, it.quantidade_contada,
             COALESCE(e.quantidade, 0) AS saldo_anterior
-     FROM inventario_itens it
-     LEFT JOIN estoque_pdv e ON e.sku_produto = it.sku_produto AND e.pdv_id = $2
-     WHERE it.inventario_id = $1
-     ORDER BY it.sku_produto`,
+     FROM catalogo c
+     LEFT JOIN inventario_itens it ON it.inventario_id = $1 AND it.sku_produto = c.sku_produto
+     LEFT JOIN estoque_pdv e ON e.sku_produto = c.sku_produto AND e.pdv_id = $2
+     ORDER BY c.sku_produto`,
     [inventario.id, inventario.pdv_id]
   );
 
@@ -68,11 +87,21 @@ export async function aplicarAjusteLocal(client, inventario) {
       : Number(item.quantidade_contada);
     const anterior = Number(item.saldo_anterior || 0);
 
-    // Guarda o saldo que existia antes, para a auditoria e para o relatório de divergência
-    await client.query(
-      "UPDATE inventario_itens SET quantidade_anterior = $2 WHERE id = $1",
-      [item.id, anterior]
-    );
+    // Guarda o saldo que existia antes, para a auditoria e para o relatório de divergência.
+    //
+    // Produto do catálogo que ninguém sequer abriu na tela não tem linha. Ele é zerado do
+    // mesmo jeito, então precisa ganhar uma linha aqui — senão o inventário zeraria um
+    // produto sem deixar registro de que o zerou.
+    if (item.id) {
+      await client.query("UPDATE inventario_itens SET quantidade_anterior = $2 WHERE id = $1", [item.id, anterior]);
+    } else {
+      await client.query(
+        `INSERT INTO inventario_itens (inventario_id, sku_produto, quantidade_contada, quantidade_anterior, origem)
+         VALUES ($1, $2, NULL, $3, 'PDV')
+         ON CONFLICT (inventario_id, sku_produto) DO UPDATE SET quantidade_anterior = EXCLUDED.quantidade_anterior`,
+        [inventario.id, item.sku_produto, anterior]
+      );
+    }
 
     // Inventário do Almoxarifado (pdv_id nulo) não mexe em estoque_pdv: o saldo dele é o
     // estoque central, que vem da OMIE pela tarefa ESTOQUE_ALMOXARIFADO.
