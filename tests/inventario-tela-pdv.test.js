@@ -2,8 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 
-const app = fs.readFileSync("public/app.js", "utf8");
-const css = fs.readFileSync("public/styles.css", "utf8");
+const app = fs.readFileSync("public/app.js", "utf8").split("\r\n").join("\n");
+const css = fs.readFileSync("public/styles.css", "utf8").split("\r\n").join("\n");
 
 test("cada perfil vê a sua aba de inventário, nunca a do outro", () => {
   // São duas telas diferentes: "inventario" (o PDV contando) e "inventarios" (o
@@ -64,12 +64,23 @@ test("o envio salva antes, para não perder o que foi digitado", () => {
   assert.ok(posPatch > -1 && posPatch < posEnviar, "o salvamento precisa vir antes do envio");
 });
 
-test("o envio pede confirmação mostrando quantos ficaram sem contagem", () => {
+test("o envio avisa que os não contados serão ZERADOS", () => {
+  // Este é o aviso mais importante da tela. Até 29/08/2026 a regra era o oposto e a mensagem
+  // dizia "não serão alterados"; com o zeramento, aquela frase virou uma promessa falsa —
+  // um PDV que contasse 5 de 200 produtos zeraria os outros 195 achando que não faria nada.
   const inicio = app.indexOf("async function enviarContagemInventario");
   const corpo = app.slice(inicio, app.indexOf("\n}\n", inicio));
   assert.match(corpo, /confirmSystem\(/);
-  assert.match(corpo, /ficaram sem contagem \(não serão alterados\)/);
+  assert.match(corpo, /serão ZERADOS no seu estoque/);
+  assert.doesNotMatch(corpo, /não serão alterados/, "a promessa antiga era o contrário do que acontece");
+  assert.match(corpo, /danger: semContagem > 0/, "com produtos por contar, a confirmação é de risco");
   assert.match(corpo, /só o Almoxarifado pode alterar esta contagem/);
+});
+
+test("a tela de contagem avisa, antes de digitar, que o branco zera", () => {
+  const inicio = app.indexOf("async function viewInventario");
+  const corpo = app.slice(inicio, app.indexOf("\n}\n", inicio));
+  assert.match(corpo, /sem contagem será zerado/);
 });
 
 test("contagem bloqueada mostra o motivo, nunca um formulário mudo", () => {

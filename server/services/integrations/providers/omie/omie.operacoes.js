@@ -57,6 +57,20 @@ export function normalizarQuantidade(valor) {
   return String(quantidade).replace(".", ",");
 }
 
+// Quantidade do AJUSTE POR INVENTARIO, onde zero e valor legitimo.
+//
+// Deliberadamente separada de normalizarQuantidade(): la o zero e recusado porque um
+// movimento (TRF/SAI) de zero nao move nada e mascara erro de calculo. No inventario zero e o
+// resultado esperado de "ninguem contou este produto" -- e e justamente ele que zera o saldo.
+// Afrouxar a funcao compartilhada tiraria a protecao da transferencia junto.
+export function normalizarQuantidadeInventario(valor) {
+  const quantidade = Number(String(valor ?? 0).replace(",", "."));
+  if (!Number.isFinite(quantidade) || quantidade < 0) {
+    throw new Error("Quantidade invalida para ajuste de inventario na OMIE.");
+  }
+  return String(quantidade).replace(".", ",");
+}
+
 // Monta o payload de IncluirAjusteEstoque
 export function montarAjusteEstoque({
   chaveOperacao,
@@ -169,4 +183,60 @@ export function montarCompensacaoTransferencia(dados) {
     codigoLocalDestino: dados.codigoLocalOrigem,
     observacao: dados.observacao || "Estorno de transferencia por reabertura de pedido no MyEstoque."
   });
+}
+
+// Monta o payload do AJUSTE POR INVENTARIO (IncluirAjusteEstoque com tipo "SLD").
+//
+// EXCECAO DELIBERADA a regra "movimento, nunca saldo absoluto".
+//
+// O resto do sistema so envia TRF (transferencia), e o tipo SLD esta travado por teste no
+// caminho da transferencia justamente porque escrever saldo apagaria os lancamentos do
+// sistema de vendas. O inventario e o unico caso em que escrever saldo e o comportamento
+// desejado: a contagem fisica passa a ser a verdade, por decisao do usuario (28/08/2026).
+//
+// Codigos confirmados pelo usuario a partir da tela e do suporte da OMIE:
+//   tipo   "SLD" -> "Ajustar o saldo de estoque do dia"
+//   motivo "INV" -> "Ajuste por Inventario"
+//
+// O risco que essa escolha carrega esta documentado em docs/INTEGRACOES.md: entre a contagem
+// e o envio o PDV continua vendendo, e o saldo gravado nao reflete essas vendas. Por isso a
+// tela avisa a idade da contagem antes de o Almoxarifado confirmar.
+export function montarAjusteInventario({
+  chaveOperacao,
+  idExternoProduto,
+  sku,
+  codigoLocal,
+  quantidade,
+  valorUnitario,
+  data = new Date(),
+  observacao
+}) {
+  if (!codigoLocal) {
+    throw new Error("Ajuste de inventario exige o local de estoque do PDV que contou.");
+  }
+
+  const payload = {
+    cod_int_ajuste: String(chaveOperacao || "").slice(0, 60),
+    data: formatarData(data),
+    // Zero e valor legitimo aqui: e o que zera o produto que ninguem contou
+    quan: normalizarQuantidadeInventario(quantidade),
+    obs: String(observacao || "Ajuste por inventario registrado pelo MyEstoque.").slice(0, 500),
+    origem: "AJU",
+    tipo: "SLD",
+    motivo: "INV",
+    codigo_local_estoque: Number(codigoLocal)
+  };
+
+  // A transferencia so descobriu no primeiro envio real que a OMIE recusa valor zero
+  // («O "Valor" informado deve ser diferente de zero»). Nao sabemos ainda se o SLD exige o
+  // mesmo, entao o valor vai quando existir e fica de fora quando nao houver -- a conferencia
+  // do primeiro lancamento real dira se precisa ser obrigatorio aqui tambem.
+  const valor = Number(valorUnitario);
+  if (Number.isFinite(valor) && valor > 0) payload.valor = valor;
+
+  if (idExternoProduto) payload.id_prod = Number(idExternoProduto);
+  else if (sku) payload.cod_int = String(sku).slice(0, 20);
+  else throw new Error("Ajuste de inventario exige o produto (id externo ou SKU).");
+
+  return payload;
 }

@@ -11,6 +11,8 @@ import { query, tx, code, asInt } from "../../db.js";
 import { normalizeText, readBody, send } from "../../utils/http.js";
 import { estadoDaJanela } from "../../services/inventarios/janela-contagem.service.js";
 import { publishOrderAlert } from "../../services/order-alerts/order-alerts.events.js";
+import { handleEventosDoPdv, publicarEventoDoPdv } from "../../services/inventarios/inventario.events.js";
+import { aplicarAjusteLocal, enfileirarAjusteNaOmie } from "../../services/inventarios/ajuste-inventario.service.js";
 import { auditarInventario, CHAVE_AGENDAMENTO, CHAVE_BLOQUEIO, ensureInventarioTables, STATUS_ABERTOS, STATUS_INVENTARIO } from "./inventarios.schema.js";
 
 // Produtos que o PDV pode contar: a mesma regra de liberação usada no pedido
@@ -87,6 +89,19 @@ export async function handleInventariosRoutes(req, res, context) {
   await ensureInventarioTables();
 
   if (doAdmin) return rotasDoAlmoxarifado(req, res, context);
+
+  // Canal de tempo real do PDV. Escopado por PDV de proposito: o canal de alertas de pedido
+  // e do Almoxarifado e transmite tudo para todos -- abri-lo aqui entregaria a cada ponto de
+  // venda as contagens dos outros.
+  if (url.pathname === "/api/pdv/inventario/eventos") {
+    if (!requireUser(req, res, "pdv")) return true;
+    handleEventosDoPdv(req, res, user.pdvId);
+    return true;
+  }
+
+  if (url.pathname.startsWith("/api/pdv/inventario/assinatura")) {
+    return rotaAssinaturaDoPdv(req, res, context);
+  }
 
   // Estado da tela de contagem do PDV: janela, inventário aberto e produtos liberados
   if (url.pathname === "/api/pdv/inventario" && method === "GET") {
@@ -699,13 +714,183 @@ async function rotasDoAlmoxarifado(req, res, context) {
         };
       });
 
-      // O Almoxarifado vê a mudança na hora; o polling segue como plano B.
-      // O aviso ao PDV entra junto com a tela de assinatura.
+      // O Almoxarifado vê a mudança no canal dele; o polling segue como plano B.
       publishOrderAlert("INVENTARIO_STATUS_CHANGED", {
         codigoInventario: resultado.codigo_inventario,
         pdvId: resultado.pdv_id,
         status: STATUS_INVENTARIO.AGUARDANDO_ASSINATURA,
         usuario
+      });
+      // E o PDV dono da contagem é chamado para assinar, pelo canal só dele
+      publicarEventoDoPdv("INVENTARIO_ASSINATURA_SOLICITADA", resultado.pdv_id, {
+        codigoInventario: resultado.codigo_inventario,
+        contados: resultado.contados
+      });
+      send(res, 200, resultado);
+    } catch (error) {
+      if (error.statusCode) {
+        send(res, error.statusCode, { error: error.message });
+        return true;
+      }
+      throw error;
+    }
+    return true;
+  }
+
+  return false;
+}
+
+// ===== Assinatura do PDV e aplicação do ajuste =====
+
+// Assinatura vem como data URL de PNG desenhada no canvas. A validação é a mesma da retirada
+// de pedido: prefixo de PNG e tamanho com teto, para o campo não virar porta de upload.
+const PREFIXO_PNG = "data:image/png;base64,";
+const LIMITE_ASSINATURA = 400 * 1024;
+
+// Recusa qualquer coisa que não seja um PNG plausível
+export function validarAssinatura(valor) {
+  const texto = String(valor || "").trim();
+  if (!texto.startsWith(PREFIXO_PNG)) {
+    const erro = new Error("Assinatura inválida. Assine no quadro antes de confirmar.");
+    erro.statusCode = 400;
+    throw erro;
+  }
+  if (texto.length > LIMITE_ASSINATURA) {
+    const erro = new Error("Assinatura muito grande. Refaça a assinatura.");
+    erro.statusCode = 413;
+    throw erro;
+  }
+  // Um PNG de canvas em branco ainda é um PNG; o teto de baixo pega assinatura vazia demais
+  if (texto.length < PREFIXO_PNG.length + 200) {
+    const erro = new Error("Assinatura em branco. Assine no quadro antes de confirmar.");
+    erro.statusCode = 400;
+    throw erro;
+  }
+  return texto;
+}
+
+// Integração ativa e sua configuração, para o lançamento saber local e modo de escrita.
+// Ausência não é erro: sem integração o ajuste local acontece do mesmo jeito.
+async function integracaoAtiva(client) {
+  const { rows } = await client.query(
+    `SELECT id, configuracao FROM integrations
+     WHERE ativo = TRUE ORDER BY id LIMIT 1`
+  );
+  if (!rows[0]) return { integracao: null, configuracao: {} };
+  const bruta = rows[0].configuracao;
+  const configuracao = typeof bruta === "string" ? JSON.parse(bruta || "{}") : bruta || {};
+  return { integracao: rows[0], configuracao };
+}
+
+// Rotas de assinatura, montadas em handleInventariosRoutes
+async function rotaAssinaturaDoPdv(req, res, context) {
+  const { method, requireUser, url, user } = context;
+
+  // O que o PDV precisa assinar: só existe quando o Almoxarifado já confirmou
+  if (url.pathname === "/api/pdv/inventario/assinatura" && method === "GET") {
+    if (!requireUser(req, res, "pdv")) return true;
+    const linhas = await query(
+      `SELECT * FROM inventarios
+       WHERE pdv_id = $1 AND status = $2 ORDER BY id DESC LIMIT 1`,
+      [user.pdvId, STATUS_INVENTARIO.AGUARDANDO_ASSINATURA]
+    );
+    const inventario = linhas[0] || null;
+    if (!inventario) {
+      send(res, 200, { inventario: null, itens: [] });
+      return true;
+    }
+    // O PDV assina vendo o que vai mudar: contado, saldo atual e a diferença
+    const itens = await query(
+      `SELECT it.sku_produto, it.quantidade_contada, it.contado_em,
+              pr.nome AS produto, COALESCE(e.quantidade, 0) AS saldo_atual
+       FROM inventario_itens it
+       LEFT JOIN produtos pr ON pr.sku = it.sku_produto
+       LEFT JOIN estoque_pdv e ON e.sku_produto = it.sku_produto AND e.pdv_id = $2
+       WHERE it.inventario_id = $1
+       ORDER BY pr.nome NULLS LAST, it.sku_produto`,
+      [inventario.id, inventario.pdv_id]
+    );
+    send(res, 200, { inventario, itens });
+    return true;
+  }
+
+  // Assinar: aplica o ajuste no estoque local e enfileira o lançamento na OMIE
+  if (url.pathname === "/api/pdv/inventario/assinatura" && method === "POST") {
+    if (!requireUser(req, res, "pdv")) return true;
+    const corpo = await readBody(req);
+    try {
+      const resultado = await tx(async (client) => {
+        const alvo = await client.query(
+          `SELECT * FROM inventarios
+           WHERE codigo_inventario = $1 AND pdv_id = $2
+           FOR UPDATE`,
+          [String(corpo?.codigo_inventario || ""), user.pdvId]
+        );
+        const inventario = alvo.rows[0];
+        if (!inventario) {
+          const erro = new Error("Inventário não encontrado para este PDV.");
+          erro.statusCode = 404;
+          throw erro;
+        }
+        // Assinar duas vezes não pode ajustar duas vezes: só "Aguardando assinatura" passa
+        if (inventario.status !== STATUS_INVENTARIO.AGUARDANDO_ASSINATURA) {
+          const erro = new Error(
+            inventario.status === STATUS_INVENTARIO.CONFIRMADO
+              ? "Este inventário já foi assinado."
+              : "Este inventário ainda não foi confirmado pelo Almoxarifado."
+          );
+          erro.statusCode = 409;
+          throw erro;
+        }
+
+        const assinatura = validarAssinatura(corpo?.assinatura);
+        const assinadoPor = normalizeText(corpo?.assinado_por, 120) || user.name || "PDV";
+
+        // Ajuste local primeiro: é ele que não pode falhar pela metade
+        const aplicados = await aplicarAjusteLocal(client, inventario);
+
+        await client.query(
+          `UPDATE inventarios
+           SET status = $2, assinatura_imagem = $3, assinado_por = $4,
+               assinado_em = CURRENT_TIMESTAMP, ajuste_aplicado_em = CURRENT_TIMESTAMP,
+               atualizado_em = CURRENT_TIMESTAMP
+           WHERE id = $1`,
+          [inventario.id, STATUS_INVENTARIO.CONFIRMADO, assinatura, assinadoPor]
+        );
+
+        const zerados = aplicados.filter((item) => item.semContagem).length;
+        await auditarInventario(client, {
+          inventarioId: inventario.id,
+          codigoInventario: inventario.codigo_inventario,
+          acao: "inventario_assinado",
+          usuario: assinadoPor,
+          valorAnterior: STATUS_INVENTARIO.AGUARDANDO_ASSINATURA,
+          valorNovo: STATUS_INVENTARIO.CONFIRMADO,
+          dados: {
+            origem: "pdv",
+            itens: aplicados.length,
+            zerados_por_falta_de_contagem: zerados,
+            ajustes: aplicados.map((i) => ({ sku: i.sku, de: i.anterior, para: i.contado }))
+          }
+        });
+
+        // A OMIE nunca bloqueia a assinatura: enfileira e drena quando houver internet
+        const { integracao, configuracao } = await integracaoAtiva(client);
+        const fila = await enfileirarAjusteNaOmie(client, { inventario, aplicados, integracao, configuracao });
+
+        return {
+          codigo_inventario: inventario.codigo_inventario,
+          itens: aplicados.length,
+          zerados,
+          fila
+        };
+      });
+
+      publishOrderAlert("INVENTARIO_STATUS_CHANGED", {
+        codigoInventario: resultado.codigo_inventario,
+        pdvId: user.pdvId,
+        status: STATUS_INVENTARIO.CONFIRMADO,
+        usuario: user.name || "PDV"
       });
       send(res, 200, resultado);
     } catch (error) {

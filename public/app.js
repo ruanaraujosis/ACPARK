@@ -170,6 +170,8 @@ function shell(content, actions = "") {
   document.querySelector("#logout").addEventListener("click", async () => {
     stopAutoRefresh();
     stopOrderAlerts();
+    // Sem isto a conexao SSE do PDV sobreviveria ao logout, ainda ligada ao PDV anterior
+    desconectarEventosDoPdv();
     await request("/api/auth/logout", { method: "POST" });
     state.user = null;
     renderLogin();
@@ -395,6 +397,8 @@ async function route(view) {
       });
     } else {
       stopOrderAlerts();
+      // Canal so do PDV: o de alertas de pedido e do Almoxarifado e transmite tudo a todos
+      conectarEventosDoPdv();
     }
   } catch (error) {
     console.error(`Erro ao carregar a tela ${view}:`, error);
@@ -3709,64 +3713,102 @@ function openDamagePhotoViewer(photos, initialIndex, product) {
   document.body.appendChild(modal);
 }
 
+// Núcleo do quadro de assinatura, compartilhado entre a devolução de avaria e o inventário.
+//
+// Só o desenho mora aqui: traço, limpeza, detecção de tinta e exportação em PNG. O que cada
+// tela faz com a assinatura (qual campo preenche, o que habilita) fica com ela. Antes deste
+// recorte o desenho existia num lugar só, amarrado ao formulário de avaria — a tela de
+// inventário precisaria copiar tudo para reaproveitar o traço.
+function ligarQuadroDeAssinatura(canvas, { aoDesenhar } = {}) {
+  const ctx = canvas.getContext("2d");
+  let desenhando = false;
+  let temTinta = false;
+
+  const limpar = () => {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.strokeStyle = "#005f68";
+    ctx.lineWidth = 4;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    temTinta = false;
+    aoDesenhar?.(false);
+  };
+  // Converte a posição do ponteiro para a escala interna do canvas: o CSS pode exibi-lo com
+  // largura diferente da declarada, e sem essa conta o traço sai deslocado do cursor.
+  const ponto = (evento) => {
+    const area = canvas.getBoundingClientRect();
+    const fonte = evento.touches?.[0] || evento;
+    return {
+      x: ((fonte.clientX - area.left) / area.width) * canvas.width,
+      y: ((fonte.clientY - area.top) / area.height) * canvas.height
+    };
+  };
+  const comecar = (evento) => {
+    evento.preventDefault();
+    desenhando = true;
+    const p = ponto(evento);
+    ctx.beginPath();
+    ctx.moveTo(p.x, p.y);
+  };
+  const mover = (evento) => {
+    if (!desenhando) return;
+    evento.preventDefault();
+    const p = ponto(evento);
+    ctx.lineTo(p.x, p.y);
+    ctx.stroke();
+    temTinta = true;
+    aoDesenhar?.(true);
+  };
+  const terminar = () => {
+    desenhando = false;
+  };
+
+  limpar();
+  canvas.addEventListener("mousedown", comecar);
+  canvas.addEventListener("mousemove", mover);
+  window.addEventListener("mouseup", terminar);
+  canvas.addEventListener("touchstart", comecar, { passive: false });
+  canvas.addEventListener("touchmove", mover, { passive: false });
+  canvas.addEventListener("touchend", terminar);
+
+  return {
+    limpar,
+    temTinta: () => temTinta,
+    comoPng: () => canvas.toDataURL("image/png")
+  };
+}
+
 // Liga os eventos de assinatura de avaria
 function bindDamageSignatures(root = document) {
   root.querySelectorAll(".signature-pad").forEach((canvas) => {
     if (canvas.dataset.bound === "true") return;
     canvas.dataset.bound = "true";
     const form = canvas.closest("form");
-    const ctx = canvas.getContext("2d");
     const hidden = form?.querySelector('input[name="assinatura_imagem"]');
     const confirmButton = form?.querySelector(".confirm-signature");
     const receiveButton = form?.querySelector(".confirm-receiving");
     const status = form?.querySelector(".signature-status");
     const panel = form?.querySelector(".signature-pad-wrap");
-    let drawing = false;
-    let hasInk = false;
     let signatureConfirmed = false;
 
+    // O traço vem do núcleo compartilhado; aqui fica só o que é próprio da avaria
+    const quadro = ligarQuadroDeAssinatura(canvas, {
+      aoDesenhar: () => {
+        // Qualquer traço novo invalida a assinatura já confirmada
+        signatureConfirmed = false;
+        if (hidden) hidden.value = "";
+        validate();
+      }
+    });
+    const hasInk = () => quadro.temTinta();
     const clear = () => {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.fillStyle = "#fff";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.strokeStyle = "#005f68";
-      ctx.lineWidth = 4;
-      ctx.lineCap = "round";
-      ctx.lineJoin = "round";
-      hasInk = false;
+      quadro.limpar();
       signatureConfirmed = false;
       if (hidden) hidden.value = "";
       if (status) status.textContent = "Aguardando assinatura do responsável pelo ponto.";
       validate();
-    };
-    const point = (event) => {
-      const rect = canvas.getBoundingClientRect();
-      const source = event.touches?.[0] || event;
-      return {
-        x: ((source.clientX - rect.left) / rect.width) * canvas.width,
-        y: ((source.clientY - rect.top) / rect.height) * canvas.height
-      };
-    };
-    const start = (event) => {
-      event.preventDefault();
-      drawing = true;
-      const p = point(event);
-      ctx.beginPath();
-      ctx.moveTo(p.x, p.y);
-    };
-    const move = (event) => {
-      if (!drawing) return;
-      event.preventDefault();
-      const p = point(event);
-      ctx.lineTo(p.x, p.y);
-      ctx.stroke();
-      hasInk = true;
-      signatureConfirmed = false;
-      if (hidden) hidden.value = "";
-      validate();
-    };
-    const end = () => {
-      drawing = false;
     };
     const validate = () => {
       const responsible = String(form?.querySelector('[name="responsavel_entrega_nome"]')?.value || "").trim();
@@ -3777,12 +3819,6 @@ function bindDamageSignatures(root = document) {
     };
 
     clear();
-    canvas.addEventListener("mousedown", start);
-    canvas.addEventListener("mousemove", move);
-    window.addEventListener("mouseup", end);
-    canvas.addEventListener("touchstart", start, { passive: false });
-    canvas.addEventListener("touchmove", move, { passive: false });
-    canvas.addEventListener("touchend", end);
     form?.querySelectorAll("input, textarea").forEach((field) => field.addEventListener("input", validate));
     form?.querySelectorAll(".clear-signature").forEach((button) => button.addEventListener("click", clear));
     form?.querySelector(".open-signature-panel")?.addEventListener("click", () => {
@@ -3793,11 +3829,11 @@ function bindDamageSignatures(root = document) {
       panel?.classList.add("hidden");
     });
     confirmButton?.addEventListener("click", () => {
-      if (!hasInk) {
+      if (!hasInk()) {
         toast("Assine no campo antes de confirmar.", "error");
         return;
       }
-      if (hidden) hidden.value = canvas.toDataURL("image/png");
+      if (hidden) hidden.value = quadro.comoPng();
       signatureConfirmed = true;
       if (status) status.textContent = "Assinatura confirmada e vinculada a esta devolução.";
       form?.querySelector(".open-signature-panel") && (form.querySelector(".open-signature-panel").textContent = "Visualizar assinatura");
@@ -9817,11 +9853,21 @@ function atualizarResumoInventario() {
   if (!alvo) return;
   const { total, contados, semContagem } = resumoContagemNaTela();
   alvo.innerHTML = `<strong>${contados}</strong> de ${total} contados`
-    + (semContagem ? ` &middot; <span class="inventario-pendente">${semContagem} sem contagem</span>` : "");
+    + (semContagem ? ` &middot; <span class="inventario-pendente">${semContagem} sem contagem (serão zerados)</span>` : "");
 }
 
 // View: contagem de inventário do PDV
 async function viewInventario(options = {}) {
+  // Assinatura pendente tem prioridade: e o unico passo em que o inventario esta parado
+  // esperando o PDV, e deixa-lo escondido atras da tela de contagem travaria o fluxo.
+  const pendente = await request("/api/pdv/inventario/assinatura", { silentLoading: true }).catch(() => null);
+  if (pendente?.inventario) {
+    shell(blocoAssinaturaInventario(pendente.inventario, pendente.itens || []));
+    bindAssinaturaInventario(pendente.inventario.codigo_inventario);
+    document.querySelector(".nav-btn[data-view='inventario']")?.classList.remove("tem-pendencia");
+    return;
+  }
+
   const data = await request("/api/pdv/inventario", { silentLoading: Boolean(options.auto) });
   const { janela, inventario, itens = [], produtos = [] } = data;
   const contagens = new Map(itens.map((item) => [item.sku_produto, item]));
@@ -9860,7 +9906,8 @@ async function viewInventario(options = {}) {
       ${somenteLeitura
         ? `<div class="release-alert card"><strong>Contagem enviada ao Almoxarifado.</strong>
            <p>A partir daqui quem ajusta é o Almoxarifado. Você será avisado quando precisar assinar.</p></div>`
-        : `<p class="inventario-ajuda text-sm text-slate-600">Conte <strong>em unidades</strong>, não em embalagens. Deixe em branco o que você não contou — em branco é diferente de zero.</p>`}
+        : `<div class="release-alert card inventario-aviso-zera"><strong>Conte em unidades, e conte tudo.</strong>
+           <p>Todo produto que ficar <strong>sem contagem será zerado</strong> no seu estoque quando o inventário for confirmado. Se um produto não foi conferido, ele não deveria ficar em branco.</p></div>`}
 
       <div class="inventario-filtros">
         <input id="inventario-busca" type="search" placeholder="Buscar por nome ou SKU" aria-label="Buscar produto" />
@@ -9968,8 +10015,14 @@ async function enviarContagemInventario(botao, codigo) {
   const confirmado = await confirmSystem({
     title: "Enviar contagem ao Almoxarifado?",
     message: `Você contou ${contados} de ${total} produtos`
-      + (semContagem ? `, e ${semContagem} ficaram sem contagem (não serão alterados).` : ".")
+      + (semContagem
+        ? `, e ${semContagem} ficaram SEM CONTAGEM — esses serão ZERADOS no seu estoque quando o Almoxarifado confirmar.`
+        : ", ou seja, todos.")
       + " Depois de enviar, só o Almoxarifado pode alterar esta contagem.",
+    consequence: semContagem
+      ? "Se algum desses produtos existe na prateleira, volte e conte antes de enviar."
+      : "",
+    danger: semContagem > 0,
     confirmLabel: "Enviar contagem"
   });
   if (!confirmado) return;
@@ -10154,9 +10207,12 @@ async function abrirDetalheInventario(codigo) {
 
       <div class="table-wrap inventario-tabela">
         ${table(["Produto", "Contado (un)", "Saldo atual", "Diferença", "Contado em", "Ação"], itens.map((item) => {
+          // Sem contagem agora significa ZERO: o ajuste zera o que ninguem contou. Por isso a
+          // diferenca do nao contado e o saldo inteiro, e nao um traco -- esconder isso faria
+          // o Almoxarifado confirmar sem ver o tamanho da baixa que vai aplicar.
           const contado = item.quantidade_contada;
           const temContagem = contado !== null && contado !== undefined;
-          const diferenca = temContagem ? Number(contado) - Number(item.saldo_atual || 0) : null;
+          const diferenca = Number(temContagem ? contado : 0) - Number(item.saldo_atual || 0);
           return `
           <tr class="inventario-item-linha" data-id="${item.id}" data-sku="${esc(item.sku_produto)}">
             <td class="inventario-produto">${esc(item.produto || item.sku_produto)}<span class="inventario-sku">${esc(item.sku_produto)}${item.origem === "ALMOX" ? " · adicionado pelo Almoxarifado" : ""}</span></td>
@@ -10164,8 +10220,7 @@ async function abrirDetalheInventario(codigo) {
               value="${temContagem ? esc(contado) : ""}" placeholder="—"
               aria-label="Quantidade contada de ${esc(item.produto || item.sku_produto)}" ${editavel ? "" : "disabled"} /></td>
             <td class="inventario-saldo">${Number(item.saldo_atual || 0)}</td>
-            <td class="inventario-diferenca">${diferenca === null ? "<span class='text-slate-400'>não contado</span>"
-              : `<span class="${diferenca === 0 ? "inventario-dif-zero" : diferenca > 0 ? "inventario-dif-mais" : "inventario-dif-menos"}">${diferenca > 0 ? "+" : ""}${diferenca}</span>`}</td>
+            <td class="inventario-diferenca"><span class="${diferenca === 0 ? "inventario-dif-zero" : diferenca > 0 ? "inventario-dif-mais" : "inventario-dif-menos"}">${diferenca > 0 ? "+" : ""}${diferenca}</span>${temContagem ? "" : `<span class="inventario-sera-zerado">será zerado</span>`}</td>
             <td class="inventario-data">${item.contado_em ? moneyDate(item.contado_em) : "<span class='text-slate-400'>—</span>"}</td>
             <td>${editavel ? `<button class="icon-action danger inventario-remover-item" type="button"
               title="Remover do inventário" aria-label="Remover ${esc(item.sku_produto)} do inventário">&times;</button>` : ""}</td>
@@ -10481,4 +10536,136 @@ function rotuloAcaoInventario(acao) {
     inventario_excluido: "Inventário excluído",
     janela_alterada: "Janela de contagem alterada"
   }[acao] || acao;
+}
+
+// ===== Assinatura do inventário pelo PDV =====
+
+// Conexão de tempo real do PDV, para o chamado de assinatura chegar sem esperar o polling
+let eventosDoPdv = null;
+
+// Abre o canal só do PDV. O canal do Almoxarifado transmite tudo para todos, então não serve
+// aqui: cada ponto de venda receberia as contagens dos outros.
+function conectarEventosDoPdv() {
+  if (state.user?.role !== "pdv" || eventosDoPdv || !window.EventSource) return;
+  eventosDoPdv = new EventSource("/api/pdv/inventario/eventos");
+  eventosDoPdv.addEventListener("INVENTARIO_ASSINATURA_SOLICITADA", async () => {
+    toast("O Almoxarifado confirmou sua contagem. Assine para concluir o inventário.");
+    // Só troca de tela se o PDV não estiver no meio de outra coisa
+    if (["inventario", "mine", "my-stock"].includes(state.currentView)) await route("inventario");
+    else marcarAvisoDeAssinatura();
+  });
+  eventosDoPdv.onerror = () => {
+    // O polling da própria tela continua sendo o plano B; reconecta sozinho
+  };
+}
+
+function desconectarEventosDoPdv() {
+  eventosDoPdv?.close();
+  eventosDoPdv = null;
+}
+
+// Marca visualmente que há assinatura pendente, para quem está em outra tela
+function marcarAvisoDeAssinatura() {
+  document.querySelector(".nav-btn[data-view='inventario']")?.classList.add("tem-pendencia");
+}
+
+// Bloco de assinatura, exibido na tela de Inventário quando o Almoxarifado confirmou
+function blocoAssinaturaInventario(inventario, itens) {
+  const zerados = itens.filter((i) => i.quantidade_contada === null || i.quantidade_contada === undefined).length;
+  return `
+    <section class="card inventario-assinatura-card">
+      <div class="mb-3">
+        <p class="eyebrow">Conferência concluída</p>
+        <h3 class="section-title text-xl font-black">Assine para concluir o inventário ${esc(inventario.codigo_inventario)}</h3>
+        <p class="text-sm text-slate-600">Confirmado por ${esc(inventario.confirmado_por || "Almoxarifado")}
+          em ${esc(inventario.confirmado_em ? moneyDate(inventario.confirmado_em) : "-")}.</p>
+      </div>
+
+      <div class="release-alert card">
+        <strong>Ao assinar, o seu estoque passa a ser exatamente o que está abaixo.</strong>
+        <p>${zerados
+          ? `${zerados} produto(s) ficaram sem contagem e <strong>serão zerados</strong>.`
+          : "Todos os produtos foram contados."} Confira antes de assinar — depois disso, só um novo inventário corrige.</p>
+      </div>
+
+      <div class="table-wrap inventario-tabela">
+        ${table(["Produto", "Contado (un)", "Saldo atual", "Ficará com"], itens.map((item) => {
+          const temContagem = item.quantidade_contada !== null && item.quantidade_contada !== undefined;
+          const final = temContagem ? Number(item.quantidade_contada) : 0;
+          const atual = Number(item.saldo_atual || 0);
+          return `
+          <tr>
+            <td class="inventario-produto">${esc(item.produto || item.sku_produto)}<span class="inventario-sku">${esc(item.sku_produto)}</span></td>
+            <td>${temContagem ? esc(item.quantidade_contada) : `<span class="inventario-nao-contado">não contado</span>`}</td>
+            <td class="inventario-saldo">${atual}</td>
+            <td class="inventario-diferenca"><span class="${final === atual ? "inventario-dif-zero" : final > atual ? "inventario-dif-mais" : "inventario-dif-menos"}">${final}</span>${temContagem ? "" : `<span class="inventario-sera-zerado">será zerado</span>`}</td>
+          </tr>`;
+        }))}
+      </div>
+
+      <div class="inventario-assinatura-area">
+        <label class="grid gap-1 text-sm font-bold">Quem está assinando
+          <input id="inventario-assinante" type="text" placeholder="Nome completo do responsável" autocomplete="off" />
+        </label>
+        <p class="eyebrow">Assinatura do responsável pelo ponto</p>
+        <canvas id="inventario-assinatura-pad" class="signature-pad" width="720" height="220"
+          aria-label="Área para assinatura do responsável pelo ponto"></canvas>
+        <div class="signature-actions">
+          <button class="btn secondary" id="inventario-assinatura-limpar" type="button">Limpar</button>
+          <button class="btn" id="inventario-assinatura-confirmar" type="button">Assinar e concluir inventário</button>
+        </div>
+      </div>
+    </section>`;
+}
+
+// Liga o quadro de assinatura e o envio
+function bindAssinaturaInventario(codigo) {
+  const canvas = document.querySelector("#inventario-assinatura-pad");
+  if (!canvas) return;
+  // Mesmo núcleo de desenho usado na assinatura de devolução de avaria
+  const quadro = ligarQuadroDeAssinatura(canvas);
+
+  document.querySelector("#inventario-assinatura-limpar")?.addEventListener("click", () => quadro.limpar());
+  document.querySelector("#inventario-assinatura-confirmar")?.addEventListener("click", async (evento) => {
+    const botao = evento.currentTarget;
+    if (!quadro.temTinta()) {
+      toast("Assine no quadro antes de concluir.", "error");
+      return;
+    }
+    const assinante = String(document.querySelector("#inventario-assinante")?.value || "").trim();
+    if (!assinante) {
+      toast("Informe o nome de quem está assinando.", "error");
+      return;
+    }
+
+    const confirmado = await confirmSystem({
+      title: "Concluir o inventário?",
+      message: "O seu estoque passa a ser exatamente o que foi conferido nesta tela.",
+      consequence: "Depois de assinar, só um novo inventário corrige.",
+      confirmLabel: "Assinar e concluir",
+      danger: true
+    });
+    if (!confirmado) return;
+
+    const textoAnterior = botao.textContent;
+    botao.disabled = true;
+    botao.textContent = "Concluindo...";
+    try {
+      const r = await request("/api/pdv/inventario/assinatura", {
+        method: "POST",
+        body: JSON.stringify({
+          codigo_inventario: codigo,
+          assinatura: quadro.comoPng(),
+          assinado_por: assinante
+        })
+      });
+      toast(`Inventário concluído. ${r.itens} produto(s) ajustado(s)${r.zerados ? `, ${r.zerados} zerado(s)` : ""}.`);
+      await viewInventario();
+    } catch (error) {
+      toast(error.message || "Não foi possível concluir o inventário.", "error");
+    } finally {
+      botao.disabled = false;
+      botao.textContent = textoAnterior;
+    }
+  });
 }

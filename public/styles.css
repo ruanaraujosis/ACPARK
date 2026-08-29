@@ -6779,3 +6779,45 @@ td input[type="number"] {
     min-width: 0;
   }
 }
+
+/* ===== Assinatura do inventário pelo PDV ===== */
+
+.inventario-assinatura-card {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.inventario-assinatura-area {
+  display: grid;
+  gap: 0.6rem;
+  padding: 0.9rem;
+  border: 1px solid rgba(0, 123, 135, 0.16);
+  border-radius: 16px;
+  background: rgba(16, 182, 199, 0.05);
+}
+
+/* Marca no menu que há assinatura esperando, para quem está em outra tela */
+.nav-btn.tem-pendencia::after {
+  content: "";
+  display: inline-block;
+  width: 0.55rem;
+  height: 0.55rem;
+  margin-left: 0.45rem;
+  border-radius: 50%;
+  background: #f4760f;
+}
+
+/* "será zerado" ao lado do produto sem contagem: é a consequência mais dura da tela */
+.inventario-sera-zerado {
+  display: block;
+  color: #b91c1c;
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+/* Avisos de que a contagem em branco zera o estoque */
+.inventario-aviso-zera {
+  border-color: rgba(180, 83, 9, 0.3);
+  background: rgba(251, 191, 36, 0.1);
+}

@@ -347,13 +347,43 @@ aparecer no destino, e ninguém saberia sem conferir os dois locais.
 | Local        | Movimento                                 | Quem lança na OMIE |
 | ------------ | ----------------------------------------- | ------------------ |
 | Almoxarifado | Saída por transferência para o PDV        | **MyEstoque**      |
-| Almoxarifado | Compras, notas, inventário, ajustes       | Fora do MyEstoque  |
+| Almoxarifado | Compras, notas, ajustes avulsos           | Fora do MyEstoque  |
+| Almoxarifado | Ajuste por inventário                     | **MyEstoque**      |
 | PDV          | Entrada por transferência do Almoxarifado | **MyEstoque**      |
+| PDV          | Ajuste por inventário                     | **MyEstoque**      |
 | PDV          | Baixa por venda                           | Sistema de vendas  |
 | PDV          | Entrada por devolução de venda            | Sistema de vendas  |
 
-O MyEstoque envia **movimento, nunca saldo absoluto** — escrever saldo apagaria os lançamentos
-do sistema de vendas. O tipo `SLD` (ajuste de saldo) está travado por teste.
+Como regra, o MyEstoque envia **movimento, nunca saldo absoluto** — escrever saldo apagaria os
+lançamentos do sistema de vendas. O tipo `SLD` continua travado por teste no caminho da
+transferência (`tarefas/transferencias.js`).
+
+#### Exceção: ajuste por inventário (29/08/2026)
+
+O inventário é o **único** caso em que o MyEstoque escreve saldo absoluto, e a exceção é
+deliberada: a contagem física passa a ser a verdade, que é justamente o que o `SLD` faz.
+
+| Campo    | Valor   | Significado na tela da OMIE          |
+| -------- | ------- | ------------------------------------ |
+| `tipo`   | `SLD`   | Ajustar o saldo de estoque do dia    |
+| `motivo` | `INV`   | Ajuste por Inventário                |
+| `origem` | `AJU`   | Ajuste manual                        |
+
+Detalhes que sustentam a exceção:
+
+- o lançamento vai no **local do PDV que contou** (`pdv_stock_location_mappings`); o local do
+  Almoxarifado continua vindo de `configuracao.local_almoxarifado`, nunca adivinhado;
+- **produto sem contagem é zerado** (decisão do usuário, 29/08/2026). Por isso a quantidade
+  zero é válida aqui e recusada no movimento: `normalizarQuantidadeInventario()` existe
+  separada de `normalizarQuantidade()` para não afrouxar a proteção da transferência;
+- idempotência por inventário + produto (`INVENTARIO-{código}-SKU-{sku}-AJUSTE`), sem versão:
+  inventário confirmado nunca é reaberto — corrigir é abrir outro;
+- nasce em `SIMULACAO` como qualquer capacidade de escrita.
+
+**Risco conhecido e aceito:** entre a contagem e o envio o PDV continua vendendo, e o sistema
+de vendas dá baixa no mesmo local. O saldo gravado não reflete essas vendas. O sistema não
+bloqueia — mostra a idade da contagem na lista, destaca contagens com 2+ dias e avisa o
+Almoxarifado na confirmação. Quem decide é o Almoxarifado.
 
 ### Modo simulação
 

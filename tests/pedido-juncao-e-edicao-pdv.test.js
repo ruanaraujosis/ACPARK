@@ -2,9 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 
-const rotas = fs.readFileSync("server/modules/pedidos/pedidos.routes.js", "utf8");
-const app = fs.readFileSync("public/app.js", "utf8");
-const alerts = fs.readFileSync("public/js/services/order-alerts.js", "utf8");
+const rotas = fs.readFileSync("server/modules/pedidos/pedidos.routes.js", "utf8").split("\r\n").join("\n");
+const app = fs.readFileSync("public/app.js", "utf8").split("\r\n").join("\n");
+const alerts = fs.readFileSync("public/js/services/order-alerts.js", "utf8").split("\r\n").join("\n");
 
 // ===== Junção de pedidos na janela =====
 

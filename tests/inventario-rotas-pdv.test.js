@@ -2,8 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 
-const rotas = fs.readFileSync("server/modules/inventarios/inventarios.routes.js", "utf8");
-const index = fs.readFileSync("server/index.js", "utf8");
+const rotas = fs.readFileSync("server/modules/inventarios/inventarios.routes.js", "utf8").split("\r\n").join("\n");
+const index = fs.readFileSync("server/index.js", "utf8").split("\r\n").join("\n");
 
 test("as rotas de inventário estão registradas no servidor", () => {
   assert.match(index, /import \{ handleInventariosRoutes \}/);

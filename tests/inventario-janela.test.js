@@ -4,7 +4,7 @@ import fs from "node:fs";
 import { avaliarJanela, formatarDataBr, hojeEmSaoPaulo } from "../server/services/inventarios/janela-contagem.service.js";
 import { STATUS_ABERTOS } from "../server/modules/inventarios/inventarios.schema.js";
 
-const schema = fs.readFileSync("server/modules/inventarios/inventarios.schema.js", "utf8");
+const schema = fs.readFileSync("server/modules/inventarios/inventarios.schema.js", "utf8").split("\r\n").join("\n");
 
 // ===== Janela de contagem =====
 

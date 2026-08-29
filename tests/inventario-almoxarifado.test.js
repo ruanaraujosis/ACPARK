@@ -2,11 +2,16 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 
-const rotas = fs.readFileSync("server/modules/inventarios/inventarios.routes.js", "utf8");
-const app = fs.readFileSync("public/app.js", "utf8");
+const rotas = fs.readFileSync("server/modules/inventarios/inventarios.routes.js", "utf8").split("\r\n").join("\n");
+const app = fs.readFileSync("public/app.js", "utf8").split("\r\n").join("\n");
 
-// Corpo das rotas do Almoxarifado, para as asserções não dependerem de tamanho fixo de fatia
-const admin = rotas.slice(rotas.indexOf("async function rotasDoAlmoxarifado"));
+// Corpo das rotas do Almoxarifado, para as asserções não dependerem de tamanho fixo de fatia.
+// Termina onde começa o bloco de assinatura: aquelas rotas moram no mesmo arquivo e são do
+// PDV, então incluí-las aqui faria a checagem de papel encontrar "pdv" e falhar sem motivo.
+const admin = rotas.slice(
+  rotas.indexOf("async function rotasDoAlmoxarifado"),
+  rotas.indexOf("// ===== Assinatura do PDV e aplicação do ajuste =====")
+);
 
 // ===== Servidor =====
 
@@ -118,12 +123,15 @@ test("a aba Inventários é do Almoxarifado e está no roteador", () => {
   assert.match(app, /inventarios: viewInventarios,/);
 });
 
-test("produto não contado aparece como 'não contado', nunca como diferença negativa", () => {
-  // Mostrar -9 para quem não foi contado sugeriria que o produto seria zerado — e não será.
+test("produto não contado mostra a baixa inteira, porque será zerado", () => {
+  // Regra invertida pelo usuário em 29/08/2026: quem não foi contado é ZERADO. Antes a tela
+  // mostrava um traço, na premissa oposta. Esconder a diferença faria o Almoxarifado
+  // confirmar sem ver o tamanho da baixa que vai aplicar.
   const inicio = app.indexOf("async function abrirDetalheInventario");
   const corpo = app.slice(inicio, app.indexOf("\n}\n", inicio));
-  assert.match(corpo, /const diferenca = temContagem \? Number\(contado\) - Number\(item\.saldo_atual \|\| 0\) : null;/);
-  assert.match(corpo, /diferenca === null \? "<span class='text-slate-400'>não contado<\/span>"/);
+  assert.match(corpo, /const diferenca = Number\(temContagem \? contado : 0\) - Number\(item\.saldo_atual \|\| 0\);/);
+  assert.match(corpo, /inventario-sera-zerado/, "precisa marcar visualmente o que será zerado");
+  assert.doesNotMatch(corpo, /diferenca === null/, "não contado deixou de ser 'sem diferença'");
 });
 
 test("o alternador da tela é o inverso da chave de bloqueio", () => {
