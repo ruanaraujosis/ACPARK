@@ -499,7 +499,11 @@ async function rotasDoAlmoxarifado(req, res, context) {
       itens,
       historico,
       dias_desde_contagem: idadeEmDias(maisAntiga),
-      contagem_antiga: idadeEmDias(maisAntiga) >= DIAS_CONTAGEM_ANTIGA
+      contagem_antiga: idadeEmDias(maisAntiga) >= DIAS_CONTAGEM_ANTIGA,
+      // O aviso da simulacao vem do historico, nao do modo atual da integracao: o que importa
+      // e como estava QUANDO o ajuste foi aplicado. Ligar a integracao para REAL depois nao
+      // desfaz a sobrescrita que ja aconteceu.
+      ajustado_em_simulacao: historico.some((linha) => linha.acao === "ajuste_em_simulacao")
     });
     return true;
   }
@@ -1181,7 +1185,31 @@ async function rotasInventarioDoAlmoxarifado(req, res, context) {
 
         const { integracao, configuracao } = await integracaoAtiva(client);
         const fila = await enfileirarAjusteNaOmie(client, { inventario, aplicados, integracao, configuracao });
-        return { codigo_inventario: inventario.codigo_inventario, itens: aplicados.length, zerados, fila };
+
+        // Em simulacao o ajuste nao chega na OMIE, e a tarefa ESTOQUE_ALMOXARIFADO reescreve
+        // qtd_total com o saldo de la na proxima sincronizacao. Isso precisa aparecer na tela
+        // e ficar no historico -- quem olhar depois tem de entender por que o numero mudou.
+        const simulacao = String(configuracao?.modo_escrita || "").toUpperCase() !== "REAL";
+        if (simulacao) {
+          await auditarInventario(client, {
+            inventarioId: inventario.id,
+            codigoInventario: inventario.codigo_inventario,
+            acao: "ajuste_em_simulacao",
+            usuario: assinadoPor,
+            observacao:
+              "Ajuste registrado localmente. Como a integração com a OMIE está em modo simulação, " +
+              "a próxima sincronização vai sobrescrever o estoque central com o saldo atual da OMIE.",
+            dados: { origem: "almoxarifado", modo_escrita: "SIMULACAO" }
+          });
+        }
+
+        return {
+          codigo_inventario: inventario.codigo_inventario,
+          itens: aplicados.length,
+          zerados,
+          fila,
+          simulacao
+        };
       });
 
       publishOrderAlert("INVENTARIO_STATUS_CHANGED", {

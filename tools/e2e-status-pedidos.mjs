@@ -115,7 +115,11 @@ function limparCenario(pdvId) {
     const codigos = await client.query("SELECT DISTINCT codigo_pedido FROM pedidos WHERE pdv_id = $1", [pdvId]);
     for (const row of codigos.rows) {
       await client.query("DELETE FROM pedido_auditoria WHERE codigo_pedido = $1", [row.codigo_pedido]);
-      await client.query("DELETE FROM pedido_historico WHERE codigo_pedido = $1", [row.codigo_pedido]);
+      // `pedido_historico` nao existe: nao esta em db/estrutura.dump nem em producao. A linha
+      // que a apagava vinha de 36ff9f6 (10/08/2026) e derrubava a limpeza no `finally`, DEPOIS
+      // de as verificacoes rodarem -- o processo morria antes de imprimir o resultado e o
+      // cenario ficava para tras. E por isso que producao acumulou PDV, produto e pedidos com
+      // a marca E2E-STATUS: toda execucao desde entao deixou lixo.
     }
     await client.query("DELETE FROM pedido_idempotencia WHERE pdv_id = $1", [pdvId]);
     await client.query("DELETE FROM pedido_rascunhos WHERE pdv_id = $1", [pdvId]);

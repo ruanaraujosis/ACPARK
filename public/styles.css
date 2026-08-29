@@ -6962,3 +6962,44 @@ td input[type="number"] {
     width: auto;
   }
 }
+
+/* Emissao de aviso pelo Almoxarifado */
+.aviso-emissao-card { margin-top: 1rem; }
+
+.aviso-emissao-form {
+  display: grid;
+  grid-template-columns: minmax(14rem, 1fr) 11rem auto;
+  gap: 0.65rem;
+  align-items: end;
+  margin-bottom: 0.85rem;
+}
+
+.aviso-ativos-lista { display: grid; gap: 0.5rem; margin-top: 0.5rem; }
+
+.aviso-ativo {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid rgba(0, 123, 135, 0.16);
+  border-left: 4px solid var(--ac-teal, #007b87);
+  border-radius: 12px;
+  background: rgba(16, 182, 199, 0.04);
+}
+
+.aviso-ativo.is-agendamento { border-left-color: #f4760f; background: rgba(251, 191, 36, 0.07); }
+.aviso-ativo strong { display: block; color: var(--ac-teal-dark); font-size: 0.88rem; font-weight: 900; }
+.aviso-ativo span { display: block; color: #475569; font-size: 0.8rem; font-weight: 600; }
+.aviso-ativo-nota { color: #64748b !important; font-size: 0.74rem !important; font-style: italic; }
+
+/* Ajuste que ficou so no MyEstoque por causa do modo simulacao */
+.inventario-aviso-simulacao {
+  border-color: rgba(2, 132, 199, 0.3);
+  background: rgba(56, 189, 248, 0.1);
+}
+
+@media (max-width: 720px) {
+  .aviso-emissao-form { grid-template-columns: 1fr; }
+  .aviso-ativo { flex-direction: column; align-items: stretch; }
+}

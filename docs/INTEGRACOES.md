@@ -385,6 +385,15 @@ de vendas dá baixa no mesmo local. O saldo gravado não reflete essas vendas. O
 bloqueia — mostra a idade da contagem na lista, destaca contagens com 2+ dias e avisa o
 Almoxarifado na confirmação. Quem decide é o Almoxarifado.
 
+**Enquanto o modo for `SIMULACAO`, o inventário do Almoxarifado se desfaz sozinho.**
+`produtos.qtd_total` é espelho do saldo da OMIE: a capacidade `ESTOQUE_ALMOXARIFADO` o
+reescreve a cada sincronização. Como em simulação o ajuste não chega ao ERP, a sincronização
+seguinte devolve o valor antigo. Isso não é erro de contagem, e some quando o modo virar
+`REAL`. Para não depender de quem lê este documento, o sistema registra `ajuste_em_simulacao`
+na auditoria do inventário e mostra o aviso em dois lugares: ao concluir e, para sempre, no
+detalhe daquele inventário. O aviso vem do histórico, não do modo atual — ligar `REAL` depois
+não desfaz a sobrescrita que já aconteceu.
+
 ### Modo simulação
 
 `configuracao.modo_escrita` nasce em `SIMULACAO`: o payload é montado, gravado para conferência

@@ -10075,6 +10075,13 @@ async function viewInventarios(options = {}) {
   const dados = await request(`/api/admin/inventarios${filtro ? `?status=${encodeURIComponent(filtro)}` : ""}`,
     { silentLoading: Boolean(options.auto) });
   const { inventarios = [], janela } = dados;
+  // Avisos no ar, para o Almoxarifado ver e encerrar o que emitiu
+  const avisosAtivos = await request("/api/avisos", { silentLoading: true })
+    .then((r) => r.avisos || [])
+    .catch(() => []);
+  // Contagem do proprio Almoxarifado: mora na mesma aba, logo abaixo da lista
+  const contagemPropria = await request("/api/admin/inventario/proprio", { silentLoading: true })
+    .catch(() => ({ inventario: null, itens: [], produtos: [] }));
 
   shell(`
     <section class="card">
@@ -10106,9 +10113,14 @@ async function viewInventarios(options = {}) {
           </tr>`))
         : `<p class="text-sm text-slate-500">Nenhum inventário ${filtro ? "neste estado" : "registrado"}.</p>`}
     </section>
+    ${blocoContagemDoAlmoxarifado(contagemPropria)}
+    ${blocoEmissaoDeAviso(avisosAtivos)}
     <section id="inventario-detalhe"></section>`);
 
   bindInventariosAdmin();
+  bindEmissaoDeAviso();
+  atualizarResumoAlmox();
+  bindContagemDoAlmoxarifado(contagemPropria?.inventario?.codigo_inventario || null);
   if (inventarioAdmin.codigoAberto) await abrirDetalheInventario(inventarioAdmin.codigoAberto);
 }
 
@@ -10200,6 +10212,13 @@ async function abrirDetalheInventario(codigo) {
         <button class="order-panel-timeline-open inventario-historico-abrir" type="button"
           aria-label="Histórico de edição do inventário" title="Histórico de edição do inventário">🕐</button>
       </div>
+
+      ${dados.ajustado_em_simulacao ? `<div class="release-alert card inventario-aviso-simulacao">
+        <strong>Este ajuste ficou só no MyEstoque.</strong>
+        <p>Quando ele foi aplicado, a integração com a OMIE estava em modo simulação: o
+        lançamento não foi enviado, e a próxima sincronização sobrescreve o estoque central
+        com o saldo atual da OMIE. Se o número mudou de novo depois desta contagem, foi por
+        isso.</p></div>` : ""}
 
       ${dados.contagem_antiga ? `<div class="release-alert card inventario-aviso-antiga">
         <strong>Esta contagem foi feita há ${dados.dias_desde_contagem} dias.</strong>
@@ -10540,6 +10559,7 @@ function rotuloAcaoInventario(acao) {
     item_removido: "Produto removido",
     inventario_confirmado: "Contagem confirmada",
     inventario_excluido: "Inventário excluído",
+    ajuste_em_simulacao: "Ajuste não enviado (modo simulação)",
     janela_alterada: "Janela de contagem alterada"
   }[acao] || acao;
 }
@@ -10691,9 +10711,13 @@ function reiniciarAvisosDaSessao() {
   avisosCarregados = [];
 }
 
-// Busca os avisos ativos e desenha sino e banner
+// Busca os avisos ativos e desenha sino e banner.
+//
+// So para o PDV: o aviso existe para alcancar quem esta na loja. O Almoxarifado e quem emite,
+// e ja ve os avisos no ar na propria aba Inventarios -- para ele o banner nao informa nada e
+// ainda cobre o alternador de contagem, que fica no mesmo canto da tela.
 async function carregarAvisos() {
-  if (!state.user) return;
+  if (state.user?.role !== "pdv") return;
   try {
     const dados = await request("/api/avisos", { silentLoading: true });
     avisosCarregados = dados.avisos || [];
@@ -10769,4 +10793,331 @@ function desenharAvisos() {
       desenharAvisos();
     })
   );
+}
+
+// ===== Emissão de aviso manual (Almoxarifado) =====
+
+// Cartão de emissão + lista dos avisos ativos, ao lado do controle da janela de contagem
+function blocoEmissaoDeAviso(avisos = []) {
+  const manuais = avisos.filter((aviso) => aviso.tipo === "MANUAL");
+  const agendamento = avisos.find((aviso) => aviso.tipo === "INVENTARIO_AGENDADO");
+  return `
+    <section class="card aviso-emissao-card">
+      <div class="mb-3">
+        <p class="eyebrow">Comunicação</p>
+        <h4 class="section-title text-lg font-black">Avisar os PDVs</h4>
+        <p class="text-sm text-slate-600">O aviso aparece no sino e no banner de todos os PDVs.
+        Cada um pode fechar o banner, mas ele volta no próximo login.</p>
+      </div>
+
+      <div class="aviso-emissao-form">
+        <label class="grid gap-1 text-sm font-bold">Mensagem do aviso
+          <textarea id="aviso-mensagem" rows="3" maxlength="500"
+            placeholder="Ex.: Não haverá entrega na sexta-feira."></textarea>
+        </label>
+        <label class="grid gap-1 text-sm font-bold">Válido até (opcional)
+          <input id="aviso-expira" type="date" />
+        </label>
+        <button class="btn" id="aviso-enviar" type="button">Enviar aviso</button>
+      </div>
+
+      ${agendamento ? `<div class="aviso-ativo is-agendamento">
+        <div>
+          <strong>${esc(agendamento.titulo)}</strong>
+          <span>${esc(agendamento.mensagem)}</span>
+        </div>
+        <span class="aviso-ativo-nota">Sai sozinho quando a data passa. Para encerrar antes, limpe a data acima.</span>
+      </div>` : ""}
+
+      ${manuais.length
+        ? `<div class="aviso-ativos-lista">
+            <p class="eyebrow">Avisos manuais no ar</p>
+            ${manuais.map((aviso) => `
+              <div class="aviso-ativo" data-aviso="${aviso.id}">
+                <div>
+                  <strong>${esc(aviso.titulo)}</strong>
+                  <span>${esc(aviso.mensagem)}</span>
+                  <span class="aviso-ativo-nota">Emitido em ${esc(moneyDate(aviso.criado_em))}${
+                    aviso.expira_em ? ` &middot; até ${esc(moneyDate(aviso.expira_em))}` : " &middot; sem prazo"}</span>
+                </div>
+                <button class="btn secondary aviso-encerrar" type="button" data-aviso="${aviso.id}">Encerrar</button>
+              </div>`).join("")}
+          </div>`
+        : `<p class="text-sm text-slate-500">Nenhum aviso manual no ar.</p>`}
+    </section>`;
+}
+
+// Liga emissão e encerramento
+function bindEmissaoDeAviso() {
+  document.querySelector("#aviso-enviar")?.addEventListener("click", async (evento) => {
+    const botao = evento.currentTarget;
+    const mensagem = String(document.querySelector("#aviso-mensagem")?.value || "").trim();
+    if (!mensagem) {
+      toast("Escreva a mensagem do aviso.", "error");
+      return;
+    }
+    const expira = document.querySelector("#aviso-expira")?.value || "";
+    const textoAnterior = botao.textContent;
+    botao.disabled = true;
+    botao.textContent = "Enviando...";
+    try {
+      await request("/api/admin/avisos", {
+        method: "POST",
+        body: JSON.stringify({ mensagem, expira_em: expira })
+      });
+      toast("Aviso enviado aos PDVs.");
+      await viewInventarios();
+    } catch (error) {
+      toast(error.message || "Não foi possível enviar o aviso.", "error");
+    } finally {
+      botao.disabled = false;
+      botao.textContent = textoAnterior;
+    }
+  });
+
+  document.querySelectorAll(".aviso-encerrar").forEach((botao) =>
+    botao.addEventListener("click", async () => {
+      const confirmado = await confirmSystem({
+        title: "Encerrar este aviso?",
+        message: "Ele some do sino e do banner dos PDVs imediatamente.",
+        consequence: "O registro do aviso continua guardado; só deixa de ser exibido.",
+        confirmLabel: "Encerrar aviso"
+      });
+      if (!confirmado) return;
+      try {
+        await request("/api/admin/avisos", {
+          method: "DELETE",
+          body: JSON.stringify({ id: Number(botao.dataset.aviso) })
+        });
+        toast("Aviso encerrado.");
+        await viewInventarios();
+      } catch (error) {
+        toast(error.message || "Não foi possível encerrar o aviso.", "error");
+      }
+    })
+  );
+}
+
+// ===== Tela de contagem do próprio Almoxarifado =====
+//
+// Mesma tabela e as mesmas regras da contagem do PDV (unidade, branco != zero, filtro e
+// busca), com uma diferença: aqui não há repasse, então a mesma tela que conta é a que
+// assina e conclui.
+
+// Bloco da contagem, exibido dentro da aba Inventários
+function blocoContagemDoAlmoxarifado(dados) {
+  const { inventario, itens = [], produtos = [] } = dados;
+  const contagens = new Map(itens.map((item) => [item.sku_produto, item]));
+  const categorias = [...new Set(produtos.flatMap((p) => String(p.categoria || "").split(",").map((c) => c.trim()).filter(Boolean)))]
+    .sort((a, b) => a.localeCompare(b, "pt-BR"));
+
+  if (!inventario) {
+    return `
+      <section class="card">
+        <p class="eyebrow">Contagem do Almoxarifado</p>
+        <h4 class="section-title text-lg font-black">Contar o estoque central</h4>
+        <p class="mt-2 text-sm text-slate-600">Você conta, assina e conclui na mesma tela —
+        não há segunda parte para conferir.</p>
+        <button class="btn mt-3" id="almox-inventario-iniciar" type="button">Iniciar contagem do Almoxarifado</button>
+      </section>`;
+  }
+
+  return `
+    <section class="card inventario-card" id="almox-contagem">
+      <div class="inventario-topo">
+        <div>
+          <p class="eyebrow">Contagem do Almoxarifado</p>
+          <h4 class="section-title text-lg font-black">${esc(inventario.codigo_inventario)}</h4>
+          <span class="status-chip">${esc(inventario.status)}</span>
+        </div>
+        <div id="almox-resumo" class="inventario-resumo"></div>
+      </div>
+
+      <div class="release-alert card inventario-aviso-zera">
+        <strong>Conte em unidades, e conte tudo.</strong>
+        <p>Todo produto que ficar <strong>sem contagem será zerado</strong> no estoque central
+        ao concluir. Se um produto não foi conferido, ele não deveria ficar em branco.</p>
+      </div>
+
+      <div class="inventario-filtros">
+        <input id="almox-busca" type="search" placeholder="Buscar por nome ou SKU" aria-label="Buscar produto" />
+        <select id="almox-categoria" aria-label="Filtrar por categoria">
+          <option value="">Todas as categorias</option>
+          ${categorias.map((c) => `<option value="${esc(c.toLowerCase())}">${esc(c)}</option>`).join("")}
+        </select>
+        <label class="inventario-so-pendentes"><input type="checkbox" id="almox-pendentes" /> Só os não contados</label>
+      </div>
+
+      <div class="table-wrap inventario-tabela">
+        ${produtos.length
+          ? table(["Produto", "Categoria", "Contagem (un)", "Saldo central", "Contado em"], produtos.map((p) => {
+              const contado = contagens.get(p.sku);
+              const valor = contado?.quantidade_contada;
+              const preenchido = valor !== null && valor !== undefined;
+              const categoriasLinha = String(p.categoria || "").split(",").map((c) => c.trim().toLowerCase()).filter(Boolean).join("|");
+              return `
+              <tr class="almox-linha inventario-linha ${preenchido ? "is-contado" : ""}"
+                  data-sku="${esc(p.sku)}"
+                  data-busca="${esc(`${p.sku} ${p.nome} ${p.categoria || ""}`.toLowerCase())}"
+                  data-categorias="${esc(categoriasLinha)}">
+                <td class="inventario-produto">${esc(p.nome)}<span class="inventario-sku">${esc(p.sku)}</span></td>
+                <td class="inventario-categoria">${esc(p.categoria || "-")}</td>
+                <td><input class="almox-qtd inventario-qtd" type="number" min="0" step="1" inputmode="numeric"
+                  placeholder="—" value="${preenchido ? esc(valor) : ""}"
+                  aria-label="Quantidade contada de ${esc(p.nome)}" /></td>
+                <td class="inventario-saldo">${Number(p.saldo_atual || 0)}</td>
+                <td class="inventario-data">${contado?.contado_em ? moneyDate(contado.contado_em) : `<span class="inventario-nao-contado">não contado</span>`}</td>
+              </tr>`;
+            }))
+          : `<p class="text-sm text-slate-500">Nenhum produto ativo no cadastro.</p>`}
+      </div>
+
+      <div class="inventario-assinatura-area">
+        <label class="grid gap-1 text-sm font-bold">Quem está assinando
+          <input id="almox-assinante" type="text" placeholder="Nome completo do responsável" autocomplete="off" />
+        </label>
+        <p class="eyebrow">Assinatura do responsável pelo Almoxarifado</p>
+        <canvas id="almox-assinatura-pad" class="signature-pad" width="720" height="220"
+          aria-label="Área para assinatura do responsável pelo Almoxarifado"></canvas>
+        <div class="signature-actions">
+          <button class="btn secondary" id="almox-assinatura-limpar" type="button">Limpar</button>
+          <button class="btn secondary" id="almox-salvar" type="button">Salvar contagem</button>
+          <button class="btn" id="almox-concluir" type="button">Assinar e concluir</button>
+        </div>
+      </div>
+    </section>`;
+}
+
+// Resumo "X de Y contados" da contagem do Almoxarifado
+function atualizarResumoAlmox() {
+  const alvo = document.querySelector("#almox-resumo");
+  if (!alvo) return;
+  const linhas = [...document.querySelectorAll(".almox-linha")];
+  const contados = linhas.filter((tr) => contagemDigitada(tr.querySelector(".almox-qtd")?.value) !== null).length;
+  const semContagem = linhas.length - contados;
+  alvo.innerHTML = `<strong>${contados}</strong> de ${linhas.length} contados`
+    + (semContagem ? ` &middot; <span class="inventario-pendente">${semContagem} sem contagem (serão zerados)</span>` : "");
+}
+
+// Todas as linhas, inclusive as em branco — apagar uma contagem precisa chegar ao servidor
+function itensDaTelaAlmox() {
+  return [...document.querySelectorAll(".almox-linha")].map((tr) => ({
+    sku: tr.dataset.sku,
+    quantidade: contagemDigitada(tr.querySelector(".almox-qtd")?.value),
+    unidade_medida: "UNIDADE"
+  }));
+}
+
+// Liga filtros, assinatura e ações
+function bindContagemDoAlmoxarifado(codigo) {
+  document.querySelector("#almox-inventario-iniciar")?.addEventListener("click", async () => {
+    try {
+      await request("/api/admin/inventario/proprio", { method: "POST" });
+      await viewInventarios();
+    } catch (error) {
+      toast(error.message || "Não foi possível iniciar a contagem.", "error");
+    }
+  });
+  if (!codigo) return;
+
+  const aplicarFiltros = () => {
+    const termo = String(document.querySelector("#almox-busca")?.value || "").trim().toLowerCase();
+    const categoria = String(document.querySelector("#almox-categoria")?.value || "").trim().toLowerCase();
+    const soPendentes = document.querySelector("#almox-pendentes")?.checked;
+    document.querySelectorAll(".almox-linha").forEach((tr) => {
+      const casaBusca = !termo || tr.dataset.busca.includes(termo);
+      const casaCategoria = !categoria || String(tr.dataset.categorias || "").split("|").includes(categoria);
+      const pendente = contagemDigitada(tr.querySelector(".almox-qtd")?.value) === null;
+      tr.classList.toggle("hidden", !casaBusca || !casaCategoria || (soPendentes && !pendente));
+    });
+  };
+  document.querySelector("#almox-busca")?.addEventListener("input", aplicarFiltros);
+  document.querySelector("#almox-categoria")?.addEventListener("change", aplicarFiltros);
+  document.querySelector("#almox-pendentes")?.addEventListener("change", aplicarFiltros);
+
+  document.querySelectorAll(".almox-qtd").forEach((campo) =>
+    campo.addEventListener("input", () => {
+      campo.closest("tr")?.classList.toggle("is-contado", contagemDigitada(campo.value) !== null);
+      atualizarResumoAlmox();
+    })
+  );
+
+  const canvas = document.querySelector("#almox-assinatura-pad");
+  // Mesmo núcleo de desenho da assinatura do PDV e da devolução de avaria
+  const quadro = canvas ? ligarQuadroDeAssinatura(canvas) : null;
+  document.querySelector("#almox-assinatura-limpar")?.addEventListener("click", () => quadro?.limpar());
+
+  const salvar = async () => {
+    await request("/api/admin/inventario/proprio", {
+      method: "PATCH",
+      body: JSON.stringify({ codigo_inventario: codigo, itens: itensDaTelaAlmox() })
+    });
+  };
+
+  document.querySelector("#almox-salvar")?.addEventListener("click", async (evento) => {
+    const botao = evento.currentTarget;
+    botao.disabled = true;
+    try {
+      await salvar();
+      toast("Contagem salva. Você pode continuar depois.");
+    } catch (error) {
+      toast(error.message || "Não foi possível salvar a contagem.", "error");
+    } finally {
+      botao.disabled = false;
+    }
+  });
+
+  document.querySelector("#almox-concluir")?.addEventListener("click", async (evento) => {
+    const botao = evento.currentTarget;
+    if (!quadro?.temTinta()) {
+      toast("Assine no quadro antes de concluir.", "error");
+      return;
+    }
+    const assinante = String(document.querySelector("#almox-assinante")?.value || "").trim();
+    if (!assinante) {
+      toast("Informe o nome de quem está assinando.", "error");
+      return;
+    }
+    const linhas = [...document.querySelectorAll(".almox-linha")];
+    const semContagem = linhas.filter((tr) => contagemDigitada(tr.querySelector(".almox-qtd")?.value) === null).length;
+    const confirmado = await confirmSystem({
+      title: "Concluir o inventário do Almoxarifado?",
+      message: `O estoque central passa a ser exatamente o que foi contado`
+        + (semContagem ? `, e ${semContagem} produto(s) sem contagem serão ZERADOS.` : "."),
+      consequence: "Depois de concluir, só um novo inventário corrige.",
+      confirmLabel: "Assinar e concluir",
+      danger: true
+    });
+    if (!confirmado) return;
+
+    botao.disabled = true;
+    botao.textContent = "Concluindo...";
+    try {
+      // Salva antes, para não perder o que foi digitado e ainda não salvo
+      await salvar();
+      const r = await request("/api/admin/inventario/proprio/concluir", {
+        method: "POST",
+        body: JSON.stringify({ codigo_inventario: codigo, assinatura: quadro.comoPng(), assinado_por: assinante })
+      });
+      toast(`Inventário concluído. ${r.itens} produto(s) ajustado(s)${r.zerados ? `, ${r.zerados} zerado(s)` : ""}.`);
+      // O efeito da simulação precisa ser visto, não descoberto no log depois
+      if (r.simulacao) {
+        await confirmSystem({
+          title: "Ajuste registrado só no MyEstoque",
+          message: "A integração com a OMIE está em modo simulação, então o lançamento não foi enviado. "
+            + "A próxima sincronização vai sobrescrever o estoque central com o saldo atual da OMIE.",
+          consequence: "Isso fica registrado no histórico deste inventário. Para o ajuste valer na OMIE, "
+            + "ligue o modo real na aba Integrações e reprocesse a fila.",
+          confirmLabel: "Entendi",
+          cancelLabel: "Fechar"
+        });
+      }
+      await viewInventarios();
+    } catch (error) {
+      toast(error.message || "Não foi possível concluir o inventário.", "error");
+    } finally {
+      botao.disabled = false;
+      botao.textContent = "Assinar e concluir";
+    }
+  });
 }
