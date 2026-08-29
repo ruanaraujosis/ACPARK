@@ -117,11 +117,16 @@ export async function enviarTransferencias(contexto) {
     contexto;
   const simulacao = emSimulacao(configuracao);
 
-  // Um lancamento so: a virada para real comeca com um envio conferido no ERP
+  // Um lancamento so: a virada para real comeca com um envio conferido no ERP.
+  //
+  // O filtro de evento nao e decorativo: a fila carrega tambem o ajuste de inventario, que
+  // nao tem local de destino. Sem restringir aqui, esta tarefa leria aquele lancamento,
+  // falharia ao montar a transferencia e o marcaria como ERRO.
   const abertos = await lancamentos.listarAbertos(client, {
     integrationId: integracao.id,
     limite: Number(payload.limite) || LANCAMENTOS_POR_JOB,
     apenas: payload.apenas ? Number(payload.apenas) : null,
+    eventos: [lancamentos.EVENTOS.RETIRADA, lancamentos.EVENTOS.COMPENSACAO],
   });
 
   const resumo = {

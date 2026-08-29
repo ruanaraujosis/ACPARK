@@ -10,10 +10,11 @@
 // 3. A confirmação NUNCA é bloqueada pela OMIE. O ajuste local acontece na mesma transação da
 //    assinatura; o lançamento vai para a fila e drena quando houver internet.
 // 4. Idempotência por inventário + produto: reprocessar a fila não pode ajustar duas vezes.
-import { registrarLancamento } from "../integrations/core/stock-launches.repository.js";
+import { EVENTOS, registrarLancamento } from "../integrations/core/stock-launches.repository.js";
 
-// Evento gravado na fila. Nome próprio para não se confundir com a transferência do pedido.
-export const EVENTO_AJUSTE_INVENTARIO = "INVENTARIO_AJUSTE";
+// Evento gravado na fila, declarado no núcleo junto dos demais tipos de lançamento.
+// Reexportado aqui por conveniência de quem já trabalha no domínio de inventário.
+export const EVENTO_AJUSTE_INVENTARIO = EVENTOS.AJUSTE_INVENTARIO;
 
 // Chave de idempotência do ajuste de inventário.
 //

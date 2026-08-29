@@ -6,6 +6,7 @@ import { escreverFatoresAprovados } from "./tarefas/escrita-fator.js";
 import { sincronizarEvidenciaDeCompra } from "./tarefas/evidencia-compra.js";
 import { PADRAO_CARACTERISTICA_FATOR, sincronizarFatores } from "./tarefas/fatores.js";
 import { sincronizarLocais } from "./tarefas/locais.js";
+import { enviarAjustesDeInventario } from "./tarefas/inventarios.js";
 import { enviarTransferencias } from "./tarefas/transferencias.js";
 import { sincronizarMovimentos } from "./tarefas/movimentos.js";
 import { sincronizarProdutos } from "./tarefas/produtos.js";
@@ -173,6 +174,24 @@ export const providerOmie = {
       // oportunista. Em simulacao ela so monta payload, entao ligar o relogio e seguro.
       intervaloPadraoMs: 5 * MINUTO,
       executar: enviarTransferencias
+    },
+    {
+      id: "INVENTARIO",
+      rotulo: "Ajustes de inventario para a OMIE",
+      descricao:
+        "Envia o ajuste por inventario gerado pela assinatura da contagem, no local do PDV que contou. Unica escrita do MyEstoque que usa saldo absoluto (tipo SLD, motivo INV) -- todas as outras enviam movimento.",
+      prioridade: "ALTA",
+      // Escrita altera dado no sistema externo: o nucleo exige modo REAL explicito para enviar
+      escrita: true,
+      // NAO exige local_almoxarifado de proposito: o inventario de um PDV vai no local
+      // daquele PDV (pdv_stock_location_mappings), e so o inventario do proprio almoxarifado
+      // usa o local configurado. Exigir aqui barraria a contagem de PDV por uma configuracao
+      // que ela nao usa -- o mesmo impasse que ja travou a importacao de locais. A falta do
+      // local e checada por lancamento, com mensagem propria.
+      // Roda pelo relogio para drenar sozinha quando a internet voltar. Em simulacao ela so
+      // monta payload, entao ligar o relogio e seguro.
+      intervaloPadraoMs: 5 * MINUTO,
+      executar: enviarAjustesDeInventario
     },
     {
       id: "ESCRITA_FATOR",

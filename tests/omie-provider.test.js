@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 
 import { providerOmie } from "../server/services/integrations/providers/omie/index.js";
 import {
@@ -393,6 +394,7 @@ test("o manifesto do provider declara credenciais e capacidades esperadas", () =
     "SALDO_ITEM",
     "MOVIMENTOS",
     "TRANSFERENCIAS",
+    "INVENTARIO",
     "ESCRITA_FATOR",
     "RECONCILIACAO"
   ]);
@@ -470,9 +472,22 @@ test("as operacoes de escrita ficam preservadas mas fora de qualquer caminho de 
   assert.equal(payload.quan, "2,5", "a OMIE exige virgula decimal");
   assert.throws(() => montarAjusteEstoque({ chaveOperacao: chave, quantidade: 0 }), /Quantidade invalida/);
 
-  // Nenhuma capacidade registrada executa escrita
-  const fontes = providerOmie.capacidades.map((c) => c.executar.name);
-  assert.ok(!fontes.some((nome) => /ajuste|escrita|incluir/i.test(nome)));
+  // A garantia real: montarAjusteEstoque monta o movimento de baixa por avaria (tipo SAI) e
+  // NAO esta ligado a nenhuma tarefa -- o modulo de avarias ainda opera fora da fila de
+  // integracoes. Antes isto era conferido pelo NOME da funcao executora, o que ja era
+  // acidente: TRANSFERENCIAS escreve na OMIE desde 13/08/2026 e so passava porque
+  // "enviarTransferencias" nao casava com o regex.
+  const tarefas = fs
+    .readdirSync("server/services/integrations/providers/omie/tarefas")
+    .filter((nome) => nome.endsWith(".js"));
+  for (const nome of tarefas) {
+    const src = fs.readFileSync(`server/services/integrations/providers/omie/tarefas/${nome}`, "utf8");
+    assert.doesNotMatch(
+      src,
+      /montarAjusteEstoque/,
+      `${nome} passou a usar o movimento de avaria; se foi de proposito, ligue-o a uma capacidade propria`
+    );
+  }
 });
 
 test("o movimento e mapeado a partir dos campos que a OMIE realmente devolve", () => {

@@ -6,7 +6,10 @@
 
 export const EVENTOS = Object.freeze({
   RETIRADA: "RETIRADA",
-  COMPENSACAO: "COMPENSACAO"
+  COMPENSACAO: "COMPENSACAO",
+  // Ajuste gerado pela assinatura de um inventario. Mora aqui, e nao no dominio de
+  // inventario, para o provider que drena a fila nao precisar importar aquele modulo.
+  AJUSTE_INVENTARIO: "INVENTARIO_AJUSTE"
 });
 
 export const STATUS = Object.freeze({
@@ -105,15 +108,23 @@ export async function registrarLancamento(client, dados) {
 // primeiras vagas de toda leitura. Como o agendador le 25 por vez, ele nunca alcancava um
 // lancamento novo -- a fila inteira ficava refem de pendencias que nao tinham como sair.
 // Elas continuam sendo retentadas, so que depois de quem ainda nao teve a primeira chance.
-export async function listarAbertos(client, { integrationId = null, limite = 50, apenas = null } = {}) {
+//
+// `eventos` restringe aos tipos que a tarefa chamadora sabe montar. Existe desde que a fila
+// passou a carregar mais de um tipo de escrita: sem o filtro, a tarefa de transferencia lia
+// um ajuste de inventario, tentava montar payload de transferencia com ele (que exige local
+// de destino, nulo no inventario), falhava e marcava o lancamento como ERRO -- deixando-o
+// preso numa fila que a tarefa certa nunca leria de volta a tempo.
+export async function listarAbertos(client, { integrationId = null, limite = 50, apenas = null, eventos = null } = {}) {
+  const listaDeEventos = Array.isArray(eventos) && eventos.length ? eventos : null;
   const resultado = await client.query(
     `SELECT * FROM integration_stock_launches
      WHERE status = ANY($1::text[])
        AND ($2::bigint IS NULL OR integration_id = $2 OR integration_id IS NULL)
        AND ($4::bigint IS NULL OR id = $4)
+       AND ($5::text[] IS NULL OR evento = ANY($5::text[]))
      ORDER BY (status = 'ERRO'), created_at
      LIMIT $3`,
-    [STATUS_ABERTOS, integrationId, Math.min(Number(limite) || 50, 200), apenas]
+    [STATUS_ABERTOS, integrationId, Math.min(Number(limite) || 50, 200), apenas, listaDeEventos]
   );
   return resultado.rows;
 }
