@@ -10,6 +10,16 @@
 // 3. A confirmação NUNCA é bloqueada pela OMIE. O ajuste local acontece na mesma transação da
 //    assinatura; o lançamento vai para a fila e drena quando houver internet.
 // 4. Idempotência por inventário + produto: reprocessar a fila não pode ajustar duas vezes.
+// 5. CONFIRMADO É IMUTÁVEL. Não existe reabertura nem lançamento compensatório: a partir da
+//    confirmação, nada altera aquele inventário. Corrigir depois é abrir um inventário NOVO,
+//    para o mesmo PDV, com o ciclo de vida do zero — a conclusão dele substitui o saldo outra
+//    vez, local e na OMIE, exatamente como qualquer inventário faz.
+//
+//    O motivo de não haver compensação: o inventário escreve SALDO ABSOLUTO (SLD), e saldo não
+//    compensa como movimento. Dois SLD em sequência não se anulam — o segundo simplesmente
+//    sobrescreve o primeiro, o que é indistinguível de uma recontagem. A recontagem entrega o
+//    mesmo resultado com trilha mais clara. Decidido com o usuário em 29/08/2026.
+//    Travado por teste em tests/inventario-imutabilidade.test.js.
 import { EVENTOS, registrarLancamento } from "../integrations/core/stock-launches.repository.js";
 
 // Evento gravado na fila, declarado no núcleo junto dos demais tipos de lançamento.

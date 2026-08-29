@@ -377,13 +377,24 @@ Detalhes que sustentam a exceção:
   zero é válida aqui e recusada no movimento: `normalizarQuantidadeInventario()` existe
   separada de `normalizarQuantidade()` para não afrouxar a proteção da transferência;
 - idempotência por inventário + produto (`INVENTARIO-{código}-SKU-{sku}-AJUSTE`), sem versão:
-  inventário confirmado nunca é reaberto — corrigir é abrir outro;
+  inventário confirmado nunca é reaberto — corrigir é abrir outro (ver abaixo);
 - nasce em `SIMULACAO` como qualquer capacidade de escrita.
 
 **Risco conhecido e aceito:** entre a contagem e o envio o PDV continua vendendo, e o sistema
 de vendas dá baixa no mesmo local. O saldo gravado não reflete essas vendas. O sistema não
 bloqueia — mostra a idade da contagem na lista, destaca contagens com 2+ dias e avisa o
 Almoxarifado na confirmação. Quem decide é o Almoxarifado.
+
+**Inventário confirmado é imutável — corrigir é contar de novo.** Não existe reabertura nem
+lançamento compensatório. A partir da confirmação nada altera aquele inventário; se a contagem
+precisar de correção, o Almoxarifado abre um inventário **novo**, mesmo PDV, ciclo de vida do
+zero, e a conclusão dele substitui o saldo outra vez — local e na OMIE.
+
+O motivo de não haver compensação é o próprio `SLD`: **saldo absoluto não compensa como
+movimento**. Dois `SLD` em sequência não se anulam — o segundo sobrescreve o primeiro, o que é
+indistinguível de uma recontagem. A recontagem entrega o mesmo resultado com trilha mais clara.
+Decidido com o usuário em 29/08/2026 e travado por teste: todas as rotas de escrita recusam um
+inventário confirmado, e a tela do Almoxarifado o mostra como somente leitura.
 
 **Enquanto o modo for `SIMULACAO`, o inventário do Almoxarifado se desfaz sozinho.**
 `produtos.qtd_total` é espelho do saldo da OMIE: a capacidade `ESTOQUE_ALMOXARIFADO` o
