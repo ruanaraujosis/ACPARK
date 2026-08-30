@@ -18,9 +18,23 @@ test("o ajuste SUBSTITUI o saldo, nunca soma", () => {
   assert.doesNotMatch(ajuste, /SET quantidade = quantidade [+-]/, "não pode somar nem subtrair");
 });
 
-test("produto sem contagem é zerado", () => {
-  // Regra invertida pelo usuário em 29/08/2026. É o ponto que decide o inventário inteiro.
-  assert.match(ajuste, /item\.quantidade_contada === null \|\| item\.quantidade_contada === undefined\s*\n?\s*\? 0/);
+test("produto sem contagem é PRESERVADO, não zerado", () => {
+  // Regra invertida em 30/08/2026, depois de a anterior causar dano real em produção: no
+  // INV-20260829184051-862E alguém contou 4 de 338 produtos e concluiu; 9 com saldo real
+  // foram a zero e 8 chegaram à OMIE. É o ponto que decide o inventário inteiro.
+  assert.match(ajuste, /if \(semContagem\) \{/);
+  assert.match(ajuste, /preservados\.push\(\{ sku: item\.sku_produto, saldoPreservado: anterior \}\)/);
+  // O atalho da regra antiga (ausência vira zero) não pode voltar
+  assert.doesNotMatch(ajuste, /quantidade_contada === undefined\s*\n?\s*\? 0/);
+});
+
+test("zero DIGITADO continua zerando — ausência e zero não são a mesma coisa", () => {
+  // "Em branco" é "não conferi"; "0" é "conferi e não há nenhum". Só o segundo zera.
+  const rotasSrc = ler("server/modules/inventarios/inventarios.routes.js");
+  assert.match(rotasSrc, /if \(quantidade === null \|\| quantidade === undefined \|\| quantidade === ""\) return null;/,
+    "ausência precisa continuar virando NULL, distinta de 0");
+  // E o ajuste só pula quando é NULL, nunca quando é 0
+  assert.match(ajuste, /const semContagem = item\.quantidade_contada === null \|\| item\.quantidade_contada === undefined;/);
 });
 
 test("o saldo anterior é guardado antes de ser sobrescrito", () => {
@@ -72,7 +86,7 @@ test("o ajuste de inventário usa tipo SLD e motivo INV", () => {
 });
 
 test("quantidade zero é válida no inventário e inválida no movimento", () => {
-  // Zero é como o inventário zera o produto que ninguém contou. Num movimento (TRF/SAI)
+  // Zero é o que o usuário DIGITA para zerar um produto conferido. Num movimento (TRF/SAI)
   // zero não move nada e mascara erro de cálculo — por isso as duas funções são separadas.
   assert.equal(normalizarQuantidadeInventario(0), "0");
   assert.throws(() => normalizarQuantidade(0), /Quantidade invalida/);
@@ -149,7 +163,7 @@ test("o ajuste roda antes de marcar como confirmado, na mesma transação", () =
 
 test("a auditoria da assinatura guarda cada ajuste aplicado", () => {
   assert.match(rotas, /acao: "inventario_assinado"/);
-  assert.match(rotas, /zerados_por_falta_de_contagem: zerados/);
+  assert.match(rotas, /preservados_sem_contagem: preservados.length/);
   assert.match(rotas, /ajustes: aplicados\.map\(\(i\) => \(\{ sku: i\.sku, de: i\.anterior, para: i\.contado \}\)\)/);
 });
 
@@ -173,8 +187,9 @@ test("a assinatura pendente tem prioridade sobre a tela de contagem", () => {
 test("a tela de assinatura mostra com o que cada produto vai ficar", () => {
   const corpo = app.slice(app.indexOf("function blocoAssinaturaInventario"), app.indexOf("\n}\n", app.indexOf("function blocoAssinaturaInventario")));
   assert.match(corpo, /Ficará com/);
-  assert.match(corpo, /inventario-sera-zerado/);
-  assert.match(corpo, /serão zerados/);
+  assert.match(corpo, /inventario-preservado/);
+  assert.match(corpo, /mantêm o valor atual/);
+  assert.doesNotMatch(corpo, /serão zerados/, "a promessa antiga não pode sobreviver na tela");
 });
 
 test("assinar pede confirmação marcada como ação de risco", () => {

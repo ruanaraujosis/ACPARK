@@ -873,7 +873,7 @@ async function rotaAssinaturaDoPdv(req, res, context) {
           [inventario.id, STATUS_INVENTARIO.CONFIRMADO, assinatura, assinadoPor]
         );
 
-        const zerados = aplicados.filter((item) => item.semContagem).length;
+        const preservados = aplicados.preservados || [];
         await auditarInventario(client, {
           inventarioId: inventario.id,
           codigoInventario: inventario.codigo_inventario,
@@ -884,7 +884,10 @@ async function rotaAssinaturaDoPdv(req, res, context) {
           dados: {
             origem: "pdv",
             itens: aplicados.length,
-            zerados_por_falta_de_contagem: zerados,
+            // Produto sem contagem nao entra no ajuste, mas fica registrado que foi visto e
+            // preservado -- senao a trilha nao distingue "pulado de proposito" de "esquecido"
+            preservados_sem_contagem: preservados.length,
+            preservados: preservados.slice(0, 50),
             ajustes: aplicados.map((i) => ({ sku: i.sku, de: i.anterior, para: i.contado }))
           }
         });
@@ -896,7 +899,7 @@ async function rotaAssinaturaDoPdv(req, res, context) {
         return {
           codigo_inventario: inventario.codigo_inventario,
           itens: aplicados.length,
-          zerados,
+          preservados: preservados.length,
           fila
         };
       });
@@ -959,10 +962,9 @@ async function inventarioAbertoDoAlmoxarifado(executar) {
 // estiver em SIMULACAO o ajuste nao sai, entao a proxima sincronizacao devolve o valor
 // antigo. Isso e consequencia da simulacao, nao um erro de contagem.
 async function aplicarAjusteDoAlmoxarifado(client, inventario) {
-  // Percorre o CATALOGO ativo, nao as linhas de inventario_itens: "sem contagem e zerado"
-  // tem de valer para todo produto que o Almoxarifado deveria ter contado. Produto que
-  // nunca foi tocado na tela nao tem linha, e percorrendo so as linhas ele sobreviveria
-  // calado -- justamente o caso mais perigoso, contar 2 de 500 e concluir.
+  // Percorre o CATALOGO ativo. Sob a regra nova o ajuste so toca no que foi contado, entao
+  // o catalogo serve ao RELATORIO: e assim que o sistema sabe dizer quais produtos foram
+  // vistos e preservados, em vez de deixar a auditoria em silencio sobre eles.
   const { rows: itens } = await client.query(
     `WITH catalogo AS (
        SELECT sku AS sku_produto FROM produtos WHERE ativo = TRUE
@@ -978,25 +980,20 @@ async function aplicarAjusteDoAlmoxarifado(client, inventario) {
   );
 
   const aplicados = [];
+  const preservados = [];
   for (const item of itens) {
-    // Sem contagem = zero, a mesma regra do inventario de PDV
-    const contado = item.quantidade_contada === null || item.quantidade_contada === undefined
-      ? 0
-      : Number(item.quantidade_contada);
+    const semContagem = item.quantidade_contada === null || item.quantidade_contada === undefined;
     const anterior = Number(item.saldo_anterior || 0);
 
-    // Produto sem linha e zerado do mesmo jeito, entao ganha uma aqui -- senao o
-    // inventario zeraria sem deixar registro de que zerou
-    if (item.id) {
-      await client.query("UPDATE inventario_itens SET quantidade_anterior = $2 WHERE id = $1", [item.id, anterior]);
-    } else {
-      await client.query(
-        `INSERT INTO inventario_itens (inventario_id, sku_produto, quantidade_contada, quantidade_anterior, origem)
-         VALUES ($1, $2, NULL, $3, 'ALMOX')
-         ON CONFLICT (inventario_id, sku_produto) DO UPDATE SET quantidade_anterior = EXCLUDED.quantidade_anterior`,
-        [inventario.id, item.sku_produto, anterior]
-      );
+    // SEM CONTAGEM = NAO TOCA, a mesma regra do inventario de PDV (invertida em 30/08/2026).
+    // O produto que ninguem contou fica como esta. Zerar exige digitar 0.
+    if (semContagem) {
+      preservados.push({ sku: item.sku_produto, saldoPreservado: anterior });
+      continue;
     }
+
+    const contado = Number(item.quantidade_contada);
+    await client.query("UPDATE inventario_itens SET quantidade_anterior = $2 WHERE id = $1", [item.id, anterior]);
     // SUBSTITUI, nunca soma
     await client.query("UPDATE produtos SET qtd_total = $2 WHERE sku = $1", [item.sku_produto, contado]);
 
@@ -1006,9 +1003,10 @@ async function aplicarAjusteDoAlmoxarifado(client, inventario) {
       anterior,
       contado,
       diferenca: contado - anterior,
-      semContagem: item.quantidade_contada === null || item.quantidade_contada === undefined
+      semContagem: false
     });
   }
+  aplicados.preservados = preservados;
   return aplicados;
 }
 
@@ -1167,7 +1165,7 @@ async function rotasInventarioDoAlmoxarifado(req, res, context) {
           [inventario.id, STATUS_INVENTARIO.CONFIRMADO, assinadoPor, assinatura]
         );
 
-        const zerados = aplicados.filter((i) => i.semContagem).length;
+        const preservados = aplicados.preservados || [];
         await auditarInventario(client, {
           inventarioId: inventario.id,
           codigoInventario: inventario.codigo_inventario,
@@ -1178,7 +1176,8 @@ async function rotasInventarioDoAlmoxarifado(req, res, context) {
           dados: {
             origem: "almoxarifado",
             itens: aplicados.length,
-            zerados_por_falta_de_contagem: zerados,
+            preservados_sem_contagem: preservados.length,
+            preservados: preservados.slice(0, 50),
             ajustes: aplicados.map((i) => ({ sku: i.sku, de: i.anterior, para: i.contado }))
           }
         });
@@ -1206,7 +1205,7 @@ async function rotasInventarioDoAlmoxarifado(req, res, context) {
         return {
           codigo_inventario: inventario.codigo_inventario,
           itens: aplicados.length,
-          zerados,
+          preservados: preservados.length,
           fila,
           simulacao
         };

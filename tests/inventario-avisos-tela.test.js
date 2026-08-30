@@ -103,9 +103,12 @@ test("a tela do Almoxarifado reusa o núcleo de assinatura e a regra branco != z
   assert.doesNotMatch(itens, /\.filter\(/, "as linhas em branco também precisam ser enviadas");
 });
 
-test("concluir avisa quantos serão zerados e é ação de risco", () => {
+test("concluir diz que os não contados mantêm o valor, e segue sendo ação de risco", () => {
+  // A confirmação continua marcada como risco porque o inventário substitui saldo — mas o
+  // texto deixou de anunciar zeramento por omissão, que é o que a regra nova proíbe.
   const bind = app.slice(app.indexOf("function bindContagemDoAlmoxarifado"));
-  assert.match(bind, /serão ZERADOS/);
+  assert.match(bind, /mantêm o valor atual/);
+  assert.doesNotMatch(bind, /ZERADOS/, "o aviso de zeramento por omissão saiu");
   assert.match(bind, /danger: true/);
   // Salva antes de concluir, para não perder o que foi digitado
   const posSalvar = bind.indexOf("await salvar();");
@@ -119,7 +122,7 @@ test("o cache-bust acompanhou a última mudança do app.js", () => {
   // Verificado na prova visual: com o mesmo ?v=, o navegador serviu a versão antiga e a
   // correção parecia não ter sido aplicada.
   const versao = html.match(/app\.js\?v=([^"]+)/)?.[1];
-  assert.equal(versao, "20260824-inventario-fechamento-02");
+  assert.equal(versao, "20260824-inventario-preserva-01");
   assert.match(html, new RegExp(`styles\\.css\\?v=${versao}`), "css e js compartilham a versão");
 });
 

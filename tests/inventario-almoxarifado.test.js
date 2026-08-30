@@ -123,15 +123,15 @@ test("a aba Inventários é do Almoxarifado e está no roteador", () => {
   assert.match(app, /inventarios: viewInventarios,/);
 });
 
-test("produto não contado mostra a baixa inteira, porque será zerado", () => {
-  // Regra invertida pelo usuário em 29/08/2026: quem não foi contado é ZERADO. Antes a tela
-  // mostrava um traço, na premissa oposta. Esconder a diferença faria o Almoxarifado
-  // confirmar sem ver o tamanho da baixa que vai aplicar.
+test("produto não contado não mostra baixa — ele mantém o valor", () => {
+  // Esta coluna já disse as duas coisas. Em 29/08 a regra virou "sem contagem zera" e a tela
+  // passou a mostrar a baixa inteira. Em 30/08 a regra foi invertida de novo, e mostrar a
+  // baixa aqui anunciaria um estrago que não vai acontecer — o produto não é tocado.
   const inicio = app.indexOf("async function abrirDetalheInventario");
   const corpo = app.slice(inicio, app.indexOf("\n}\n", inicio));
-  assert.match(corpo, /const diferenca = Number\(temContagem \? contado : 0\) - Number\(item\.saldo_atual \|\| 0\);/);
-  assert.match(corpo, /inventario-sera-zerado/, "precisa marcar visualmente o que será zerado");
-  assert.doesNotMatch(corpo, /diferenca === null/, "não contado deixou de ser 'sem diferença'");
+  assert.match(corpo, /const diferenca = temContagem \? Number\(contado\) - Number\(item\.saldo_atual \|\| 0\) : null;/);
+  assert.match(corpo, /não contado — mantém/, "precisa dizer que o valor é mantido");
+  assert.doesNotMatch(corpo, /inventario-sera-zerado/, "a marca de zeramento saiu");
 });
 
 test("o alternador da tela é o inverso da chave de bloqueio", () => {

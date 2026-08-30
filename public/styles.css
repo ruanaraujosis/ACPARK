@@ -6807,10 +6807,11 @@ td input[type="number"] {
   background: #f4760f;
 }
 
-/* "será zerado" ao lado do produto sem contagem: é a consequência mais dura da tela */
-.inventario-sera-zerado {
+/* "mantém o valor" ao lado do produto sem contagem: informa, nao alarma -- o produto nao
+   sofre alteracao nenhuma */
+.inventario-preservado {
   display: block;
-  color: #b91c1c;
+  color: #64748b;
   font-size: 0.72rem;
   font-weight: 800;
   text-transform: uppercase;

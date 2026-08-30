@@ -4,9 +4,12 @@
 //
 // 1. SUBSTITUI, nunca soma. O inventário é a contagem física — o que está na prateleira passa
 //    a ser a verdade, independente do que o sistema achava.
-// 2. Produto sem contagem é ZERADO. Decisão do usuário (28/08/2026): quem não foi contado não
-//    está na prateleira. Por isso `COALESCE(quantidade_contada, 0)` — e é o motivo de a tela
-//    avisar, em letras grandes, quantos produtos serão zerados antes de o PDV enviar.
+// 2. Produto sem contagem NAO E TOCADO — mantém o valor atual, aqui e na OMIE.
+//    Regra invertida em 30/08/2026, depois de a anterior ("sem contagem = zerado") causar dano
+//    real: no inventário INV-20260829184051-862E alguém contou 4 de 338 produtos e concluiu;
+//    9 produtos com saldo real foram a zero e 8 chegaram à OMIE. Esquecer de contar não pode
+//    significar "não tem nenhum".
+//    Para zerar, é preciso digitar 0 explicitamente — zero digitado não é ausência.
 // 3. A confirmação NUNCA é bloqueada pela OMIE. O ajuste local acontece na mesma transação da
 //    assinatura; o lançamento vai para a fila e drena quando houver internet.
 // 4. Idempotência por inventário + produto: reprocessar a fila não pode ajustar duas vezes.
@@ -59,12 +62,12 @@ export async function localDoInventario(client, { pdvId, configuracao = {} }) {
 // Roda dentro da transação da assinatura: se algo falhar aqui, a assinatura também não vale,
 // e o inventário continua "Aguardando assinatura" para ser tentado de novo.
 export async function aplicarAjusteLocal(client, inventario) {
-  // Percorre o CATÁLOGO do PDV, não as linhas de inventario_itens.
+  // Percorre o CATÁLOGO do PDV, não só as linhas de inventario_itens.
   //
-  // A diferença decide o resultado do inventário: "sem contagem é zerado" tem de valer para
-  // todo produto que o PDV deveria ter contado, e não só para os que ganharam linha. Um
-  // produto que nunca foi tocado na tela não tem linha nenhuma — percorrendo só as linhas,
-  // ele sobreviveria calado, contrariando a regra.
+  // Sob a regra nova o ajuste só toca no que foi contado, então o catálogo não é mais
+  // necessário para DECIDIR o que muda. Ele continua aqui para o RELATÓRIO: é assim que o
+  // sistema sabe dizer quais produtos foram vistos e deliberadamente preservados, em vez de
+  // deixar a auditoria em silêncio sobre eles.
   //
   // O UNION traz também o que o Almoxarifado acrescentou à contagem e que pode não estar
   // mais no catálogo liberado.
@@ -89,29 +92,33 @@ export async function aplicarAjusteLocal(client, inventario) {
   );
 
   const aplicados = [];
+  const preservados = [];
+
   for (const item of itens) {
-    // Sem contagem = zero. É a regra 2 do cabeçalho; trocar isto muda o resultado do
-    // inventário inteiro em silêncio.
-    const contado = item.quantidade_contada === null || item.quantidade_contada === undefined
-      ? 0
-      : Number(item.quantidade_contada);
+    const semContagem = item.quantidade_contada === null || item.quantidade_contada === undefined;
     const anterior = Number(item.saldo_anterior || 0);
 
-    // Guarda o saldo que existia antes, para a auditoria e para o relatório de divergência.
+    // SEM CONTAGEM = NAO TOCA (regra 2 do cabecalho, invertida em 30/08/2026).
     //
-    // Produto do catálogo que ninguém sequer abriu na tela não tem linha. Ele é zerado do
-    // mesmo jeito, então precisa ganhar uma linha aqui — senão o inventário zeraria um
-    // produto sem deixar registro de que o zerou.
-    if (item.id) {
-      await client.query("UPDATE inventario_itens SET quantidade_anterior = $2 WHERE id = $1", [item.id, anterior]);
-    } else {
-      await client.query(
-        `INSERT INTO inventario_itens (inventario_id, sku_produto, quantidade_contada, quantidade_anterior, origem)
-         VALUES ($1, $2, NULL, $3, 'PDV')
-         ON CONFLICT (inventario_id, sku_produto) DO UPDATE SET quantidade_anterior = EXCLUDED.quantidade_anterior`,
-        [inventario.id, item.sku_produto, anterior]
-      );
+    // O produto que ninguem contou fica exatamente como esta, aqui e na OMIE. Zerar por
+    // omissao ja aconteceu de verdade: no inventario INV-20260829184051-862E alguem contou
+    // 4 de 338 produtos e concluiu; 9 produtos com saldo real foram a zero, 8 deles enviados
+    // a OMIE. Esquecer de contar nao pode significar "nao tem nenhum".
+    //
+    // Para zerar e preciso digitar 0 -- o que continua funcionando, porque zero digitado
+    // nao e ausencia.
+    if (semContagem) {
+      // Fica na trilha: o produto foi visto pelo ajuste e deliberadamente preservado. Sem
+      // este registro, quem lesse a auditoria depois nao saberia se o sistema pulou o
+      // produto de proposito ou simplesmente nao o enxergou.
+      preservados.push({ sku: item.sku_produto, saldoPreservado: anterior });
+      continue;
     }
+
+    const contado = Number(item.quantidade_contada);
+
+    // Guarda o saldo que existia antes, para a auditoria e para o relatório de divergência
+    await client.query("UPDATE inventario_itens SET quantidade_anterior = $2 WHERE id = $1", [item.id, anterior]);
 
     // Inventário do Almoxarifado (pdv_id nulo) não mexe em estoque_pdv: o saldo dele é o
     // estoque central, que vem da OMIE pela tarefa ESTOQUE_ALMOXARIFADO.
@@ -137,9 +144,10 @@ export async function aplicarAjusteLocal(client, inventario) {
       anterior,
       contado,
       diferenca: contado - anterior,
-      semContagem: item.quantidade_contada === null || item.quantidade_contada === undefined
+      semContagem: false
     });
   }
+  aplicados.preservados = preservados;
   return aplicados;
 }
 

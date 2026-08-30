@@ -15,24 +15,36 @@ const app = ler("public/app.js");
 const proprio = rotas.slice(rotas.indexOf("// ===== Inventário do próprio Almoxarifado ====="), rotas.indexOf("// ===== Avisos aos PDVs ====="));
 const avisos = rotas.slice(rotas.indexOf("// ===== Avisos aos PDVs ====="));
 
-// ===== O zeramento vale para o catálogo, não só para as linhas =====
+// ===== Produto sem contagem é PRESERVADO (regra invertida em 30/08/2026) =====
 
-test("o ajuste percorre o catálogo, não as linhas já gravadas", () => {
-  // Bug real: percorrendo só inventario_itens, um produto que ninguém abriu na tela não tem
-  // linha e sobreviveria calado — contar 2 de 500 e concluir deixaria 498 intactos, ao
-  // contrário da regra "sem contagem é zerado".
+test("o ajuste percorre o catálogo, para saber o que foi preservado", () => {
+  // O catálogo já não decide o que MUDA — só o contado muda. Ele continua aqui porque é
+  // assim que o sistema sabe DIZER quais produtos foram vistos e preservados, em vez de
+  // deixar a auditoria em silêncio sobre eles.
   for (const [nome, fonte] of [["PDV", ajuste], ["Almoxarifado", proprio]]) {
     assert.match(fonte, /WITH catalogo AS \(/, `o ajuste do ${nome} precisa partir do catálogo`);
     assert.match(fonte, /LEFT JOIN inventario_itens it ON it\.inventario_id = \$1/, `${nome}: itens entram por LEFT JOIN`);
-    assert.match(fonte, /UNION\s*\n\s*SELECT sku_produto FROM inventario_itens/, `${nome}: o UNION traz o que o Almoxarifado acrescentou`);
   }
 });
 
-test("produto zerado sem linha ganha uma, para o zeramento ficar registrado", () => {
+test("produto sem contagem NÃO é tocado — nem local, nem OMIE", () => {
+  // Regra invertida depois de dano real: no INV-20260829184051-862E alguém contou 4 de 338
+  // produtos e concluiu; 9 com saldo real foram a zero e 8 chegaram à OMIE. Esquecer de
+  // contar não pode significar "não tem nenhum".
   for (const [nome, fonte] of [["PDV", ajuste], ["Almoxarifado", proprio]]) {
-    assert.match(fonte, /if \(item\.id\) \{/, `${nome}: precisa distinguir item com e sem linha`);
-    assert.match(fonte, /INSERT INTO inventario_itens[\s\S]{0,200}quantidade_anterior/, `${nome}: cria a linha do produto zerado`);
+    assert.match(fonte, /if \(semContagem\) \{/, `${nome}: precisa pular o item sem contagem`);
+    assert.match(fonte, /preservados\.push\(/, `${nome}: o preservado precisa ficar na trilha`);
+    // O COALESCE-para-zero da regra antiga não pode voltar
+    assert.doesNotMatch(fonte, /quantidade_contada === undefined\s*\n?\s*\? 0/,
+      `${nome}: ausência não pode virar zero`);
   }
+});
+
+test("a ausência de contagem entra na auditoria como preservação deliberada", () => {
+  // Sem este registro, a trilha não distingue "pulado de propósito" de "esquecido".
+  const rotas = ler("server/modules/inventarios/inventarios.routes.js");
+  assert.match(rotas, /preservados_sem_contagem: preservados\.length/);
+  assert.doesNotMatch(rotas, /zerados_por_falta_de_contagem/, "o campo da regra antiga não pode sobreviver");
 });
 
 test("o catálogo do Almoxarifado é o cadastro ativo inteiro", () => {

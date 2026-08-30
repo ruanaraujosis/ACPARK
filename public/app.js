@@ -9859,7 +9859,7 @@ function atualizarResumoInventario() {
   if (!alvo) return;
   const { total, contados, semContagem } = resumoContagemNaTela();
   alvo.innerHTML = `<strong>${contados}</strong> de ${total} contados`
-    + (semContagem ? ` &middot; <span class="inventario-pendente">${semContagem} sem contagem (serão zerados)</span>` : "");
+    + (semContagem ? ` &middot; <span class="inventario-pendente">${semContagem} sem contagem (mantêm o valor atual)</span>` : "");
 }
 
 // View: contagem de inventário do PDV
@@ -9913,7 +9913,7 @@ async function viewInventario(options = {}) {
         ? `<div class="release-alert card"><strong>Contagem enviada ao Almoxarifado.</strong>
            <p>A partir daqui quem ajusta é o Almoxarifado. Você será avisado quando precisar assinar.</p></div>`
         : `<div class="release-alert card inventario-aviso-zera"><strong>Conte em unidades, e conte tudo.</strong>
-           <p>Todo produto que ficar <strong>sem contagem será zerado</strong> no seu estoque quando o inventário for confirmado. Se um produto não foi conferido, ele não deveria ficar em branco.</p></div>`}
+           <p>Produto deixado <strong>em branco mantém o valor atual</strong> — o inventário não mexe nele. Para zerar um produto, digite <strong>0</strong>: em branco é "não conferi", zero é "conferi e não há nenhum".</p></div>`}
 
       <div class="inventario-filtros">
         <input id="inventario-busca" type="search" placeholder="Buscar por nome ou SKU" aria-label="Buscar produto" />
@@ -10022,7 +10022,7 @@ async function enviarContagemInventario(botao, codigo) {
     title: "Enviar contagem ao Almoxarifado?",
     message: `Você contou ${contados} de ${total} produtos`
       + (semContagem
-        ? `, e ${semContagem} ficaram SEM CONTAGEM — esses serão ZERADOS no seu estoque quando o Almoxarifado confirmar.`
+        ? `, e ${semContagem} ficaram sem contagem — esses MANTÊM o valor atual do estoque e não serão alterados.`
         : ", ou seja, todos.")
       + " Depois de enviar, só o Almoxarifado pode alterar esta contagem.",
     consequence: semContagem
@@ -10232,12 +10232,12 @@ async function abrirDetalheInventario(codigo) {
 
       <div class="table-wrap inventario-tabela">
         ${table(["Produto", "Contado (un)", "Saldo atual", "Diferença", "Contado em", "Ação"], itens.map((item) => {
-          // Sem contagem agora significa ZERO: o ajuste zera o que ninguem contou. Por isso a
-          // diferenca do nao contado e o saldo inteiro, e nao um traco -- esconder isso faria
-          // o Almoxarifado confirmar sem ver o tamanho da baixa que vai aplicar.
+          // Sem contagem significa NAO MUDA: o ajuste nao toca no produto que ninguem contou.
+          // A diferenca so existe para quem foi contado -- mostrar a baixa inteira aqui, como
+          // a regra antiga fazia, anunciaria um estrago que nao vai acontecer.
           const contado = item.quantidade_contada;
           const temContagem = contado !== null && contado !== undefined;
-          const diferenca = Number(temContagem ? contado : 0) - Number(item.saldo_atual || 0);
+          const diferenca = temContagem ? Number(contado) - Number(item.saldo_atual || 0) : null;
           return `
           <tr class="inventario-item-linha" data-id="${item.id}" data-sku="${esc(item.sku_produto)}">
             <td class="inventario-produto">${esc(item.produto || item.sku_produto)}<span class="inventario-sku">${esc(item.sku_produto)}${item.origem === "ALMOX" ? " · adicionado pelo Almoxarifado" : ""}</span></td>
@@ -10245,7 +10245,9 @@ async function abrirDetalheInventario(codigo) {
               value="${temContagem ? esc(contado) : ""}" placeholder="—"
               aria-label="Quantidade contada de ${esc(item.produto || item.sku_produto)}" ${editavel ? "" : "disabled"} /></td>
             <td class="inventario-saldo">${Number(item.saldo_atual || 0)}</td>
-            <td class="inventario-diferenca"><span class="${diferenca === 0 ? "inventario-dif-zero" : diferenca > 0 ? "inventario-dif-mais" : "inventario-dif-menos"}">${diferenca > 0 ? "+" : ""}${diferenca}</span>${temContagem ? "" : `<span class="inventario-sera-zerado">será zerado</span>`}</td>
+            <td class="inventario-diferenca">${diferenca === null
+              ? `<span class="inventario-preservado">não contado — mantém ${Number(item.saldo_atual || 0)}</span>`
+              : `<span class="${diferenca === 0 ? "inventario-dif-zero" : diferenca > 0 ? "inventario-dif-mais" : "inventario-dif-menos"}">${diferenca > 0 ? "+" : ""}${diferenca}</span>`}</td>
             <td class="inventario-data">${item.contado_em ? moneyDate(item.contado_em) : "<span class='text-slate-400'>—</span>"}</td>
             <td>${editavel ? `<button class="icon-action danger inventario-remover-item" type="button"
               title="Remover do inventário" aria-label="Remover ${esc(item.sku_produto)} do inventário">&times;</button>` : ""}</td>
@@ -10610,7 +10612,7 @@ function blocoAssinaturaInventario(inventario, itens) {
       <div class="release-alert card">
         <strong>Ao assinar, o seu estoque passa a ser exatamente o que está abaixo.</strong>
         <p>${zerados
-          ? `${zerados} produto(s) ficaram sem contagem e <strong>serão zerados</strong>.`
+          ? `${zerados} produto(s) ficaram sem contagem e <strong>mantêm o valor atual</strong>.`
           : "Todos os produtos foram contados."} Confira antes de assinar — depois disso, só um novo inventário corrige.</p>
       </div>
 
@@ -10624,7 +10626,7 @@ function blocoAssinaturaInventario(inventario, itens) {
             <td class="inventario-produto">${esc(item.produto || item.sku_produto)}<span class="inventario-sku">${esc(item.sku_produto)}</span></td>
             <td>${temContagem ? esc(item.quantidade_contada) : `<span class="inventario-nao-contado">não contado</span>`}</td>
             <td class="inventario-saldo">${atual}</td>
-            <td class="inventario-diferenca"><span class="${final === atual ? "inventario-dif-zero" : final > atual ? "inventario-dif-mais" : "inventario-dif-menos"}">${final}</span>${temContagem ? "" : `<span class="inventario-sera-zerado">será zerado</span>`}</td>
+            <td class="inventario-diferenca"><span class="${final === atual ? "inventario-dif-zero" : final > atual ? "inventario-dif-mais" : "inventario-dif-menos"}">${final}</span>${temContagem ? "" : `<span class="inventario-preservado">mantém o valor</span>`}</td>
           </tr>`;
         }))}
       </div>
@@ -10685,7 +10687,7 @@ function bindAssinaturaInventario(codigo) {
           assinado_por: assinante
         })
       });
-      toast(`Inventário concluído. ${r.itens} produto(s) ajustado(s)${r.zerados ? `, ${r.zerados} zerado(s)` : ""}.`);
+      toast(`Inventário concluído. ${r.itens} produto(s) ajustado(s)${r.preservados ? `, ${r.preservados} preservado(s) sem contagem` : ""}.`);
       await viewInventario();
     } catch (error) {
       toast(error.message || "Não foi possível concluir o inventário.", "error");
@@ -10935,7 +10937,7 @@ function blocoContagemDoAlmoxarifado(dados) {
 
       <div class="release-alert card inventario-aviso-zera">
         <strong>Conte em unidades, e conte tudo.</strong>
-        <p>Todo produto que ficar <strong>sem contagem será zerado</strong> no estoque central
+        <p>Produto deixado <strong>em branco mantém o valor atual</strong> no estoque central
         ao concluir. Se um produto não foi conferido, ele não deveria ficar em branco.</p>
       </div>
 
@@ -10996,7 +10998,7 @@ function atualizarResumoAlmox() {
   const contados = linhas.filter((tr) => contagemDigitada(tr.querySelector(".almox-qtd")?.value) !== null).length;
   const semContagem = linhas.length - contados;
   alvo.innerHTML = `<strong>${contados}</strong> de ${linhas.length} contados`
-    + (semContagem ? ` &middot; <span class="inventario-pendente">${semContagem} sem contagem (serão zerados)</span>` : "");
+    + (semContagem ? ` &middot; <span class="inventario-pendente">${semContagem} sem contagem (mantêm o valor atual)</span>` : "");
 }
 
 // Todas as linhas, inclusive as em branco — apagar uma contagem precisa chegar ao servidor
@@ -11083,7 +11085,7 @@ function bindContagemDoAlmoxarifado(codigo) {
     const confirmado = await confirmSystem({
       title: "Concluir o inventário do Almoxarifado?",
       message: `O estoque central passa a ser exatamente o que foi contado`
-        + (semContagem ? `, e ${semContagem} produto(s) sem contagem serão ZERADOS.` : "."),
+        + (semContagem ? `, e ${semContagem} produto(s) sem contagem mantêm o valor atual — não serão alterados.` : "."),
       consequence: "Depois de concluir, só um novo inventário corrige.",
       confirmLabel: "Assinar e concluir",
       danger: true
@@ -11099,7 +11101,7 @@ function bindContagemDoAlmoxarifado(codigo) {
         method: "POST",
         body: JSON.stringify({ codigo_inventario: codigo, assinatura: quadro.comoPng(), assinado_por: assinante })
       });
-      toast(`Inventário concluído. ${r.itens} produto(s) ajustado(s)${r.zerados ? `, ${r.zerados} zerado(s)` : ""}.`);
+      toast(`Inventário concluído. ${r.itens} produto(s) ajustado(s)${r.preservados ? `, ${r.preservados} preservado(s) sem contagem` : ""}.`);
       // O efeito da simulação precisa ser visto, não descoberto no log depois
       if (r.simulacao) {
         await confirmSystem({

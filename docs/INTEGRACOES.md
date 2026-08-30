@@ -373,9 +373,18 @@ Detalhes que sustentam a exceção:
 
 - o lançamento vai no **local do PDV que contou** (`pdv_stock_location_mappings`); o local do
   Almoxarifado continua vindo de `configuracao.local_almoxarifado`, nunca adivinhado;
-- **produto sem contagem é zerado** (decisão do usuário, 29/08/2026). Por isso a quantidade
-  zero é válida aqui e recusada no movimento: `normalizarQuantidadeInventario()` existe
-  separada de `normalizarQuantidade()` para não afrouxar a proteção da transferência;
+- **produto sem contagem NÃO é tocado** — mantém o valor atual, aqui e na OMIE. Só entra no
+  ajuste quem tem quantidade digitada. Para zerar é preciso digitar `0`: **em branco é "não
+  conferi", zero é "conferi e não há nenhum"**. Por isso a quantidade zero é válida aqui e
+  recusada no movimento: `normalizarQuantidadeInventario()` existe separada de
+  `normalizarQuantidade()` para não afrouxar a proteção da transferência.
+
+  Esta regra foi o inverso entre 29/08 e 30/08/2026, e a troca custou dado real: sob
+  "sem contagem = zerado", o inventário `INV-20260829184051-862E` (PDV PARK) teve 4 de 338
+  produtos contados e foi concluído — 334 foram a zero, dos quais **9 tinham saldo real** e
+  **8 chegaram à OMIE**. Esquecer de contar não pode significar "não tem nenhum". Os produtos
+  preservados ficam registrados na auditoria (`preservados_sem_contagem`), para a trilha
+  distinguir "pulado de propósito" de "esquecido";
 - idempotência por inventário + produto (`INVENTARIO-{código}-SKU-{sku}-AJUSTE`), sem versão:
   inventário confirmado nunca é reaberto — corrigir é abrir outro (ver abaixo);
 - nasce em `SIMULACAO` como qualquer capacidade de escrita.

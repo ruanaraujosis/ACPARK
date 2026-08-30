@@ -64,23 +64,27 @@ test("o envio salva antes, para não perder o que foi digitado", () => {
   assert.ok(posPatch > -1 && posPatch < posEnviar, "o salvamento precisa vir antes do envio");
 });
 
-test("o envio avisa que os não contados serão ZERADOS", () => {
-  // Este é o aviso mais importante da tela. Até 29/08/2026 a regra era o oposto e a mensagem
-  // dizia "não serão alterados"; com o zeramento, aquela frase virou uma promessa falsa —
-  // um PDV que contasse 5 de 200 produtos zeraria os outros 195 achando que não faria nada.
+test("o envio avisa que os não contados MANTÊM o valor atual", () => {
+  // Esta frase já mudou duas vezes e cada versão precisou casar com o que o código faz.
+  // Em 29/08 a regra virou "sem contagem zera" e a mensagem passou a avisar o zeramento.
+  // Em 30/08 a regra foi invertida de novo — depois de zerar 9 produtos de verdade — e
+  // agora a tela precisa dizer o oposto: quem não foi contado não é tocado.
   const inicio = app.indexOf("async function enviarContagemInventario");
   const corpo = app.slice(inicio, app.indexOf("\n}\n", inicio));
   assert.match(corpo, /confirmSystem\(/);
-  assert.match(corpo, /serão ZERADOS no seu estoque/);
-  assert.doesNotMatch(corpo, /não serão alterados/, "a promessa antiga era o contrário do que acontece");
-  assert.match(corpo, /danger: semContagem > 0/, "com produtos por contar, a confirmação é de risco");
+  assert.match(corpo, /MANTÊM o valor atual do estoque/);
+  assert.doesNotMatch(corpo, /ZERADOS/, "a promessa de zeramento não pode sobreviver");
   assert.match(corpo, /só o Almoxarifado pode alterar esta contagem/);
 });
 
-test("a tela de contagem avisa, antes de digitar, que o branco zera", () => {
+test("a tela de contagem explica a diferença entre branco e zero", () => {
+  // A distinção é a regra inteira: em branco é "não conferi" (não muda nada); 0 é
+  // "conferi e não há nenhum" (zera). Quem lê a tela precisa saber disso antes de digitar.
   const inicio = app.indexOf("async function viewInventario");
   const corpo = app.slice(inicio, app.indexOf("\n}\n", inicio));
-  assert.match(corpo, /sem contagem será zerado/);
+  assert.match(corpo, /em branco.*mantém o valor atual/i);
+  assert.match(corpo, /digite <strong>0<\/strong>/);
+  assert.doesNotMatch(corpo, /será zerado/, "o aviso de zeramento por omissão saiu");
 });
 
 test("contagem bloqueada mostra o motivo, nunca um formulário mudo", () => {
