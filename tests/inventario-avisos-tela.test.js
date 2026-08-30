@@ -12,11 +12,20 @@ const html = ler("public/index.html");
 // ===== Formulário de aviso manual =====
 
 test("o formulário de aviso fica na aba onde o Almoxarifado controla a contagem", () => {
-  // Requisito: no mesmo lugar do bloqueio e do agendamento.
+  // Requisito: no mesmo lugar do bloqueio e do agendamento. Em 31/08 o bloqueio e o
+  // agendamento deixaram de ficar sempre visíveis (viraram o botão "Agendar", que abre
+  // blocoJanelaContagem num painel à parte) -- o requisito continua valendo: ainda é a mesma
+  // aba, só que agora acessado por um botão em vez de estar sempre exposto.
   const view = app.slice(app.indexOf("async function viewInventarios"), app.indexOf("\n}\n", app.indexOf("async function viewInventarios")));
-  assert.match(view, /blocoJanelaContagem\(janela\)/);
+  assert.match(view, /id="inventario-agendar-abrir"/, "o botão que abre o agendamento mora na mesma view");
   assert.match(view, /blocoEmissaoDeAviso\(avisosAtivos\)/);
   assert.match(view, /bindEmissaoDeAviso\(\)/);
+  assert.match(app, /function abrirAgendamentoContagem\(janela\)/);
+  assert.match(
+    app.slice(app.indexOf("function abrirAgendamentoContagem")),
+    /\$\{blocoJanelaContagem\(janela\)\}/,
+    "o conteúdo do bloqueio/agendamento continua sendo o mesmo, só que dentro do painel"
+  );
 });
 
 test("o formulário usa a rota já existente e testada", () => {
@@ -138,15 +147,20 @@ test("os ícones do cabeçalho do painel ficam agrupados, não espalhados", () =
   assert.match(css, /\.order-panel-head-actions \{/);
 });
 
-test("o filtro de estado divide a linha com o título e o agendamento, sem linha própria vazia", () => {
-  // Antes o filtro reusava .inventario-filtros (um grid de 3 colunas pensado para a busca da
-  // contagem própria) sozinho: só a primeira coluna ficava ocupada, e a segunda linha inteira
-  // ficava quase vazia. Agora ele mora dentro do mesmo .inventario-topo do título e da janela.
+test("o filtro de estado fica no canto esquerdo, abaixo do título", () => {
+  // Em 31/08: o bloqueio/agendamento saiu da mesma linha do filtro (virou o botão "Agendar",
+  // ao lado do título) e o filtro passou a ocupar sozinho a linha de baixo, à esquerda --
+  // não mais dividindo espaço com o bloco de janela.
   const view = app.slice(app.indexOf("async function viewInventarios"), app.indexOf("async function viewInventarios") + 2000);
-  const topo = view.slice(view.indexOf('<div class="inventario-topo">'), view.indexOf("</div>\n\n      ${inventarios.length"));
-  assert.match(topo, /<select id="inventarios-status" class="inventario-status-filtro"/);
-  assert.match(topo, /\$\{blocoJanelaContagem\(janela\)\}/);
-  assert.doesNotMatch(view, /<div class="inventario-filtros">/, "não sobrou uma segunda linha só para o filtro");
+  const posTopo = view.indexOf('<div class="inventario-topo">');
+  const posFimTopo = view.indexOf("</div>\n      </div>") + "</div>\n      </div>".length;
+  const topo = view.slice(posTopo, posFimTopo);
+  const depoisDoTopo = view.slice(posFimTopo);
+  assert.doesNotMatch(topo, /inventario-status-filtro/, "o filtro não mora mais dentro do .inventario-topo");
+  assert.match(topo, /id="inventario-agendar-abrir"/, "o botão de agendar fica na mesma linha do título");
+  const posSelect = depoisDoTopo.indexOf('<select id="inventarios-status" class="inventario-status-filtro"');
+  assert.ok(posSelect > -1 && posSelect < 200, "o filtro é o próximo elemento logo abaixo do .inventario-topo");
+  assert.doesNotMatch(view, /<div class="inventario-filtros">/, "não sobrou uma segunda linha vazia para o filtro");
   assert.match(css, /\.inventario-status-filtro \{/);
 });
 
@@ -176,7 +190,7 @@ test("o cache-bust acompanhou a última mudança do app.js", () => {
   // Verificado na prova visual: com o mesmo ?v=, o navegador serviu a versão antiga e a
   // correção parecia não ter sido aplicada.
   const versao = html.match(/app\.js\?v=([^"]+)/)?.[1];
-  assert.equal(versao, "20260831-inventario-cabecalho-alinhado");
+  assert.equal(versao, "20260831-inventario-agendar-e-assinatura");
   assert.match(html, new RegExp(`styles\\.css\\?v=${versao}`), "css e js compartilham a versão");
 });
 

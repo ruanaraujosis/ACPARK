@@ -3750,7 +3750,9 @@ function ligarQuadroDeAssinatura(canvas, { aoDesenhar } = {}) {
     ctx.fillStyle = "#fff";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.strokeStyle = "#005f68";
-    ctx.lineWidth = 4;
+    // O canvas nasce em 720x220, mas quase sempre é exibido menor via CSS (width:100%) --
+    // reduzido, um traço de 4px de espessura própria fica fino demais na tela.
+    ctx.lineWidth = 7;
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
     temTinta = false;
@@ -10341,13 +10343,16 @@ async function viewInventarios(options = {}) {
           <p class="eyebrow">Contagem de estoque</p>
           <h3 class="section-title text-xl font-black">Inventários</h3>
         </div>
-        <select id="inventarios-status" class="inventario-status-filtro" aria-label="Filtrar por estado">
-          <option value="">Todos os estados</option>
-          ${Object.keys(ROTULO_STATUS_INVENTARIO).map((s) =>
-            `<option value="${esc(s)}" ${filtro === s ? "selected" : ""}>${esc(ROTULO_STATUS_INVENTARIO[s])}</option>`).join("")}
-        </select>
-        ${blocoJanelaContagem(janela)}
+        <div class="inventario-agendar-area">
+          <span class="inventario-janela-status ${janela.liberado ? "is-liberada" : "is-bloqueada"}">${janela.liberado ? "Liberada" : "Bloqueada"}</span>
+          <button class="btn secondary" id="inventario-agendar-abrir" type="button">Agendar</button>
+        </div>
       </div>
+      <select id="inventarios-status" class="inventario-status-filtro" aria-label="Filtrar por estado">
+        <option value="">Todos os estados</option>
+        ${Object.keys(ROTULO_STATUS_INVENTARIO).map((s) =>
+          `<option value="${esc(s)}" ${filtro === s ? "selected" : ""}>${esc(ROTULO_STATUS_INVENTARIO[s])}</option>`).join("")}
+      </select>
 
       ${inventarios.length
         ? table(["PDV", "Código", "Estado", "Contados", "Contagem", "Ação"], inventarios.map((inv) => `
@@ -10364,7 +10369,7 @@ async function viewInventarios(options = {}) {
     ${resumoContagemPropriaHtml(contagemPropria)}
     ${blocoEmissaoDeAviso(avisosAtivos)}`);
 
-  bindInventariosAdmin();
+  bindInventariosAdmin(janela);
   bindEmissaoDeAviso();
   bindResumoContagemPropria();
 }
@@ -10400,35 +10405,80 @@ function blocoJanelaContagem(janela) {
 }
 
 // Liga filtros, alternador e abertura de detalhe
-function bindInventariosAdmin() {
+function bindInventariosAdmin(janela) {
   document.querySelector("#inventarios-status")?.addEventListener("change", async (e) => {
     inventarioAdmin.filtroStatus = e.currentTarget.value;
     await viewInventarios();
   });
 
-  document.querySelector("#inventario-bloqueio")?.addEventListener("change", async (e) => {
-    // O checkbox marcado significa LIBERADO; a chave guardada é o bloqueio
-    await salvarJanelaContagem({ bloqueado: !e.currentTarget.checked });
-  });
-
-  document.querySelector("#inventario-agenda")?.addEventListener("change", async (e) => {
-    await salvarJanelaContagem({ agendado_para: e.currentTarget.value });
-  });
+  document.querySelector("#inventario-agendar-abrir")?.addEventListener("click", () => abrirAgendamentoContagem(janela));
 
   document.querySelectorAll(".inventario-abrir").forEach((botao) =>
     botao.addEventListener("click", () => abrirDetalheInventario(botao.dataset.codigo)));
 }
 
-// Grava a janela e redesenha, para o rótulo refletir o estado real vindo do servidor
+// Liga o alternador e a data dentro de um contêiner qualquer -- reaproveitado tanto pelo
+// painel de agendamento quanto (se algum dia voltar a ser preciso) por uma tela inteira
+function bindJanelaContagemControles(root) {
+  root.querySelector("#inventario-bloqueio")?.addEventListener("change", async (e) => {
+    // O checkbox marcado significa LIBERADO; a chave guardada é o bloqueio
+    await salvarJanelaContagem({ bloqueado: !e.currentTarget.checked });
+  });
+
+  root.querySelector("#inventario-agenda")?.addEventListener("change", async (e) => {
+    await salvarJanelaContagem({ agendado_para: e.currentTarget.value });
+  });
+}
+
+// Painel de agendamento: o alternador de bloqueio e a data de agendamento moravam sempre
+// visíveis ao lado do título, competindo por espaço com o filtro. Viraram um botão único
+// ("Agendar") que abre esse conteúdo num painel próprio, só quando alguém precisa mexer nisso.
+function abrirAgendamentoContagem(janela) {
+  document.querySelector(".system-confirm-modal")?.remove();
+  const modal = document.createElement("div");
+  modal.className = "system-confirm-modal";
+  modal.innerHTML = `
+    <div class="system-confirm-dialog" role="dialog" aria-modal="true" aria-label="Agendamento da contagem de estoque">
+      <div class="system-confirm-head">
+        <div>
+          <p class="eyebrow">Contagem de estoque</p>
+          <h3>Agendamento</h3>
+        </div>
+        <button class="icon-action system-confirm-cancel" type="button" aria-label="Fechar">&times;</button>
+      </div>
+      ${blocoJanelaContagem(janela)}
+    </div>`;
+  document.body.appendChild(modal);
+  modal.querySelectorAll(".system-confirm-cancel").forEach((b) => b.addEventListener("click", () => modal.remove()));
+  modal.addEventListener("click", (e) => {
+    if (e.target === modal) modal.remove();
+  });
+  bindJanelaContagemControles(modal);
+}
+
+// Grava a janela e redesenha a lista, para o rótulo refletir o estado real vindo do servidor.
+// Se o painel de agendamento estiver aberto na hora, atualiza o conteúdo dele no lugar --
+// senão o alternador e a nota do dia agendado ficariam mostrando o estado de antes da
+// mudança até a pessoa fechar e reabrir o painel.
 async function salvarJanelaContagem(mudanca) {
   try {
     await request("/api/admin/inventario/janela", { method: "PUT", body: JSON.stringify(mudanca) });
     toast("Janela de contagem atualizada.");
     await viewInventarios();
+    await atualizarPainelAgendamentoSeAberto();
   } catch (error) {
     toast(error.message || "Não foi possível atualizar a janela de contagem.", "error");
     await viewInventarios();
   }
+}
+
+async function atualizarPainelAgendamentoSeAberto() {
+  const modal = document.querySelector(".system-confirm-modal .inventario-janela")?.closest(".system-confirm-dialog");
+  if (!modal) return;
+  const janela = await request("/api/admin/inventario/janela", { silentLoading: true }).catch(() => null);
+  if (!janela) return;
+  modal.querySelector(".inventario-janela").outerHTML = blocoJanelaContagem(janela);
+  bindJanelaContagemControles(modal);
 }
 
 // Detalhe: itens com saldo atual ao lado, edição, adição, remoção e confirmação
@@ -10826,7 +10876,7 @@ function pedirAssinaturaContagemPropria(semContagem) {
     const modal = document.createElement("div");
     modal.className = "system-confirm-modal";
     modal.innerHTML = `
-      <div class="system-confirm-dialog" role="dialog" aria-modal="true" aria-label="Assinar e confirmar a contagem do Almoxarifado">
+      <div class="system-confirm-dialog assinatura-contagem-dialog" role="dialog" aria-modal="true" aria-label="Assinar e confirmar a contagem do Almoxarifado">
         <div class="system-confirm-head">
           <div>
             <p class="eyebrow">Confirmação</p>

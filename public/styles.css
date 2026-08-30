@@ -734,12 +734,23 @@
   display: grid;
   gap: 0.9rem;
   width: min(480px, 94vw);
+  max-height: calc(100dvh - 2rem);
   padding: 1rem;
   border: 1px solid rgba(0, 123, 135, 0.16);
   border-radius: 22px;
+  /* .signature-actions (usada pelo painel de assinatura) sangra até a borda com margem
+     negativa -- sem overflow aqui, aquele retângulo branco ignorava o arredondamento e
+     cortava o canto de baixo do diálogo com uma quina reta. */
+  overflow-y: auto;
   background: rgba(255, 255, 255, 0.98);
   color: var(--ac-teal-dark);
   box-shadow: 0 22px 70px rgba(0, 31, 36, 0.24);
+}
+
+/* O painel de assinar e confirmar tem um quadro de desenho dentro -- os 480px do diálogo
+   padrão deixavam pouco espaço de sobra para assinar com conforto. */
+.assinatura-contagem-dialog {
+  width: min(560px, 94vw);
 }
 
 .system-confirm-head {
@@ -6621,14 +6632,40 @@ td input[type="number"] {
   margin-bottom: 0.75rem;
 }
 
-/* Filtro de estado na lista de inventários: fica na mesma linha do título e do bloco de
-   janela/agendamento (.inventario-topo), preenchendo o vão que sobrava entre os dois em vez
-   de ocupar uma linha própria quase vazia. Só este select cresce -- título e bloco de janela
-   mantêm o tamanho natural, como já era antes de o filtro entrar na mesma linha. */
+/* Filtro de estado na lista de inventários: fica sozinho na linha de baixo, à esquerda,
+   embaixo do título -- o bloqueio/agendamento saiu dessa linha (virou o botão "Agendar") e o
+   filtro não precisa mais dividir espaço nem esticar para preencher vão nenhum. */
 .inventario-status-filtro {
-  flex: 1 1 14rem;
-  min-width: 12rem;
-  max-width: 26rem;
+  display: block;
+  width: 100%;
+  max-width: 20rem;
+  margin-bottom: 0.75rem;
+}
+
+/* Rótulo (Liberada/Bloqueada) + botão de agendar, lado a lado à direita do título */
+.inventario-agendar-area {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.inventario-janela-status {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.3rem 0.75rem;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 900;
+}
+
+.inventario-janela-status.is-liberada {
+  background: rgba(16, 182, 106, 0.12);
+  color: #0f7a45;
+}
+
+.inventario-janela-status.is-bloqueada {
+  background: rgba(251, 191, 36, 0.16);
+  color: #92400e;
 }
 
 .inventario-filtros {
