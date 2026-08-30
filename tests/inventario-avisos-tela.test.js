@@ -97,9 +97,15 @@ test("a contagem do Almoxarifado é em unidade, sem seletor de embalagem", () =>
   assert.match(itens, /unidade_medida: "UNIDADE"/);
 });
 
-test("a tela do Almoxarifado reusa o núcleo de assinatura e a regra branco != zero", () => {
+test("a contagem do Almoxarifado confirma por botão, sem quadro de desenho", () => {
+  // Em 30/08 o quadro de assinatura (canvas de 220px) foi removido daqui: sozinho ele já
+  // impedia a lista de milhares de produtos de aparecer no painel. gerarAssinaturaDoNome()
+  // continua produzindo um PNG de verdade para satisfazer a validação do servidor, só que a
+  // partir do nome digitado, sem exigir traço à mão.
   const bind = app.slice(app.indexOf("function bindContagemDoAlmoxarifado"));
-  assert.match(bind, /ligarQuadroDeAssinatura\(canvas\)/);
+  assert.doesNotMatch(bind, /ligarQuadroDeAssinatura/);
+  assert.match(app, /function gerarAssinaturaDoNome\(nome\)/);
+  assert.match(bind, /assinatura: gerarAssinaturaDoNome\(assinante\)/);
   const itens = app.slice(app.indexOf("function itensDaTelaAlmox"), app.indexOf("\n}\n", app.indexOf("function itensDaTelaAlmox")));
   assert.match(itens, /contagemDigitada\(/, "mesma leitura de campo da contagem do PDV");
   assert.doesNotMatch(itens, /\.filter\(/, "as linhas em branco também precisam ser enviadas");
@@ -124,7 +130,7 @@ test("o cache-bust acompanhou a última mudança do app.js", () => {
   // Verificado na prova visual: com o mesmo ?v=, o navegador serviu a versão antiga e a
   // correção parecia não ter sido aplicada.
   const versao = html.match(/app\.js\?v=([^"]+)/)?.[1];
-  assert.equal(versao, "20260830-inventario-painel-cheio");
+  assert.equal(versao, "20260830-inventario-sem-canvas");
   assert.match(html, new RegExp(`styles\\.css\\?v=${versao}`), "css e js compartilham a versão");
 });
 

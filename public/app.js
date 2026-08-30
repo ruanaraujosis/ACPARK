@@ -3801,6 +3801,30 @@ function ligarQuadroDeAssinatura(canvas, { aoDesenhar } = {}) {
   };
 }
 
+// Gera a "assinatura" da contagem do Almoxarifado a partir do nome digitado, sem exigir
+// desenho a mão. O quadro de desenho (canvas de 220px) tomava tanto espaço no painel que
+// chegava a impedir a lista de milhares de produtos de aparecer -- um problema de espaço, não
+// de conteúdo. O campo assinatura_imagem continua sendo um PNG de verdade (a validação do
+// servidor exige isso), só que gerado a partir do nome em vez de traçado à mão; ninguém exibe
+// essa imagem de volta na tela hoje, então o formato exato não é visto por ninguém além do
+// banco de auditoria.
+function gerarAssinaturaDoNome(nome) {
+  const canvas = document.createElement("canvas");
+  canvas.width = 640;
+  canvas.height = 160;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "#005f68";
+  ctx.font = "italic 700 46px Georgia, 'Times New Roman', serif";
+  ctx.textBaseline = "middle";
+  ctx.fillText(nome, 24, 76, canvas.width - 48);
+  ctx.fillStyle = "#64748b";
+  ctx.font = "400 15px Arial, sans-serif";
+  ctx.fillText(`Confirmado em ${new Date().toLocaleString("pt-BR")}`, 24, 130);
+  return canvas.toDataURL("image/png");
+}
+
 // Liga os eventos de assinatura de avaria
 function bindDamageSignatures(root = document) {
   root.querySelectorAll(".signature-pad").forEach((canvas) => {
@@ -11269,21 +11293,18 @@ function renderContagemPropria(overlay, dados) {
             }))
           : `<p class="text-sm text-slate-500">Nenhum produto ativo no cadastro.</p>`}
       </div>`,
-    // A assinatura fica no rodapé fixo (fora da área que rola), do mesmo jeito que o painel
-    // de pedido reserva o rodapé para as ações -- senão o quadro de assinatura (alto, com
-    // canvas) espremeria a tabela até quase sumir em telas mais baixas.
+    // A confirmação fica no rodapé fixo (fora da área que rola), do mesmo jeito que o painel
+    // de pedido reserva o rodapé para as ações. Sem quadro de desenho de propósito: o canvas
+    // sozinho tinha 220px e chegava a impedir a lista de milhares de produtos de aparecer.
+    // Um botão fecha a contagem sem exigir traço à mão -- ver gerarAssinaturaDoNome().
     foot: `
       <div class="inventario-assinatura-area">
-        <label class="grid gap-1 text-sm font-bold">Quem está assinando
+        <label class="grid gap-1 text-sm font-bold">Quem está confirmando
           <input id="almox-assinante" type="text" placeholder="Nome completo do responsável" autocomplete="off" />
         </label>
-        <p class="eyebrow">Assinatura do responsável pelo Almoxarifado</p>
-        <canvas id="almox-assinatura-pad" class="signature-pad" width="720" height="220"
-          aria-label="Área para assinatura do responsável pelo Almoxarifado"></canvas>
         <div class="signature-actions">
-          <button class="btn secondary" id="almox-assinatura-limpar" type="button">Limpar</button>
           <button class="btn secondary" id="almox-salvar" type="button">Salvar contagem</button>
-          <button class="btn" id="almox-concluir" type="button">Assinar e concluir</button>
+          <button class="btn" id="almox-concluir" type="button">Assinar e confirmar</button>
         </div>
       </div>`
   });
@@ -11337,11 +11358,6 @@ function bindContagemDoAlmoxarifado(codigo) {
     })
   );
 
-  const canvas = document.querySelector("#almox-assinatura-pad");
-  // Mesmo núcleo de desenho da assinatura do PDV e da devolução de avaria
-  const quadro = canvas ? ligarQuadroDeAssinatura(canvas) : null;
-  document.querySelector("#almox-assinatura-limpar")?.addEventListener("click", () => quadro?.limpar());
-
   const salvar = async () => {
     await request("/api/admin/inventario/proprio", {
       method: "PATCH",
@@ -11364,13 +11380,9 @@ function bindContagemDoAlmoxarifado(codigo) {
 
   document.querySelector("#almox-concluir")?.addEventListener("click", async (evento) => {
     const botao = evento.currentTarget;
-    if (!quadro?.temTinta()) {
-      toast("Assine no quadro antes de concluir.", "error");
-      return;
-    }
     const assinante = String(document.querySelector("#almox-assinante")?.value || "").trim();
     if (!assinante) {
-      toast("Informe o nome de quem está assinando.", "error");
+      toast("Informe o nome de quem está confirmando.", "error");
       return;
     }
     const linhas = [...document.querySelectorAll(".almox-linha")];
@@ -11380,7 +11392,7 @@ function bindContagemDoAlmoxarifado(codigo) {
       message: `O estoque central passa a ser exatamente o que foi contado`
         + (semContagem ? `, e ${semContagem} produto(s) sem contagem mantêm o valor atual — não serão alterados.` : "."),
       consequence: "Depois de concluir, só um novo inventário corrige.",
-      confirmLabel: "Assinar e concluir",
+      confirmLabel: "Assinar e confirmar",
       danger: true
     });
     if (!confirmado) return;
@@ -11392,7 +11404,7 @@ function bindContagemDoAlmoxarifado(codigo) {
       await salvar();
       const r = await request("/api/admin/inventario/proprio/concluir", {
         method: "POST",
-        body: JSON.stringify({ codigo_inventario: codigo, assinatura: quadro.comoPng(), assinado_por: assinante })
+        body: JSON.stringify({ codigo_inventario: codigo, assinatura: gerarAssinaturaDoNome(assinante), assinado_por: assinante })
       });
       toast(`Inventário concluído. ${r.itens} produto(s) ajustado(s)${r.preservados ? `, ${r.preservados} preservado(s) sem contagem` : ""}.`);
       // O efeito da simulação precisa ser visto, não descoberto no log depois
@@ -11413,7 +11425,7 @@ function bindContagemDoAlmoxarifado(codigo) {
       toast(error.message || "Não foi possível concluir o inventário.", "error");
     } finally {
       botao.disabled = false;
-      botao.textContent = "Assinar e concluir";
+      botao.textContent = "Assinar e confirmar";
     }
   });
 }
