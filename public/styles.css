@@ -3958,6 +3958,16 @@ body.has-order-panel {
   min-width: 0;
 }
 
+/* Agrupa o(s) ícone(s) extra (histórico, resumo), o minimizar e o fechar num só bloco à
+   direita -- sem isto, o space-between do cabeçalho espalhava cada botão numa posição
+   diferente ao longo da largura inteira, em vez de ficarem lado a lado. */
+.order-panel-head-actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 0.6rem;
+  align-items: center;
+}
+
 .order-panel-head-main h2 {
   display: flex;
   gap: 0.5rem;
@@ -6609,6 +6619,16 @@ td input[type="number"] {
 
 .inventario-ajuda {
   margin-bottom: 0.75rem;
+}
+
+/* Filtro de estado na lista de inventários: fica na mesma linha do título e do bloco de
+   janela/agendamento (.inventario-topo), preenchendo o vão que sobrava entre os dois em vez
+   de ocupar uma linha própria quase vazia. Só este select cresce -- título e bloco de janela
+   mantêm o tamanho natural, como já era antes de o filtro entrar na mesma linha. */
+.inventario-status-filtro {
+  flex: 1 1 14rem;
+  min-width: 12rem;
+  max-width: 26rem;
 }
 
 .inventario-filtros {

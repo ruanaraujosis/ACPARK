@@ -123,6 +123,33 @@ test("o painel da contagem do Almoxarifado ocupa a página inteira e pode ser mi
   assert.match(css, /\.minimized-panel-chip \{/);
 });
 
+test("os ícones do cabeçalho do painel ficam agrupados, não espalhados", () => {
+  // Antes, histórico/resumo + minimizar + fechar eram filhos soltos do cabeçalho, e o
+  // space-between do .order-panel-head espalhava cada um numa posição diferente ao longo da
+  // largura inteira. Agrupá-los num só bloco à direita faz eles ficarem lado a lado.
+  const shell = app.slice(app.indexOf("function orderPanelShell"), app.indexOf("\n}\n", app.indexOf("function orderPanelShell")));
+  assert.match(shell, /<div class="order-panel-head-actions">/);
+  const posAbreGrupo = shell.indexOf('<div class="order-panel-head-actions">');
+  const posHeadExtra = shell.indexOf("${headExtra}");
+  const posMinimizar = shell.indexOf("${minimizeButton}");
+  const posClose = shell.indexOf('class="order-panel-close"');
+  assert.ok(posAbreGrupo < posHeadExtra && posHeadExtra < posMinimizar && posMinimizar < posClose,
+    "histórico/resumo, minimizar e fechar precisam estar dentro do mesmo agrupamento, nesta ordem");
+  assert.match(css, /\.order-panel-head-actions \{/);
+});
+
+test("o filtro de estado divide a linha com o título e o agendamento, sem linha própria vazia", () => {
+  // Antes o filtro reusava .inventario-filtros (um grid de 3 colunas pensado para a busca da
+  // contagem própria) sozinho: só a primeira coluna ficava ocupada, e a segunda linha inteira
+  // ficava quase vazia. Agora ele mora dentro do mesmo .inventario-topo do título e da janela.
+  const view = app.slice(app.indexOf("async function viewInventarios"), app.indexOf("async function viewInventarios") + 2000);
+  const topo = view.slice(view.indexOf('<div class="inventario-topo">'), view.indexOf("</div>\n\n      ${inventarios.length"));
+  assert.match(topo, /<select id="inventarios-status" class="inventario-status-filtro"/);
+  assert.match(topo, /\$\{blocoJanelaContagem\(janela\)\}/);
+  assert.doesNotMatch(view, /<div class="inventario-filtros">/, "não sobrou uma segunda linha só para o filtro");
+  assert.match(css, /\.inventario-status-filtro \{/);
+});
+
 test("concluir diz que os não contados mantêm o valor, e segue sendo ação de risco", () => {
   // A confirmação continua marcada como risco porque o inventário substitui saldo — mas o
   // texto deixou de anunciar zeramento por omissão, que é o que a regra nova proíbe.
@@ -149,7 +176,7 @@ test("o cache-bust acompanhou a última mudança do app.js", () => {
   // Verificado na prova visual: com o mesmo ?v=, o navegador serviu a versão antiga e a
   // correção parecia não ter sido aplicada.
   const versao = html.match(/app\.js\?v=([^"]+)/)?.[1];
-  assert.equal(versao, "20260831-inventario-painel-completo");
+  assert.equal(versao, "20260831-inventario-cabecalho-alinhado");
   assert.match(html, new RegExp(`styles\\.css\\?v=${versao}`), "css e js compartilham a versão");
 });
 

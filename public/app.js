@@ -7755,9 +7755,11 @@ function orderPanelShell({
           <p class="eyebrow">${esc(eyebrow)}</p>
           <h2>${esc(title)}${titleBadge ? ` ${titleBadge}` : ""}</h2>
         </div>
-        ${headExtra}
-        ${minimizeButton}
-        <button class="order-panel-close" type="button" aria-label="Fechar painel">&times;</button>
+        <div class="order-panel-head-actions">
+          ${headExtra}
+          ${minimizeButton}
+          <button class="order-panel-close" type="button" aria-label="Fechar painel">&times;</button>
+        </div>
       </header>
       <div class="order-panel-content">${inner}</div>
       ${foot ? `<footer class="order-panel-foot">${foot}</footer>` : ""}
@@ -10339,15 +10341,12 @@ async function viewInventarios(options = {}) {
           <p class="eyebrow">Contagem de estoque</p>
           <h3 class="section-title text-xl font-black">Inventários</h3>
         </div>
-        ${blocoJanelaContagem(janela)}
-      </div>
-
-      <div class="inventario-filtros">
-        <select id="inventarios-status" aria-label="Filtrar por estado">
+        <select id="inventarios-status" class="inventario-status-filtro" aria-label="Filtrar por estado">
           <option value="">Todos os estados</option>
           ${Object.keys(ROTULO_STATUS_INVENTARIO).map((s) =>
             `<option value="${esc(s)}" ${filtro === s ? "selected" : ""}>${esc(ROTULO_STATUS_INVENTARIO[s])}</option>`).join("")}
         </select>
+        ${blocoJanelaContagem(janela)}
       </div>
 
       ${inventarios.length
