@@ -281,10 +281,16 @@ async function api(req, res) {
   await processAutoOrders();
 
   // Dados iniciais carregados ao abrir a aplicação (PDVs, produtos e categorias)
+  //
+  // NAO le `administrativo` aqui de proposito. Este caminho roda para todo mundo, antes de
+  // qualquer login, e uma coluna que ainda nao existe no banco derruba a tela inteira -- foi
+  // exatamente o que aconteceu em 29/08/2026, quando a tag do PDV Administrativo chegou ao
+  // codigo antes de chegar ao banco de producao e ninguem conseguiu entrar, nem PDV nem
+  // Almoxarifado. Quem precisa do perfil o busca na rota especifica, que garante a coluna.
   if (url.pathname === "/api/bootstrap") {
     const [pdvs, products, categories] = await Promise.all([
       query(`
-        SELECT p.id, p.nome, p.codigo_orion, p.is_cozinha, p.administrativo, p.categoria,
+        SELECT p.id, p.nome, p.codigo_orion, p.is_cozinha, p.categoria,
                COALESCE(ARRAY(
                  SELECT pc.categoria
                  FROM pdv_categorias pc
@@ -465,6 +471,8 @@ async function api(req, res) {
     if (!requireUser(req, res, "admin")) return;
     const body = method === "GET" ? {} : await readBody(req);
     if (method === "GET") {
+      // Esta rota LE `administrativo`, entao a coluna precisa existir antes da consulta
+      await ensurePdvAdministrativoColumn();
       return send(res, 200, { pdvs: await query(`
         SELECT p.id, p.nome, p.codigo_orion, p.is_cozinha, p.administrativo, p.categoria,
                COALESCE(ARRAY(
@@ -953,6 +961,21 @@ http.createServer((req, res) => {
   });
 }).listen(port, () => {
   console.log(`MyEstoque web rodando em http://localhost:${port}`);
+
+  // Garante a coluna `pdvs.administrativo` assim que o servidor sobe.
+  //
+  // Varias rotas quentes leem esse campo -- inclusive /api/pdv/products, que alimenta a tela
+  // de pedido. Deixar cada uma chamar o ensure na primeira requisicao funciona, mas basta
+  // esquecer uma para a tela daquele caminho quebrar; foi assim que o bootstrap derrubou o
+  // login de todo mundo em 29/08/2026. Criar a coluna uma vez, na subida, elimina a classe
+  // inteira de erro em vez de tapar um caminho por vez.
+  //
+  // Nao bloqueia a subida: se falhar, o servidor continua no ar e o erro aparece no log --
+  // um problema de schema nao pode impedir o sistema de responder.
+  ensurePdvAdministrativoColumn().catch((erro) => {
+    console.error("Falha ao garantir a coluna pdvs.administrativo:", erro?.message || erro);
+  });
+
   iniciarAgendador();
 });
 
