@@ -3,6 +3,7 @@ import { normalizeText, readBody, send } from "../../utils/http.js";
 import { pdvsAdministrativos } from "../../services/pdvs/pdv-administrativo.service.js";
 import {
   registrarCompensacaoDaReabertura,
+  registrarConsumoAdministrativo,
   registrarTransferenciasDaRetirada
 } from "../../services/integrations/core/stock-launches.service.js";
 import { converterQuantidadeDoPedido, obterFatoresEmLote } from "../../services/integrations/core/fator-conversao.repository.js";
@@ -1616,20 +1617,31 @@ export async function handlePedidosRoutes(req, res, context) {
         }))
       });
 
-      // PENDENTE: a saida por consumo administrativo ainda nao e enfileirada porque o codigo
-      // de motivo da OMIE para consumo interno nao foi levantado. A conta so tem confirmados
-      // PER (perda), TRF (transferencia) e INV (inventario), e nenhum serve: perda e consumo
-      // administrativo sao coisas diferentes para relatorio fiscal e gerencial, entao
-      // reaproveitar PER por semelhanca inflaria o relatorio de perdas com consumo legitimo.
-      // Enquanto isso, a retirada do PDV administrativo conclui normalmente e baixa o estoque
-      // central -- o que falta e so o espelho na OMIE.
+      // SAIDA por consumo interno do PDV Administrativo -- "SAI", nunca "TRF".
+      //
+      // O lancamento e enfileirado e o payload e montado, mas NADA sai para a OMIE: o dominio
+      // de motivo de "SAI" na conta tem so quatro valores (INV, PER, OPS, PDV, conferidos na
+      // documentacao da API) e nenhum significa consumo interno. Ate o usuario escolher, o
+      // payload leva um sentinela e a tarefa se recusa a enviar, mesmo em modo REAL.
+      //
+      // Enfileirar mesmo assim e proposital: quando o motivo for definido, o historico de
+      // consumo ja estara montado e conferido, em vez de comecar do zero naquele dia.
       const itensAdministrativos = targetRows.filter((row) => administrativos.has(row.pdv_id));
       if (itensAdministrativos.length) {
+        const consumo = await registrarConsumoAdministrativo(client, {
+          codigoPedido: orderCode,
+          itens: itensAdministrativos.map((row) => ({
+            pedidoItemId: row.id,
+            sku: row.sku_produto,
+            pdvId: row.pdv_id,
+            quantidade: asInt(row.quantidade_liberada)
+          }))
+        });
         lancamentoIntegracao = {
           ...(lancamentoIntegracao || {}),
-          consumo_administrativo_pendente: itensAdministrativos.length,
+          consumo_administrativo: consumo,
           motivo_consumo:
-            "Saída por consumo administrativo ainda não enfileirada: o código de motivo da OMIE para consumo interno está em levantamento."
+            "Saída por consumo administrativo registrada em simulação: o código de motivo da OMIE para consumo interno ainda não foi escolhido, então nada é enviado."
         };
       }
 

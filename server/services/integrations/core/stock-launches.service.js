@@ -183,3 +183,83 @@ export async function registrarCompensacaoDaReabertura(client, { codigoPedido, i
 
   return resumo;
 }
+
+// ===== Consumo administrativo =====
+
+// Procura a integracao ativa que declara uma capacidade especifica de escrita.
+// Continua generica: recebe o id da capacidade, nao o nome de um provider.
+async function integracaoDeEscritaPorCapacidade(client, capacidadeId) {
+  const ativas = await listarIntegracoesAtivas(client);
+  for (const integracao of ativas) {
+    const provider = obterProvider(integracao.provedor);
+    const capacidade = provider?.capacidades?.find(
+      (item) => item.escrita === true && item.id === capacidadeId
+    );
+    if (capacidade) return { integracao, capacidade };
+  }
+  return null;
+}
+
+// Registra a SAIDA por consumo interno de um PDV Administrativo e enfileira o envio.
+//
+// Diferente da transferencia em dois pontos que importam:
+//   1. Nao ha local de destino -- a mercadoria sai do estoque, nao muda de lugar. Por isso a
+//      falta de vinculo do PDV NAO impede o lancamento: o que importa e o local de origem
+//      (almoxarifado), e esse vem da configuracao da integracao.
+//   2. O evento e CONSUMO_ADMIN, para a tarefa de transferencias nunca ler estas linhas e
+//      montar TRF em cima delas.
+//
+// Como toda funcao deste arquivo, engole o proprio erro: a retirada ja aconteceu.
+export async function registrarConsumoAdministrativo(client, { codigoPedido, itens = [] }) {
+  const resumo = { registrados: 0, ignorados: 0, motivo: null };
+  if (!itens.length) return resumo;
+
+  try {
+    const alvo = await integracaoDeEscritaPorCapacidade(client, "CONSUMO_ADMINISTRATIVO");
+    if (!alvo) {
+      resumo.motivo = "Nenhuma integracao ativa declara a saida por consumo administrativo.";
+      return resumo;
+    }
+
+    const { integracao, capacidade } = alvo;
+    const localAlmoxarifado = String(integracao.configuracao?.local_almoxarifado || "").trim();
+    if (!localAlmoxarifado) {
+      resumo.motivo = "Local do almoxarifado nao configurado; nada foi enfileirado.";
+      return resumo;
+    }
+
+    for (const item of itens) {
+      const quantidade = Number(item.quantidade) || 0;
+      if (quantidade <= 0) {
+        resumo.ignorados += 1;
+        continue;
+      }
+      await lancamentos.registrarLancamento(client, {
+        integrationId: integracao.id,
+        codigoPedido,
+        pedidoItemId: item.pedidoItemId,
+        sku: item.sku,
+        pdvId: item.pdvId,
+        quantidade,
+        localOrigem: localAlmoxarifado,
+        // Sem destino de proposito: consumo nao e mudanca de lugar.
+        localDestino: null,
+        evento: lancamentos.EVENTOS.CONSUMO_ADMINISTRATIVO,
+        modo: modoDeEscrita(integracao.configuracao)
+      });
+      resumo.registrados += 1;
+    }
+
+    if (resumo.registrados) {
+      await fila.enfileirar(client, {
+        integrationId: integracao.id,
+        capacidade: capacidade.id,
+        prioridade: "ALTA"
+      });
+    }
+  } catch (erro) {
+    resumo.motivo = `Falha ao registrar o consumo administrativo: ${erro?.message || erro}`;
+  }
+
+  return resumo;
+}

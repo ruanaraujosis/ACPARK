@@ -7,6 +7,7 @@ import { sincronizarEvidenciaDeCompra } from "./tarefas/evidencia-compra.js";
 import { PADRAO_CARACTERISTICA_FATOR, sincronizarFatores } from "./tarefas/fatores.js";
 import { sincronizarLocais } from "./tarefas/locais.js";
 import { enviarAjustesDeInventario } from "./tarefas/inventarios.js";
+import { enviarConsumoAdministrativo } from "./tarefas/consumo-administrativo.js";
 import { enviarTransferencias } from "./tarefas/transferencias.js";
 import { sincronizarMovimentos } from "./tarefas/movimentos.js";
 import { sincronizarProdutos } from "./tarefas/produtos.js";
@@ -174,6 +175,19 @@ export const providerOmie = {
       // oportunista. Em simulacao ela so monta payload, entao ligar o relogio e seguro.
       intervaloPadraoMs: 5 * MINUTO,
       executar: enviarTransferencias
+    },
+    {
+      id: "CONSUMO_ADMINISTRATIVO",
+      rotulo: "Saidas por consumo administrativo",
+      descricao:
+        "Envia a SAIDA do estoque gerada pela retirada de um PDV Administrativo -- setor interno que consome sem vender. Tipo 'SAI', nunca 'TRF': a mercadoria deixa o estoque, nao muda de lugar. NAO ENVIA HOJE: o codigo de motivo da OMIE para consumo interno ainda nao foi escolhido, e a tarefa se recusa a sair da simulacao ate la.",
+      prioridade: "ALTA",
+      // Escrita altera dado no sistema externo: o nucleo exige modo REAL explicito para enviar
+      escrita: true,
+      requerConfiguracao: ["local_almoxarifado"],
+      // Ligar o relogio e seguro porque a tarefa nao envia enquanto o motivo for o sentinela
+      intervaloPadraoMs: 5 * MINUTO,
+      executar: enviarConsumoAdministrativo
     },
     {
       id: "INVENTARIO",

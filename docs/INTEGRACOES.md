@@ -353,10 +353,61 @@ aparecer no destino, e ninguém saberia sem conferir os dois locais.
 | PDV          | Ajuste por inventário                     | **MyEstoque**      |
 | PDV          | Baixa por venda                           | Sistema de vendas  |
 | PDV          | Entrada por devolução de venda            | Sistema de vendas  |
+| PDV Administrativo | Saída por consumo interno           | **MyEstoque** (travado) |
 
 Como regra, o MyEstoque envia **movimento, nunca saldo absoluto** — escrever saldo apagaria os
 lançamentos do sistema de vendas. O tipo `SLD` continua travado por teste no caminho da
 transferência (`tarefas/transferencias.js`).
+
+#### Exceção: PDV Administrativo — saída, não transferência (30/08/2026)
+
+"PDV Administrativo" **não é ponto de venda**: é um perfil para setores internos que consomem
+estoque sem vender — escritório, limpeza, marketing, manutenção. Ele pede ao Almoxarifado como
+qualquer PDV, mas o que retira **sai da empresa como consumo** e não vira saldo de revenda.
+
+Por isso a retirada dele **não** gera transferência: transferência diria que a mercadoria
+continua na empresa, só que em outro local.
+
+| Campo    | Valor                 | Significado                                   |
+| -------- | --------------------- | --------------------------------------------- |
+| `tipo`   | `SAI`                 | Saída do estoque                              |
+| `motivo` | `__MOTIVO_PENDENTE__` | **Placeholder — decisão do usuário em aberto** |
+| `origem` | `AJU`                 | Ajuste manual                                 |
+
+**Nada é enviado hoje.** O domínio de `motivo` para `tipo = SAI` na OMIE tem exatamente quatro
+valores, conferidos na documentação da própria conta
+(`app.omie.com.br/api/v1/estoque/ajuste/?WSDL=&readable=`):
+
+| Código | Descrição                                | Serve para consumo interno? |
+| ------ | ---------------------------------------- | --------------------------- |
+| `INV`  | Ajuste por Inventário                    | Não — poluiria a contagem   |
+| `PER`  | Baixa por Perda ou Quebra                | Não — perda ≠ consumo       |
+| `OPS`  | Integração com Ordem de Produção – Saída | Não — não há ordem          |
+| `PDV`  | Integração com PDV                       | Não — não vem do PDV        |
+
+Ou seja: **não existe** um motivo "consumo interno" no domínio da API. Enquanto o usuário não
+escolher, valem **duas travas em série**:
+
+1. a genérica do núcleo (`core/escrita.js`), que exige `modo_escrita: REAL`;
+2. a específica desta tarefa (`tarefas/consumo-administrativo.js`), que se recusa a sair da
+   simulação enquanto o motivo for o sentinela — **mesmo com `REAL` ligado**.
+
+O lançamento é enfileirado mesmo assim, de propósito: quando o motivo for definido, o histórico
+de consumo já estará montado e conferido, em vez de começar do zero naquele dia. O evento é
+`CONSUMO_ADMIN`, e não `RETIRADA`, para a tarefa de transferências nunca ler estas linhas e
+montar `TRF` em cima delas.
+
+Outros pontos do perfil:
+
+- `estoque_pdv` continua existindo para ele, mas **só como permissão** (`permitido = TRUE`):
+  libera o pedido, nunca acumula saldo;
+- nenhuma tela de saldo mostra número para ele — ausência é tratada como ausência, não como
+  zero (o menu dele nem tem "Meu estoque"; tem o **Painel do setor**, com histórico de pedidos,
+  filtro de datas e ranking do que mais saiu, sem nenhuma seção de estoque);
+- o ranking do painel usa a quantidade **liberada**, não a solicitada: pedir não é consumir;
+- a reposição automática o exclui explicitamente (`pdv.administrativo = FALSE` no `JOIN`);
+- alternar um PDV **com saldo** para administrativo é recusado com `409` até a regra de baixa do
+  saldo residual ser aprovada.
 
 #### Exceção: ajuste por inventário (29/08/2026)
 

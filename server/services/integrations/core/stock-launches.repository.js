@@ -23,7 +23,13 @@ export const EVENTOS = Object.freeze({
   COMPENSACAO: "COMPENSACAO",
   // Ajuste gerado pela assinatura de um inventario. Mora aqui, e nao no dominio de
   // inventario, para o provider que drena a fila nao precisar importar aquele modulo.
-  AJUSTE_INVENTARIO: "INVENTARIO_AJUSTE"
+  AJUSTE_INVENTARIO: "INVENTARIO_AJUSTE",
+  // Saida por consumo interno de um PDV Administrativo (setor que consome sem vender).
+  // E evento proprio, e nao uma RETIRADA, porque o movimento na OMIE e outro: RETIRADA vira
+  // transferencia entre locais (a mercadoria continua na empresa), esta vira SAIDA (a
+  // mercadoria deixa o estoque). Misturar os dois faria a tarefa de transferencias montar
+  // TRF para consumo, que e exatamente o erro que este perfil precisa evitar.
+  CONSUMO_ADMINISTRATIVO: "CONSUMO_ADMIN"
 });
 
 export const STATUS = Object.freeze({

@@ -255,10 +255,15 @@ test("importar locais nao pode exigir o local que so existe depois de importar",
   const produtos = providerOmie.capacidades.find((c) => c.id === "PRODUTOS");
   assert.doesNotThrow(() => validarConfiguracaoDaCapacidade(providerOmie, {}, produtos));
 
-  // Só quem realmente depende do local é que exige o local: quem lê o saldo de lá e quem
-  // envia a transferência que sai de lá
+  // Só quem realmente depende do local é que exige o local: quem lê o saldo de lá, quem
+  // envia a transferência que sai de lá, e a saída por consumo administrativo — que também
+  // parte do almoxarifado, só que sem destino (a mercadoria deixa o estoque).
   const exigem = providerOmie.capacidades.filter((c) => (c.requerConfiguracao || []).includes("local_almoxarifado"));
-  assert.deepEqual(exigem.map((c) => c.id).sort(), ["ESTOQUE_ALMOXARIFADO", "TRANSFERENCIAS"]);
+  assert.deepEqual(exigem.map((c) => c.id).sort(), [
+    "CONSUMO_ADMINISTRATIVO",
+    "ESTOQUE_ALMOXARIFADO",
+    "TRANSFERENCIAS"
+  ]);
 });
 
 test("o resultado da tarefa sobrevive ao JSON.stringify que a fila faz", async () => {

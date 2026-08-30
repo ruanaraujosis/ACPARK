@@ -240,3 +240,67 @@ export function montarAjusteInventario({
 
   return payload;
 }
+
+// ===== Saida por consumo administrativo =====
+
+// Motivo AINDA NAO DEFINIDO para a saida por consumo interno (PDV Administrativo).
+//
+// O dominio de `motivo` para tipo "SAI" na OMIE tem exatamente quatro valores, conferidos na
+// documentacao da propria conta (app.omie.com.br/api/v1/estoque/ajuste/?WSDL=&readable=):
+//   INV - Ajuste por Inventario     (ja usado pelo inventario; usar aqui poluiria a contagem)
+//   PER - Baixa por Perda ou Quebra (recusado: perda e consumo legitimo sao coisas distintas
+//                                    para relatorio fiscal e gerencial)
+//   OPS - Integracao com Ordem de Producao - Saida  (nao ha ordem de producao envolvida)
+//   PDV - Integracao com PDV        (marcaria o movimento como vindo do PDV, que nao e o caso)
+//
+// Ou seja: NAO EXISTE um motivo "consumo interno" no dominio da API. A escolha e do usuario e
+// esta pendente. Ate la o payload sai com este sentinela, que a OMIE recusaria de imediato --
+// e proposital: e impossivel um envio real passar despercebido com ele.
+export const MOTIVO_CONSUMO_ADMINISTRATIVO_PENDENTE = "__MOTIVO_PENDENTE__";
+
+// Monta o payload de SAIDA por consumo administrativo (IncluirAjusteEstoque, tipo "SAI").
+//
+// NUNCA "TRF": transferencia diria que a mercadoria continua na empresa, so que em outro
+// local. O PDV Administrativo consome -- a mercadoria sai do estoque e nao volta.
+export function montarSaidaConsumoAdministrativo({
+  chaveOperacao,
+  idExternoProduto,
+  sku,
+  codigoLocalOrigem,
+  quantidade,
+  valorUnitario,
+  data = new Date(),
+  observacao,
+  motivo = MOTIVO_CONSUMO_ADMINISTRATIVO_PENDENTE
+}) {
+  if (!codigoLocalOrigem) {
+    throw new Error("Saida por consumo administrativo exige o local de origem (almoxarifado).");
+  }
+
+  // Mesma exigencia da transferencia: a OMIE recusa ajuste com valor zero. Descobrir isso
+  // aqui e melhor do que produto a produto na fila.
+  const valor = Number(valorUnitario);
+  if (!Number.isFinite(valor) || valor <= 0) {
+    throw new Error(
+      `Saida de ${sku || idExternoProduto} sem valor unitario conhecido. A OMIE exige valor diferente de zero no ajuste.`
+    );
+  }
+
+  const payload = {
+    cod_int_ajuste: String(chaveOperacao || "").slice(0, 60),
+    data: formatarData(data),
+    quan: normalizarQuantidade(quantidade),
+    obs: String(observacao || "Consumo interno registrado pelo MyEstoque.").slice(0, 500),
+    origem: "AJU",
+    tipo: "SAI",
+    motivo,
+    valor,
+    codigo_local_estoque: Number(codigoLocalOrigem)
+  };
+
+  if (idExternoProduto) payload.id_prod = Number(idExternoProduto);
+  else if (sku) payload.cod_int = String(sku).slice(0, 20);
+  else throw new Error("Saida por consumo administrativo exige o produto (id externo ou SKU).");
+
+  return payload;
+}

@@ -21,7 +21,7 @@ const LANCAMENTOS_POR_JOB = 25;
 // de verdade quando alguem coloca modo_escrita = REAL na configuracao da integracao.
 
 // Traduz o SKU local para o id do produto na OMIE
-async function idExternoDoProduto(client, integrationId, sku) {
+export async function idExternoDoProduto(client, integrationId, sku) {
   const resultado = await client.query(
     `SELECT external_product_id
      FROM product_integration_mappings
@@ -52,7 +52,7 @@ export const VALOR_SIMBOLICO = 0.01;
 // duraria ate a proxima rodada. price_manual fica fora daquele upsert e sobrevive.
 //
 // Medido: 1.334 dos 4.435 mapeamentos tem preco zero no cadastro, entao a fonte 3 nao e luxo.
-async function valorUnitarioDoProduto(client, integrationId, sku) {
+export async function valorUnitarioDoProduto(client, integrationId, sku) {
   const doCadastro = await client.query(
     `SELECT price, price_manual FROM product_integration_mappings
      WHERE integration_id = $1 AND sku_produto = $2 LIMIT 1`,

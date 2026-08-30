@@ -73,7 +73,11 @@ function shell(content, actions = "") {
   const shouldShowHero = state.currentView === "dashboard";
   const items = role === "admin"
     ? [["dashboard", "Dashboard"], ["products", "Estoque central"], ["stock", "Estoque PDVs"], ["inventarios", "Inventários"], ["release", "Liberação"], ["damages", "Devoluções de avarias"], ["integrations", "Integrações"], ["history", "Histórico"], ["damage-history", "Histórico de Devoluções"], ["auto", "Autopedidos"], ["config", "Config"]]
-    : [["order", "Novo pedido"], ["mine", "Meus pedidos"], ["my-stock", "Meu estoque"], ["inventario", "Inventário"], ["damage-return", "Nova devolução de avaria"]];
+    : state.pdvAdministrativo
+      // PDV Administrativo consome sem vender: nao existe saldo para ele, entao "Meu estoque"
+      // sai do menu (ausencia, nao zero) e entra o painel de consumo do setor.
+      ? [["painel", "Painel do setor"], ["order", "Novo pedido"], ["mine", "Meus pedidos"], ["inventario", "Inventário"], ["damage-return", "Nova devolução de avaria"]]
+      : [["order", "Novo pedido"], ["mine", "Meus pedidos"], ["my-stock", "Meu estoque"], ["inventario", "Inventário"], ["damage-return", "Nova devolução de avaria"]];
 
   app.innerHTML = `
     <div class="app-shell min-h-screen">
@@ -191,6 +195,12 @@ async function loadBootstrap() {
   state.products = data.products;
   state.categories = (data.categories || []).map((item) => item.nome);
   state.config = data.config || {};
+  // O perfil vem em rota separada de proposito: o /api/bootstrap nao pode ler a coluna
+  // `administrativo` (ver o comentario da rota -- fazer isso derrubou o login de todo mundo).
+  // Na duvida assume ponto de venda normal, que e o comportamento antigo e nao esconde nada.
+  state.pdvAdministrativo = data.user?.role === "pdv"
+    ? await request("/api/pdv/perfil", { silentLoading: true }).then((r) => r.administrativo === true).catch(() => false)
+    : false;
 }
 
 
@@ -361,6 +371,7 @@ async function route(view) {
       order: viewOrder,
       mine: viewMine,
       "my-stock": viewMyStock,
+      painel: viewPainelAdministrativo,
       inventario: viewInventario,
       "damage-return": viewDamageReturn,
       dashboard: viewDashboard,
@@ -1452,6 +1463,10 @@ function pdvOrderCard(group) {
 
 // View de estoque do próprio PDV
 async function viewMyStock(options = {}) {
+  // Guarda de rota: o menu ja nao oferece esta tela ao administrativo, mas o roteador aceita
+  // o nome digitado/salvo. Mandar para o painel e melhor que mostrar uma lista de zeros que
+  // para este perfil nao significa nada.
+  if (state.pdvAdministrativo) return route("painel");
   const data = await request("/api/pdv/products", { silentLoading: Boolean(options.auto) });
   shell(`<section class="card"><h3 class="text-xl font-black">Meu estoque</h3><div id="my-stock-content">${myStockContent(data.products)}</div></section>`);
   startAutoRefresh("my-stock", syncMyStockContent, 10000);
@@ -9472,8 +9487,99 @@ function historyOrderCard(group) {
 }
 
 // View de configurações (usuários, categorias, integrações)
+// ===== Painel do PDV Administrativo =====
+//
+// "PDV Administrativo" NAO e ponto de venda: e um perfil para setores internos que consomem
+// estoque sem vender -- escritorio, limpeza, marketing, manutencao. Como o que ele retira sai
+// como consumo interno e nao vira saldo, este painel NAO tem nenhuma secao de estoque: o que
+// interessa ao setor e o CONSUMO (o que pediu, quando, e o que mais saiu no periodo).
+async function viewPainelAdministrativo(filters = {}) {
+  const de = filters.de || "";
+  const ate = filters.ate || "";
+  const params = new URLSearchParams();
+  if (de) params.set("de", de);
+  if (ate) params.set("ate", ate);
+  const dados = await request(`/api/pdv/painel${params.toString() ? `?${params}` : ""}`);
+  const periodo = dados.periodo || {};
+  const resumo = dados.resumo || {};
+  const ranking = dados.ranking || [];
+  const pedidos = dados.pedidos || [];
+  // Barra do ranking proporcional ao primeiro colocado, para a leitura ser visual
+  const topo = ranking[0]?.total_liberado || 0;
+
+  shell(`
+    <section class="card painel-adm-cabecalho">
+      <div>
+        <p class="eyebrow">Consumo interno</p>
+        <h3 class="text-xl font-black">Painel do setor ${esc(state.user?.name || "")}</h3>
+        <p class="text-sm text-slate-500">Este setor consome estoque sem vender, então não há saldo a acompanhar — o que este painel mostra é o consumo do período.</p>
+      </div>
+      <form class="painel-adm-filtro" id="painel-adm-filtro">
+        <label class="grid gap-1 text-sm font-bold">De
+          <input type="date" name="de" value="${esc(periodo.de || "")}" />
+        </label>
+        <label class="grid gap-1 text-sm font-bold">Até
+          <input type="date" name="ate" value="${esc(periodo.ate || "")}" />
+        </label>
+        <button class="btn" type="submit">Filtrar</button>
+        <button class="btn secondary" type="button" id="painel-adm-limpar">Últimos 30 dias</button>
+      </form>
+    </section>
+
+    <section class="painel-adm-numeros">
+      <div class="card"><p class="eyebrow">Pedidos no período</p><p class="text-3xl font-black">${resumo.pedidos || 0}</p></div>
+      <div class="card"><p class="eyebrow">Produtos diferentes</p><p class="text-3xl font-black">${resumo.produtos || 0}</p></div>
+      <div class="card"><p class="eyebrow">Unidades consumidas</p><p class="text-3xl font-black">${resumo.unidades || 0}</p></div>
+    </section>
+
+    <section class="card mt-4">
+      <h3 class="text-xl font-black">Mais solicitados no período</h3>
+      <p class="text-sm text-slate-500 mb-3">Pela quantidade efetivamente liberada — pedir não é consumir.</p>
+      ${ranking.length ? `<div class="painel-adm-ranking">${ranking.map((linha, i) => `
+        <div class="painel-adm-ranking-linha">
+          <span class="painel-adm-pos">${i + 1}º</span>
+          <span class="painel-adm-nome">${esc(linha.produto)}</span>
+          <span class="painel-adm-barra"><i style="width: ${topo ? Math.max(4, Math.round((linha.total_liberado / topo) * 100)) : 0}%"></i></span>
+          <span class="painel-adm-valor">${linha.total_liberado} un</span>
+        </div>`).join("")}</div>`
+        : `<p class="text-sm text-slate-500">Nenhum produto liberado neste período.</p>`}
+    </section>
+
+    <section class="card mt-4">
+      <h3 class="text-xl font-black">Histórico de pedidos</h3>
+      ${pedidos.length ? table(
+        ["Data", "Pedido", "Produto", "Solicitado", "Liberado", "Status"],
+        pedidos.map((p) => `<tr>
+          <td>${esc(moneyDate(p.data_hora))}</td>
+          <td>${esc(p.codigo_pedido || "")}</td>
+          <td>${esc(p.produto || p.sku_produto || "")}</td>
+          <td>${p.quantidade_solicitada ?? 0}</td>
+          <td>${p.quantidade_liberada ?? 0}</td>
+          <td>${esc(p.status || "")}</td>
+        </tr>`)
+      ) : `<p class="text-sm text-slate-500">Nenhum pedido neste período.</p>`}
+    </section>
+  `);
+
+  document.querySelector("#painel-adm-filtro").addEventListener("submit", (evento) => {
+    evento.preventDefault();
+    const dados = Object.fromEntries(new FormData(evento.currentTarget));
+    viewPainelAdministrativo({ de: dados.de, ate: dados.ate });
+  });
+  document.querySelector("#painel-adm-limpar").addEventListener("click", () => viewPainelAdministrativo());
+}
+
 async function viewConfigV2() {
   const categories = categoryOptions();
+  // O perfil administrativo NAO vem no /api/bootstrap de proposito: ler essa coluna la
+  // derrubou o login de todo mundo em 29/08 e a rota tem comentario proibindo. A rota admin
+  // garante a coluna antes de consultar, e esta tela ja e exclusiva do Almoxarifado.
+  // Se a chamada falhar, a tela ainda abre -- so sem a informacao de perfil.
+  const perfilPorPdv = new Map(
+    await request("/api/admin/pdvs", { silentLoading: true })
+      .then((r) => (r.pdvs || []).map((p) => [String(p.id), p.administrativo === true]))
+      .catch(() => [])
+  );
   const categorySelect = (id) => `
     <div class="category-picker">
       <p class="text-sm font-bold">Categorias permitidas para este PDV</p>
@@ -9510,6 +9616,17 @@ async function viewConfigV2() {
       </div>
     </div>`;
 
+  // Campo do perfil administrativo. Fica nos dois formularios (criar e editar), e so o
+  // Almoxarifado ve esta tela -- o PDV nao tem como marcar o proprio perfil.
+  const campoPdvAdministrativo = (marcado) => `
+    <label class="pdv-admin-toggle">
+      <input type="checkbox" name="administrativo" ${marcado ? "checked" : ""} />
+      <span>
+        <strong>PDV Administrativo</strong>
+        <small>Setor interno que consome estoque sem vender — escritório, limpeza, marketing, manutenção. Pede ao Almoxarifado como qualquer PDV, mas o que retira sai como consumo interno: não vira saldo e não entra na reposição automática.</small>
+      </span>
+    </label>`;
+
   shell(`
     <section class="config-tabs-shell">
       <div class="config-tabs" role="tablist" aria-label="Configurações do sistema">
@@ -9529,7 +9646,9 @@ async function viewConfigV2() {
               <button class="icon-action" id="close-pdv-edit-panel" type="button" title="Fechar" aria-label="Fechar">&times;</button>
             </div>
             <input name="nome" placeholder="Nome do PDV" required />
-            <input name="senha" type="password" placeholder="Nova senha (opcional)" />            ${categorySelect("edit-pdv-category")}
+            <input name="senha" type="password" placeholder="Nova senha (opcional)" />
+            ${campoPdvAdministrativo(false)}
+            ${categorySelect("edit-pdv-category")}
             <div class="form-actions">
               <button class="btn secondary" id="cancel-pdv-edit" type="button">Cancelar edição</button>
               <button class="btn" type="submit">Salvar alterações</button>
@@ -9540,7 +9659,7 @@ async function viewConfigV2() {
               <p class="eyebrow">Gestão</p>
               <h3 class="text-xl font-black">Gerenciar PDVs</h3>
             </div>
-            ${table(["PDV", "Categorias", "Ações"], state.pdvs.map((p) => `<tr><td>${esc(p.nome)}</td><td><button class="btn secondary category-table-action" type="button" data-view-pdv-categories="${p.id}">VER</button></td><td><div class="table-actions"><button class="icon-action" type="button" data-edit-pdv="${p.id}" title="Editar PDV" aria-label="Editar PDV">&#9998;</button><button class="icon-action danger" type="button" data-delete-pdv="${p.id}" title="Excluir PDV" aria-label="Excluir PDV">&times;</button></div></td></tr>`))}
+            ${table(["PDV", "Perfil", "Categorias", "Ações"], state.pdvs.map((p) => `<tr><td>${esc(p.nome)}</td><td>${perfilPorPdv.get(String(p.id)) ? `<span class="pdv-perfil-chip is-admin">Administrativo</span>` : `<span class="pdv-perfil-chip">Ponto de venda</span>`}</td><td><button class="btn secondary category-table-action" type="button" data-view-pdv-categories="${p.id}">VER</button></td><td><div class="table-actions"><button class="icon-action" type="button" data-edit-pdv="${p.id}" title="Editar PDV" aria-label="Editar PDV">&#9998;</button><button class="icon-action danger" type="button" data-delete-pdv="${p.id}" title="Excluir PDV" aria-label="Excluir PDV">&times;</button></div></td></tr>`))}
           </section>
           <section id="pdv-categories-panel" class="card product-side-panel hidden">
             <div class="panel-head">
@@ -9558,7 +9677,9 @@ async function viewConfigV2() {
           <form id="pdv-create-form" class="card grid gap-3">
             <h3 class="text-xl font-black">Criar PDV</h3>
             <input name="nome" placeholder="Nome do PDV" required />
-            <input name="senha" type="password" placeholder="Senha" required />            ${categorySelect("create-pdv-category")}
+            <input name="senha" type="password" placeholder="Senha" required />
+            ${campoPdvAdministrativo(false)}
+            ${categorySelect("create-pdv-category")}
             <button class="btn">Criar PDV</button>
           </form>
         </section>
@@ -9735,7 +9856,10 @@ async function viewConfigV2() {
     pdvEditForm.classList.remove("hidden");
     pdvEditForm.querySelector('[name="id"]').value = pdv.id;
     pdvEditForm.querySelector('[name="nome"]').value = pdv.nome || "";
-    pdvEditForm.querySelector('[name="senha"]').value = "";    document.querySelector("#pdv-edit-title").textContent = `Editar PDV: ${pdv.nome}`;
+    pdvEditForm.querySelector('[name="senha"]').value = "";
+    // O formulario e reusado entre PDVs: sem esta linha o checkbox guardaria o perfil do anterior
+    pdvEditForm.querySelector('[name="administrativo"]').checked = perfilPorPdv.get(String(pdv.id)) === true;
+    document.querySelector("#pdv-edit-title").textContent = `Editar PDV: ${pdv.nome}`;
     categoryPickers["edit-pdv-category"].set(pdv.categorias || []);
     setConfigTab("manage");
     pdvEditForm.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -9762,7 +9886,26 @@ async function viewConfigV2() {
     const formData = new FormData(event.currentTarget);
     const form = Object.fromEntries(formData);
     form.categorias = formData.getAll("categorias");
-    await request("/api/admin/pdvs", { method: "PATCH", body: JSON.stringify(form) });
+    // Checkbox nao marcado nem aparece no FormData; sem isto o perfil nunca seria desligado
+    form.administrativo = formData.get("administrativo") === "on";
+    try {
+      await request("/api/admin/pdvs", { method: "PATCH", body: JSON.stringify(form) });
+    } catch (erro) {
+      // Portao 2 em aberto: virar administrativo com saldo residual ainda nao tem regra
+      // aprovada, entao o servidor recusa com 409. Mostra em dialogo, nao em toast: a
+      // mensagem diz o que fazer (zerar por inventario) e sumiria rapido demais.
+      if (erro?.status === 409) {
+        await confirmSystem({
+          title: "Troca de perfil bloqueada",
+          message: erro.message,
+          consequence: "Nada foi alterado neste PDV.",
+          confirmLabel: "Entendi",
+          cancelLabel: "Fechar"
+        });
+        return;
+      }
+      throw erro;
+    }
     toast("PDV atualizado.");
     await loadBootstrap();
     route("config");
@@ -9772,6 +9915,7 @@ async function viewConfigV2() {
     const formData = new FormData(event.currentTarget);
     const form = Object.fromEntries(formData);
     form.categorias = formData.getAll("categorias");
+    form.administrativo = formData.get("administrativo") === "on";
     await request("/api/admin/pdvs", { method: "POST", body: JSON.stringify(form) });
     toast("PDV criado.");
     await loadBootstrap();

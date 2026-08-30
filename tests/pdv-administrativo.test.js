@@ -53,12 +53,18 @@ test("PDV administrativo não gera transferência TRF", () => {
   assert.match(achatado(pedidos), /nao ha transferencia entre locais/);
 });
 
-test("a saída por consumo está pendente do código de motivo, e isso é dito", () => {
-  // PER (perda) não serve: perda e consumo administrativo são coisas diferentes para
+test("a saída por consumo é enfileirada, mas o envio segue travado pelo motivo", () => {
+  // Mudou em 30/08/2026: antes nada era enfileirado enquanto o motivo não fosse conhecido.
+  // Agora o levantamento está feito — o domínio de `motivo` para tipo SAI na OMIE tem quatro
+  // valores (INV, PER, OPS, PDV) e NENHUM significa consumo interno. Como a escolha continua
+  // sendo do usuário, o lançamento passa a ser registrado e o payload montado (para o
+  // histórico não começar do zero no dia da decisão), mas o envio permanece travado.
+  //
+  // PER (perda) segue recusado: perda e consumo administrativo são coisas diferentes para
   // relatório fiscal e gerencial. Reaproveitar inflaria o relatório de perdas.
-  assert.match(pedidos, /consumo_administrativo_pendente/);
-  assert.match(achatado(pedidos), /codigo de motivo da OMIE para consumo interno nao foi levantado/);
-  const bloco = pedidos.slice(pedidos.indexOf("itensAdministrativos"), pedidos.indexOf("itensAdministrativos") + 1400);
+  assert.match(pedidos, /registrarConsumoAdministrativo\(client, \{/);
+  assert.match(achatado(pedidos), /nenhum significa consumo interno/);
+  const bloco = pedidos.slice(pedidos.indexOf("itensAdministrativos"), pedidos.indexOf("itensAdministrativos") + 1600);
   assert.doesNotMatch(bloco, /"PER"/, "não pode cair no motivo de perda por semelhança");
 });
 

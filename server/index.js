@@ -10,6 +10,7 @@ import { handleEstoqueRoutes } from "./modules/estoque/estoque.routes.js";
 import { syncPdvAllowedProducts } from "./modules/estoque/estoque.service.js";
 import { handlePedidosRoutes } from "./modules/pedidos/pedidos.routes.js";
 import { handleAvariasRoutes } from "./modules/avarias/avarias.routes.js";
+import { handlePdvAdministrativoRoutes } from "./modules/pdv-administrativo/pdv-administrativo.routes.js";
 import { handleIntegrationWebhookRoutes, handleIntegrationsRoutes } from "./modules/integrations/integrations.routes.js";
 import { handleOrderAlertRoutes } from "./modules/order-alerts/order-alerts.routes.js";
 import { handleBackupRoutes } from "./modules/backup/backup.routes.js";
@@ -310,6 +311,7 @@ async function api(req, res) {
   if (await handleEstoqueRoutes(req, res, { method, requireUser, url, user })) return;
   if (await handlePedidosRoutes(req, res, { method, requireUser, url, user })) return;
   if (await handleAvariasRoutes(req, res, { method, requireUser, url, user })) return;
+  if (await handlePdvAdministrativoRoutes(req, res, { method, requireUser, url, user })) return;
   if (await handleIntegrationsRoutes(req, res, { method, requireUser, url, user })) return;
   if (await handleOrderAlertRoutes(req, res, { method, url, user })) return;
   if (await handleBackupRoutes(req, res, { method, requireUser, url, user })) return;

@@ -394,6 +394,7 @@ test("o manifesto do provider declara credenciais e capacidades esperadas", () =
     "SALDO_ITEM",
     "MOVIMENTOS",
     "TRANSFERENCIAS",
+    "CONSUMO_ADMINISTRATIVO",
     "INVENTARIO",
     "ESCRITA_FATOR",
     "RECONCILIACAO"

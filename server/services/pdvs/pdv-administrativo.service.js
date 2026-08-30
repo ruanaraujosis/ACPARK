@@ -15,12 +15,22 @@ let colunaPronta = null;
 // reaproveitado de propósito: ele está morto (as rotas de criar/editar PDV gravam `false`
 // fixo), então herdar aquele campo seria construir sobre algo que ninguém mantém.
 export function ensurePdvAdministrativoColumn() {
+  // Se a criacao falhar (banco fora do ar no boot, por exemplo), a promessa rejeitada NAO
+  // pode ficar memoizada: era isso que transformaria uma falha momentanea em login quebrado
+  // para sempre. Ao falhar, esquece e deixa a proxima chamada tentar de novo.
   colunaPronta ||= tx(async (client) => {
-    await client.query("ALTER TABLE pdvs ADD COLUMN IF NOT EXISTS administrativo BOOLEAN NOT NULL DEFAULT FALSE");
+    await client.query(
+      "ALTER TABLE pdvs ADD COLUMN IF NOT EXISTS administrativo BOOLEAN NOT NULL DEFAULT FALSE",
+    );
     // Consultas de saldo filtram por este campo; sem índice elas varrem a tabela inteira.
     // São 11 PDVs hoje, então o ganho é pequeno — o índice existe para o filtro não virar
     // varredura quando alguém listar saldo por PDV em consulta maior.
-    await client.query("CREATE INDEX IF NOT EXISTS idx_pdvs_administrativo ON pdvs (administrativo) WHERE administrativo");
+    await client.query(
+      "CREATE INDEX IF NOT EXISTS idx_pdvs_administrativo ON pdvs (administrativo) WHERE administrativo",
+    );
+  }).catch((erro) => {
+    colunaPronta = null;
+    throw erro;
   });
   return colunaPronta;
 }
@@ -29,18 +39,23 @@ export function ensurePdvAdministrativoColumn() {
 // Almoxarifado, e decidir errado aqui significa creditar estoque em quem não deveria ter.
 export async function ehPdvAdministrativo(client, pdvId) {
   if (pdvId === null || pdvId === undefined) return false;
-  const { rows } = await client.query("SELECT administrativo FROM pdvs WHERE id = $1", [pdvId]);
+  const { rows } = await client.query(
+    "SELECT administrativo FROM pdvs WHERE id = $1",
+    [pdvId],
+  );
   return rows[0]?.administrativo === true;
 }
 
 // Quais PDVs de uma lista são administrativos. Uma consulta só, para a confirmação de
 // retirada não perguntar por item quando o pedido tem vários.
 export async function pdvsAdministrativos(client, pdvIds = []) {
-  const ids = [...new Set(pdvIds.filter((id) => id !== null && id !== undefined))];
+  const ids = [
+    ...new Set(pdvIds.filter((id) => id !== null && id !== undefined)),
+  ];
   if (!ids.length) return new Set();
   const { rows } = await client.query(
     "SELECT id FROM pdvs WHERE id = ANY($1) AND administrativo = TRUE",
-    [ids]
+    [ids],
   );
   return new Set(rows.map((linha) => linha.id));
 }

@@ -12,15 +12,21 @@ test("cada perfil vê a sua aba de inventário, nunca a do outro", () => {
   assert.match(app, /\["inventario", "Inventário"\]/);
   assert.match(app, /inventario: viewInventario,/);
 
+  // São três menus desde que o PDV Administrativo ganhou o dele: admin, PDV administrativo e
+  // PDV normal. A contagem é dos dois perfis de PDV — administrativo também conta estoque.
   const menus = app.slice(app.indexOf('const items = role === "admin"'), app.indexOf("app.innerHTML"));
-  const separador = menus.indexOf("\n    : [");
+  const separador = menus.indexOf("\n    : ");
   const menuAdmin = menus.slice(0, separador);
-  const menuPdv = menus.slice(separador);
+  const menusPdv = menus.slice(separador);
+  const menuAdministrativo = menusPdv.slice(menusPdv.indexOf("? ["), menusPdv.indexOf("\n      : ["));
+  const menuPdvNormal = menusPdv.slice(menusPdv.indexOf("\n      : ["));
 
   assert.match(menuAdmin, /"inventarios"/, "o Almoxarifado tem a aba de conferência");
   assert.doesNotMatch(menuAdmin, /"inventario"(?!s)/, "a tela de contagem do PDV não é do Almoxarifado");
-  assert.match(menuPdv, /"inventario"(?!s)/, "o PDV tem a tela de contagem");
-  assert.doesNotMatch(menuPdv, /"inventarios"/, "o PDV não pode ver a conferência de todos os PDVs");
+  for (const [rotulo, menu] of [["administrativo", menuAdministrativo], ["normal", menuPdvNormal]]) {
+    assert.match(menu, /"inventario"(?!s)/, `o PDV ${rotulo} tem a tela de contagem`);
+    assert.doesNotMatch(menu, /"inventarios"/, `o PDV ${rotulo} não pode ver a conferência de todos os PDVs`);
+  }
 });
 
 test("não existe seletor de unidade na contagem", () => {
