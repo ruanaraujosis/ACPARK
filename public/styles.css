@@ -3892,6 +3892,55 @@ body.has-order-panel {
   box-shadow: 0 28px 70px rgba(0, 20, 24, 0.35);
 }
 
+/* Os painéis de inventário ocupam a página inteira: a lista de um deles chega a ter 4.500+
+   produtos, e o box centralizado do painel de pedido deixaria pouco espaço para ela. */
+.inventario-detail-overlay,
+.contagem-propria-overlay {
+  padding: 0;
+}
+
+.inventario-detail-overlay .order-panel,
+.contagem-propria-overlay .order-panel {
+  width: 100vw;
+  height: 100dvh;
+  border-radius: 0;
+}
+
+/* Minimizar esconde o overlay (os inputs continuam vivos no DOM, nada se perde) e destrava o
+   scroll de fundo -- ver minimizeDetailOverlay(). */
+.order-panel-overlay.is-minimized {
+  display: none;
+}
+
+/* Aba flutuante para retomar um painel minimizado */
+.minimized-panel-chip {
+  position: fixed;
+  right: 1.2rem;
+  bottom: 1.2rem;
+  z-index: 150;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.7rem 1.1rem;
+  border: none;
+  border-radius: 999px;
+  background: var(--ac-teal-dark);
+  color: white;
+  font-weight: 800;
+  font-size: 0.85rem;
+  box-shadow: 0 10px 30px rgba(0, 20, 24, 0.35);
+  cursor: pointer;
+}
+
+.minimized-panel-chip:hover,
+.minimized-panel-chip:focus-visible {
+  background: var(--ac-teal);
+}
+
+.minimized-panel-chip-icon {
+  font-size: 0.7rem;
+}
+
 /* Cabeçalho: identidade do pedido, trilha de etapas e o único botão de fechar */
 .order-panel-head {
   display: flex;
@@ -3977,7 +4026,8 @@ body.has-order-panel {
 }
 
 .order-panel-close,
-.order-panel-timeline-open {
+.order-panel-timeline-open,
+.order-panel-minimize {
   display: grid;
   place-items: center;
   flex-shrink: 0;
@@ -3992,8 +4042,15 @@ body.has-order-panel {
   cursor: pointer;
 }
 
-.order-panel-timeline-open {
+.order-panel-timeline-open,
+.order-panel-minimize {
   font-size: 1.15rem;
+}
+
+.order-panel-minimize:hover,
+.order-panel-minimize:focus-visible {
+  background: rgba(0, 123, 135, 0.12);
+  border-color: var(--ac-teal);
 }
 
 .order-panel-close:hover,
@@ -4030,20 +4087,6 @@ body.has-order-panel {
    ponto de sumir -- uma altura mínima garante que sempre sobra algo para rolar. */
 .order-panel-content > .table-wrap.inventario-tabela {
   min-height: 12rem;
-}
-
-/* Contagem do Almoxarifado: diferente do painel de pedido, aqui a tabela não é a única coisa
-   acima do rodapé -- tem o aviso "conte tudo" e os filtros também, e o rodapé é alto (tem o
-   quadro de assinatura). Forçar só a tabela a encolher via flex a deixava sem espaço nenhum em
-   telas mais baixas. Em vez disso, o conteúdo inteiro rola como uma página normal, e só a
-   tabela ganha um teto -- senão ela sozinha esticaria a rolagem por milhares de produtos. */
-.contagem-propria-overlay .order-panel-content {
-  display: block;
-  overflow-y: auto;
-}
-
-.contagem-propria-overlay .order-panel-content > .table-wrap.inventario-tabela {
-  max-height: 46vh;
 }
 
 .order-panel-context {

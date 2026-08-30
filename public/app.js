@@ -3801,30 +3801,6 @@ function ligarQuadroDeAssinatura(canvas, { aoDesenhar } = {}) {
   };
 }
 
-// Gera a "assinatura" da contagem do Almoxarifado a partir do nome digitado, sem exigir
-// desenho a mão. O quadro de desenho (canvas de 220px) tomava tanto espaço no painel que
-// chegava a impedir a lista de milhares de produtos de aparecer -- um problema de espaço, não
-// de conteúdo. O campo assinatura_imagem continua sendo um PNG de verdade (a validação do
-// servidor exige isso), só que gerado a partir do nome em vez de traçado à mão; ninguém exibe
-// essa imagem de volta na tela hoje, então o formato exato não é visto por ninguém além do
-// banco de auditoria.
-function gerarAssinaturaDoNome(nome) {
-  const canvas = document.createElement("canvas");
-  canvas.width = 640;
-  canvas.height = 160;
-  const ctx = canvas.getContext("2d");
-  ctx.fillStyle = "#ffffff";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.fillStyle = "#005f68";
-  ctx.font = "italic 700 46px Georgia, 'Times New Roman', serif";
-  ctx.textBaseline = "middle";
-  ctx.fillText(nome, 24, 76, canvas.width - 48);
-  ctx.fillStyle = "#64748b";
-  ctx.font = "400 15px Arial, sans-serif";
-  ctx.fillText(`Confirmado em ${new Date().toLocaleString("pt-BR")}`, 24, 130);
-  return canvas.toDataURL("image/png");
-}
-
 // Liga os eventos de assinatura de avaria
 function bindDamageSignatures(root = document) {
   root.querySelectorAll(".signature-pad").forEach((canvas) => {
@@ -7754,7 +7730,24 @@ function bindReleasePanelClose(overlay) {
 // cabeçalho com eyebrow + título (+ selo/status opcional) + botão de fechar único, corpo
 // rolável. O painel de pedido (estados de carregamento/erro) e o painel de inventário
 // reaproveitam esta função para não duplicar HTML/CSS de abrir um painel de tela cheia.
-function orderPanelShell({ eyebrow = "", title = "", titleBadge = "", ariaLabel = "", headExtra = "", inner = "", foot = "" }) {
+function orderPanelShell({
+  eyebrow = "",
+  title = "",
+  titleBadge = "",
+  ariaLabel = "",
+  headExtra = "",
+  inner = "",
+  foot = "",
+  overlayClass = "",
+  minimizable = false
+}) {
+  // O botão de minimizar só existe quando o painel foi aberto com `minimizable` -- o painel de
+  // pedido não pede isso, então continua sem o botão, do jeito que já era.
+  const minimizeButton = minimizable
+    ? `<button class="order-panel-minimize" type="button" data-overlay-class="${esc(overlayClass)}"
+        data-titulo="${esc(`${eyebrow}${eyebrow && title ? " — " : ""}${title}`)}"
+        aria-label="Minimizar painel" title="Minimizar">&#95;</button>`
+    : "";
   return `
     <section class="order-panel" role="dialog" aria-modal="true" aria-label="${esc(ariaLabel || title)}">
       <header class="order-panel-head">
@@ -7763,6 +7756,7 @@ function orderPanelShell({ eyebrow = "", title = "", titleBadge = "", ariaLabel 
           <h2>${esc(title)}${titleBadge ? ` ${titleBadge}` : ""}</h2>
         </div>
         ${headExtra}
+        ${minimizeButton}
         <button class="order-panel-close" type="button" aria-label="Fechar painel">&times;</button>
       </header>
       <div class="order-panel-content">${inner}</div>
@@ -7785,6 +7779,9 @@ function openDetailOverlay(overlayClass) {
 function closeDetailOverlay(overlayClass) {
   document.querySelector(`.${overlayClass}`)?.remove();
   document.body.classList.remove("has-order-panel");
+  // Fechar precisa levar a aba flutuante junto: sem isso, um painel fechado enquanto
+  // minimizado deixaria uma aba órfã tentando restaurar algo que não existe mais.
+  document.querySelector(".minimized-panel-chip")?.remove();
 }
 
 // Liga o botão X de um painel genérico ao fechamento informado
@@ -7794,6 +7791,48 @@ function bindDetailPanelClose(overlay, onClose) {
     button.dataset.bound = "true";
     button.addEventListener("click", onClose);
   });
+}
+
+// Liga o botão de minimizar de um painel genérico. Não recebe um `onClose` porque minimizar
+// não é fechar: o overlay continua no DOM com tudo que a pessoa já digitou, só sai da frente.
+function bindDetailPanelMinimize(overlay) {
+  overlay?.querySelectorAll(".order-panel-minimize").forEach((button) => {
+    if (button.dataset.bound === "true") return;
+    button.dataset.bound = "true";
+    button.addEventListener("click", () => minimizeDetailOverlay(button.dataset.overlayClass, button.dataset.titulo));
+  });
+}
+
+// Minimiza o painel: só esconde (a contagem em andamento nos inputs não é perdida, porque o
+// overlay não sai do DOM) e destrava o scroll de fundo, com uma aba flutuante para retomar.
+// Só um painel pode estar minimizado por vez -- é o mesmo limite de só um aberto por vez.
+function minimizeDetailOverlay(overlayClass, titulo) {
+  const overlay = document.querySelector(`.${overlayClass}`);
+  if (!overlay) return;
+  overlay.classList.add("is-minimized");
+  document.body.classList.remove("has-order-panel");
+  mostrarAbaPainelMinimizado(overlayClass, titulo);
+}
+
+// Cria a aba flutuante que permite retomar o painel minimizado
+function mostrarAbaPainelMinimizado(overlayClass, titulo) {
+  document.querySelector(".minimized-panel-chip")?.remove();
+  const chip = document.createElement("button");
+  chip.type = "button";
+  chip.className = "minimized-panel-chip";
+  chip.setAttribute("aria-label", `Retomar painel: ${titulo}`);
+  chip.innerHTML = `<span class="minimized-panel-chip-icon">&#9633;</span><span>${esc(titulo || "Painel minimizado")}</span>`;
+  chip.addEventListener("click", () => restaurarDetailOverlay(overlayClass));
+  document.body.appendChild(chip);
+}
+
+// Restaura um painel minimizado: reaparece exatamente como estava, sem recarregar nada
+function restaurarDetailOverlay(overlayClass) {
+  document.querySelector(".minimized-panel-chip")?.remove();
+  const overlay = document.querySelector(`.${overlayClass}`);
+  if (!overlay) return;
+  overlay.classList.remove("is-minimized");
+  document.body.classList.add("has-order-panel");
 }
 
 // Monta a casca do painel de pedido usada nos estados de carregamento e erro
@@ -10407,9 +10446,12 @@ async function abrirDetalheInventario(codigo) {
   overlay.innerHTML = orderPanelShell({
     eyebrow: "Inventário",
     title: codigo,
-    inner: `<div class="order-panel-loading">Carregando inventário...</div>`
+    inner: `<div class="order-panel-loading">Carregando inventário...</div>`,
+    overlayClass: "inventario-detail-overlay",
+    minimizable: true
   });
   bindDetailPanelClose(overlay, fecharDetalheInventario);
+  bindDetailPanelMinimize(overlay);
   overlay.querySelector(".order-panel-close")?.focus();
 
   try {
@@ -10422,9 +10464,12 @@ async function abrirDetalheInventario(codigo) {
       inner: `<div class="order-panel-message">
         <strong>Não foi possível abrir o inventário.</strong>
         <p>${esc(error.message || "Verifique a conexão e tente novamente.")}</p>
-      </div>`
+      </div>`,
+      overlayClass: "inventario-detail-overlay",
+      minimizable: true
     });
     bindDetailPanelClose(overlay, fecharDetalheInventario);
+    bindDetailPanelMinimize(overlay);
   }
 }
 
@@ -10460,6 +10505,8 @@ function renderDetalheInventario(overlay, codigo, dados) {
     titleBadge: `<span class="status-chip">${esc(ROTULO_STATUS_INVENTARIO[inventario.status] || inventario.status)}</span>`,
     headExtra: `<button class="order-panel-timeline-open inventario-historico-abrir" type="button"
       aria-label="Histórico de edição do inventário" title="Histórico de edição do inventário">🕐</button>`,
+    overlayClass: "inventario-detail-overlay",
+    minimizable: true,
     inner: `
       ${dados.ajustado_em_simulacao ? `<div class="release-alert card inventario-aviso-simulacao">
         <strong>Este ajuste ficou só no MyEstoque.</strong>
@@ -10536,6 +10583,7 @@ function renderDetalheInventario(overlay, codigo, dados) {
   });
 
   bindDetailPanelClose(overlay, fecharDetalheInventario);
+  bindDetailPanelMinimize(overlay);
   overlay.querySelector(".inventario-historico-abrir")?.addEventListener("click", () =>
     abrirHistoricoInventario(codigo, historico));
   bindDetalheInventario(overlay, codigo);
@@ -10763,6 +10811,70 @@ function pedirMotivoExclusaoInventario(codigo) {
         return;
       }
       fechar(motivo);
+    });
+  });
+}
+
+// Painel próprio para assinar e confirmar a contagem do Almoxarifado: reúne nome + assinatura
+// + o aviso do que vai acontecer numa etapa só -- assinar já é a confirmação deliberada que a
+// ação pede, então não há um segundo diálogo de "tem certeza?" depois deste.
+// Fica fora do painel principal de propósito: aquele agora ocupa a página inteira para caber
+// a lista de milhares de produtos, e o quadro de assinatura não pode voltar a disputar espaço
+// com ela -- por isso vira um painel separado, pequeno, só para este passo.
+function pedirAssinaturaContagemPropria(semContagem) {
+  return new Promise((resolve) => {
+    document.querySelector(".system-confirm-modal")?.remove();
+    const modal = document.createElement("div");
+    modal.className = "system-confirm-modal";
+    modal.innerHTML = `
+      <div class="system-confirm-dialog" role="dialog" aria-modal="true" aria-label="Assinar e confirmar a contagem do Almoxarifado">
+        <div class="system-confirm-head">
+          <div>
+            <p class="eyebrow">Confirmação</p>
+            <h3>Assinar e confirmar a contagem</h3>
+          </div>
+          <button class="icon-action system-confirm-cancel" type="button" aria-label="Fechar">&times;</button>
+        </div>
+        <p>O estoque central passa a ser exatamente o que foi contado${semContagem
+          ? `, e <strong>${semContagem} produto(s)</strong> sem contagem mantêm o valor atual — não serão alterados`
+          : ""}.</p>
+        <p class="system-confirm-note">Depois de confirmar, só um novo inventário corrige.</p>
+        <div class="system-confirm-field">
+          <label class="grid gap-1 text-sm font-bold">Quem está confirmando
+            <input class="assinatura-contagem-nome" type="text" placeholder="Nome completo do responsável" autocomplete="off" />
+          </label>
+        </div>
+        <canvas class="signature-pad assinatura-contagem-pad" width="720" height="220"
+          aria-label="Área de assinatura de quem está confirmando"></canvas>
+        <div class="signature-actions">
+          <button class="btn secondary assinatura-contagem-limpar" type="button">Limpar</button>
+          <button class="btn secondary system-confirm-cancel" type="button">Cancelar</button>
+          <button class="btn danger assinatura-contagem-ok" type="button">Confirmar</button>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+    // Mesmo núcleo de desenho da assinatura do PDV e da devolução de avaria
+    const quadro = ligarQuadroDeAssinatura(modal.querySelector(".assinatura-contagem-pad"));
+    modal.querySelector(".assinatura-contagem-limpar").addEventListener("click", () => quadro.limpar());
+    const fechar = (valor) => {
+      modal.remove();
+      resolve(valor);
+    };
+    modal.querySelectorAll(".system-confirm-cancel").forEach((b) => b.addEventListener("click", () => fechar(null)));
+    modal.addEventListener("click", (e) => {
+      if (e.target === modal) fechar(null);
+    });
+    modal.querySelector(".assinatura-contagem-ok").addEventListener("click", () => {
+      const assinante = modal.querySelector(".assinatura-contagem-nome").value.trim();
+      if (!assinante) {
+        toast("Informe o nome de quem está confirmando.", "error");
+        return;
+      }
+      if (!quadro.temTinta()) {
+        toast("Assine no quadro antes de confirmar.", "error");
+        return;
+      }
+      fechar({ assinante, assinatura: quadro.comoPng() });
     });
   });
 }
@@ -11211,9 +11323,12 @@ async function abrirContagemPropria() {
   overlay.innerHTML = orderPanelShell({
     eyebrow: "Contagem do Almoxarifado",
     title: "",
-    inner: `<div class="order-panel-loading">Carregando contagem...</div>`
+    inner: `<div class="order-panel-loading">Carregando contagem...</div>`,
+    overlayClass: "contagem-propria-overlay",
+    minimizable: true
   });
   bindDetailPanelClose(overlay, fecharContagemPropria);
+  bindDetailPanelMinimize(overlay);
   overlay.querySelector(".order-panel-close")?.focus();
   await recarregarContagemPropria(overlay);
 }
@@ -11254,6 +11369,8 @@ function renderContagemPropria(overlay, dados) {
     title: inventario.codigo_inventario,
     titleBadge: `<span class="status-chip">${esc(inventario.status)}</span>`,
     headExtra: `<div id="almox-resumo" class="inventario-resumo"></div>`,
+    overlayClass: "contagem-propria-overlay",
+    minimizable: true,
     inner: `
       <div class="release-alert card inventario-aviso-zera">
         <strong>Conte em unidades, e conte tudo.</strong>
@@ -11293,23 +11410,19 @@ function renderContagemPropria(overlay, dados) {
             }))
           : `<p class="text-sm text-slate-500">Nenhum produto ativo no cadastro.</p>`}
       </div>`,
-    // A confirmação fica no rodapé fixo (fora da área que rola), do mesmo jeito que o painel
-    // de pedido reserva o rodapé para as ações. Sem quadro de desenho de propósito: o canvas
-    // sozinho tinha 220px e chegava a impedir a lista de milhares de produtos de aparecer.
-    // Um botão fecha a contagem sem exigir traço à mão -- ver gerarAssinaturaDoNome().
+    // As ações ficam no rodapé fixo, como no painel de pedido. Nome e assinatura não moram
+    // mais aqui -- "Assinar e confirmar" abre um painel próprio só para isso
+    // (pedirAssinaturaContagemPropria), já que agora o painel principal ocupa a página
+    // inteira e o quadro de assinatura não compete mais por espaço com a lista.
     foot: `
-      <div class="inventario-assinatura-area">
-        <label class="grid gap-1 text-sm font-bold">Quem está confirmando
-          <input id="almox-assinante" type="text" placeholder="Nome completo do responsável" autocomplete="off" />
-        </label>
-        <div class="signature-actions">
-          <button class="btn secondary" id="almox-salvar" type="button">Salvar contagem</button>
-          <button class="btn" id="almox-concluir" type="button">Assinar e confirmar</button>
-        </div>
+      <div class="order-card-actions no-print">
+        <button class="btn secondary" id="almox-salvar" type="button">Salvar contagem</button>
+        <button class="btn" id="almox-concluir" type="button">Assinar e confirmar</button>
       </div>`
   });
 
   bindDetailPanelClose(overlay, fecharContagemPropria);
+  bindDetailPanelMinimize(overlay);
   atualizarResumoAlmox();
   bindContagemDoAlmoxarifado(inventario.codigo_inventario);
 }
@@ -11380,22 +11493,13 @@ function bindContagemDoAlmoxarifado(codigo) {
 
   document.querySelector("#almox-concluir")?.addEventListener("click", async (evento) => {
     const botao = evento.currentTarget;
-    const assinante = String(document.querySelector("#almox-assinante")?.value || "").trim();
-    if (!assinante) {
-      toast("Informe o nome de quem está confirmando.", "error");
-      return;
-    }
     const linhas = [...document.querySelectorAll(".almox-linha")];
     const semContagem = linhas.filter((tr) => contagemDigitada(tr.querySelector(".almox-qtd")?.value) === null).length;
-    const confirmado = await confirmSystem({
-      title: "Concluir o inventário do Almoxarifado?",
-      message: `O estoque central passa a ser exatamente o que foi contado`
-        + (semContagem ? `, e ${semContagem} produto(s) sem contagem mantêm o valor atual — não serão alterados.` : "."),
-      consequence: "Depois de concluir, só um novo inventário corrige.",
-      confirmLabel: "Assinar e confirmar",
-      danger: true
-    });
-    if (!confirmado) return;
+    // O próprio painel de assinatura já é a confirmação deliberada -- não há um segundo
+    // diálogo de "tem certeza?" depois dele
+    const dadosAssinatura = await pedirAssinaturaContagemPropria(semContagem);
+    if (!dadosAssinatura) return;
+    const { assinante, assinatura } = dadosAssinatura;
 
     botao.disabled = true;
     botao.textContent = "Concluindo...";
@@ -11404,7 +11508,7 @@ function bindContagemDoAlmoxarifado(codigo) {
       await salvar();
       const r = await request("/api/admin/inventario/proprio/concluir", {
         method: "POST",
-        body: JSON.stringify({ codigo_inventario: codigo, assinatura: gerarAssinaturaDoNome(assinante), assinado_por: assinante })
+        body: JSON.stringify({ codigo_inventario: codigo, assinatura, assinado_por: assinante })
       });
       toast(`Inventário concluído. ${r.itens} produto(s) ajustado(s)${r.preservados ? `, ${r.preservados} preservado(s) sem contagem` : ""}.`);
       // O efeito da simulação precisa ser visto, não descoberto no log depois

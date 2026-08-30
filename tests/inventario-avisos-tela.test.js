@@ -97,28 +97,47 @@ test("a contagem do Almoxarifado é em unidade, sem seletor de embalagem", () =>
   assert.match(itens, /unidade_medida: "UNIDADE"/);
 });
 
-test("a contagem do Almoxarifado confirma por botão, sem quadro de desenho", () => {
-  // Em 30/08 o quadro de assinatura (canvas de 220px) foi removido daqui: sozinho ele já
-  // impedia a lista de milhares de produtos de aparecer no painel. gerarAssinaturaDoNome()
-  // continua produzindo um PNG de verdade para satisfazer a validação do servidor, só que a
-  // partir do nome digitado, sem exigir traço à mão.
+test("a contagem do Almoxarifado assina num painel próprio, fora da lista de produtos", () => {
+  // Em 30/08 o quadro de assinatura (canvas de 220px) foi removido do rodapé do painel
+  // principal -- sozinho ele já impedia a lista de milhares de produtos de aparecer. Um dia
+  // depois, o próprio painel principal virou tela cheia e o nome + assinatura passaram a
+  // viver num painel de confirmação à parte (pedirAssinaturaContagemPropria), que só abre ao
+  // clicar em "Assinar e confirmar" -- não há mais nada disso dentro da tela da lista.
   const bind = app.slice(app.indexOf("function bindContagemDoAlmoxarifado"));
-  assert.doesNotMatch(bind, /ligarQuadroDeAssinatura/);
-  assert.match(app, /function gerarAssinaturaDoNome\(nome\)/);
-  assert.match(bind, /assinatura: gerarAssinaturaDoNome\(assinante\)/);
+  assert.doesNotMatch(bind, /ligarQuadroDeAssinatura/, "o quadro de desenho não pertence mais a este bind");
+  assert.match(bind, /pedirAssinaturaContagemPropria\(semContagem\)/);
+  assert.doesNotMatch(bind, /"#almox-assinante"/, "o nome não é mais lido do painel principal");
+  const assinatura = app.slice(app.indexOf("function pedirAssinaturaContagemPropria"), app.indexOf("\n}\n", app.indexOf("function pedirAssinaturaContagemPropria")));
+  assert.match(assinatura, /ligarQuadroDeAssinatura\(/, "o painel de confirmação reusa o núcleo de assinatura");
+  assert.match(assinatura, /temTinta\(\)/, "exige o traço, já que aqui o quadro tem espaço de sobra");
   const itens = app.slice(app.indexOf("function itensDaTelaAlmox"), app.indexOf("\n}\n", app.indexOf("function itensDaTelaAlmox")));
   assert.match(itens, /contagemDigitada\(/, "mesma leitura de campo da contagem do PDV");
   assert.doesNotMatch(itens, /\.filter\(/, "as linhas em branco também precisam ser enviadas");
 });
 
+test("o painel da contagem do Almoxarifado ocupa a página inteira e pode ser minimizado", () => {
+  assert.match(css, /\.contagem-propria-overlay \.order-panel[\s\S]{0,20}width: 100vw;/);
+  assert.match(app, /overlayClass: "contagem-propria-overlay",\s*\n\s*minimizable: true/);
+  assert.match(app, /function minimizeDetailOverlay/);
+  assert.match(app, /function restaurarDetailOverlay/);
+  assert.match(css, /\.minimized-panel-chip \{/);
+});
+
 test("concluir diz que os não contados mantêm o valor, e segue sendo ação de risco", () => {
   // A confirmação continua marcada como risco porque o inventário substitui saldo — mas o
   // texto deixou de anunciar zeramento por omissão, que é o que a regra nova proíbe.
-  const bind = app.slice(app.indexOf("function bindContagemDoAlmoxarifado"));
-  assert.match(bind, /mantêm o valor atual/);
-  assert.doesNotMatch(bind, /ZERADOS/, "o aviso de zeramento por omissão saiu");
-  assert.match(bind, /danger: true/);
+  // Em 31/08 o aviso saiu do confirmSystem() e foi para dentro do próprio painel de
+  // assinatura (pedirAssinaturaContagemPropria): assinar já é a confirmação, então não há
+  // mais um confirmSystem({danger:true}) separado -- o risco vem do botão "btn danger".
+  const assinatura = app.slice(
+    app.indexOf("function pedirAssinaturaContagemPropria"),
+    app.indexOf("\n}\n", app.indexOf("function pedirAssinaturaContagemPropria"))
+  );
+  assert.match(assinatura, /mantêm o valor atual/);
+  assert.doesNotMatch(assinatura, /ZERADOS/, "o aviso de zeramento por omissão saiu");
+  assert.match(assinatura, /btn danger assinatura-contagem-ok/, "o botão que finaliza é de risco");
   // Salva antes de concluir, para não perder o que foi digitado
+  const bind = app.slice(app.indexOf("function bindContagemDoAlmoxarifado"));
   const posSalvar = bind.indexOf("await salvar();");
   const posConcluir = bind.indexOf("/api/admin/inventario/proprio/concluir");
   assert.ok(posSalvar > -1 && posSalvar < posConcluir);
@@ -130,7 +149,7 @@ test("o cache-bust acompanhou a última mudança do app.js", () => {
   // Verificado na prova visual: com o mesmo ?v=, o navegador serviu a versão antiga e a
   // correção parecia não ter sido aplicada.
   const versao = html.match(/app\.js\?v=([^"]+)/)?.[1];
-  assert.equal(versao, "20260830-inventario-sem-canvas");
+  assert.equal(versao, "20260831-inventario-painel-completo");
   assert.match(html, new RegExp(`styles\\.css\\?v=${versao}`), "css e js compartilham a versão");
 });
 
