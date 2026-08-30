@@ -1,5 +1,6 @@
 ﻿import { query, tx, pool, asInt, code } from "../../db.js";
 import { normalizeText, readBody, send } from "../../utils/http.js";
+import { pdvsAdministrativos } from "../../services/pdvs/pdv-administrativo.service.js";
 import {
   registrarCompensacaoDaReabertura,
   registrarTransferenciasDaRetirada
@@ -1558,6 +1559,10 @@ export async function handlePedidosRoutes(req, res, context) {
         error.statusCode = 400;
         throw error;
       }
+      // Quais PDVs deste pedido sao administrativos. Uma consulta so, antes do laco: um
+      // pedido pode ter itens de mais de um PDV, e perguntar por item repetiria a leitura.
+      const administrativos = await pdvsAdministrativos(client, targetRows.map((row) => row.pdv_id));
+
       // Baixa definitiva: sai do estoque central e entra no saldo físico do PDV.
       // Só a quantidade liberada é movimentada; a diferença para o solicitado não vira pendência.
       for (const row of targetRows) {
@@ -1573,26 +1578,60 @@ export async function handlePedidosRoutes(req, res, context) {
         }
         const pendente = asInt(row.quantidade_solicitada) - qty;
         if (pendente > 0) sobras.push({ sku: row.sku_produto, solicitada: asInt(row.quantidade_solicitada), liberada: qty, nao_atendida: pendente });
-        await client.query(
-          `INSERT INTO estoque_pdv (pdv_id, sku_produto, quantidade)
-           VALUES ($1, $2, $3)
-           ON CONFLICT (pdv_id, sku_produto) DO UPDATE SET quantidade = estoque_pdv.quantidade + EXCLUDED.quantidade`,
-          [row.pdv_id, row.sku_produto, qty]
-        );
+
+        // PDV Administrativo NAO acumula saldo.
+        //
+        // Ele nao e ponto de venda: e um setor interno (escritorio, limpeza, marketing,
+        // manutencao) que CONSOME estoque sem vender. O que ele retira sai da empresa para
+        // consumo, entao nao vira saldo de revenda em lugar nenhum. A linha de estoque_pdv
+        // continua existindo porque e nela que mora a permissao de pedido
+        // (`permitido = TRUE`, conferida na criacao do pedido) -- ela libera, nunca acumula.
+        if (!administrativos.has(row.pdv_id)) {
+          await client.query(
+            `INSERT INTO estoque_pdv (pdv_id, sku_produto, quantidade)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (pdv_id, sku_produto) DO UPDATE SET quantidade = estoque_pdv.quantidade + EXCLUDED.quantidade`,
+            [row.pdv_id, row.sku_produto, qty]
+          );
+        }
       }
 
       // Enfileira a transferência ALMOXARIFADO → PDV para a integração externa.
       // Nunca bloqueia: sem integração, sem vínculo ou sem internet, a retirada conclui
       // do mesmo jeito e o lançamento fica pendente na fila.
+      //
+      // O PDV Administrativo fica de FORA: para ele nao ha transferencia entre locais,
+      // porque nao existe local de destino -- a mercadoria sai da empresa como consumo
+      // interno. O lancamento dele e uma SAIDA do local do almoxarifado, tratada logo
+      // abaixo, e mandar TRF aqui faria a OMIE acreditar que o estoque continua na empresa,
+      // so que em outro lugar.
+      const itensDeRevenda = targetRows.filter((row) => !administrativos.has(row.pdv_id));
       lancamentoIntegracao = await registrarTransferenciasDaRetirada(client, {
         codigoPedido: orderCode,
-        itens: targetRows.map((row) => ({
+        itens: itensDeRevenda.map((row) => ({
           pedidoItemId: row.id,
           sku: row.sku_produto,
           pdvId: row.pdv_id,
           quantidade: asInt(row.quantidade_liberada)
         }))
       });
+
+      // PENDENTE: a saida por consumo administrativo ainda nao e enfileirada porque o codigo
+      // de motivo da OMIE para consumo interno nao foi levantado. A conta so tem confirmados
+      // PER (perda), TRF (transferencia) e INV (inventario), e nenhum serve: perda e consumo
+      // administrativo sao coisas diferentes para relatorio fiscal e gerencial, entao
+      // reaproveitar PER por semelhanca inflaria o relatorio de perdas com consumo legitimo.
+      // Enquanto isso, a retirada do PDV administrativo conclui normalmente e baixa o estoque
+      // central -- o que falta e so o espelho na OMIE.
+      const itensAdministrativos = targetRows.filter((row) => administrativos.has(row.pdv_id));
+      if (itensAdministrativos.length) {
+        lancamentoIntegracao = {
+          ...(lancamentoIntegracao || {}),
+          consumo_administrativo_pendente: itensAdministrativos.length,
+          motivo_consumo:
+            "Saída por consumo administrativo ainda não enfileirada: o código de motivo da OMIE para consumo interno está em levantamento."
+        };
+      }
 
       const finalized = await client.query(
         `UPDATE pedidos

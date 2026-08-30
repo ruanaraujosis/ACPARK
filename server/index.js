@@ -15,6 +15,7 @@ import { handleOrderAlertRoutes } from "./modules/order-alerts/order-alerts.rout
 import { handleBackupRoutes } from "./modules/backup/backup.routes.js";
 import { handleSetupRoutes } from "./modules/setup/setup.routes.js";
 import { handleInventariosRoutes } from "./modules/inventarios/inventarios.routes.js";
+import { ensurePdvAdministrativoColumn } from "./services/pdvs/pdv-administrativo.service.js";
 import { executarTick, iniciarAgendador } from "./services/integrations/core/scheduler.js";
 import { comprimirSePossivel, marcarSuporteGzip, normalizeCategories, normalizeCategoryList, normalizeText, readBody, send } from "./utils/http.js";
 
@@ -104,9 +105,14 @@ async function processAutoOrders() {
 async function runAutoOrders() {
   await tx(async (client) => {
     const lows = await client.query(
+      // PDV Administrativo fica de fora: ele consome, nao repoe. A exclusao e explicita de
+      // proposito -- confiar em `estoque_maximo` ficar zerado por acaso significaria que um
+      // maximo configurado por engano passaria a gerar autopedido para um perfil que nunca
+      // deveria ter reposicao automatica.
       `SELECT e.pdv_id, e.sku_produto, e.quantidade, e.estoque_minimo, e.estoque_maximo
        FROM estoque_pdv e
        JOIN produtos p ON p.sku = e.sku_produto
+       JOIN pdvs pdv ON pdv.id = e.pdv_id AND pdv.administrativo = FALSE
        WHERE e.permitido = TRUE
          AND p.ativo = TRUE
          AND e.estoque_maximo > e.quantidade
@@ -278,7 +284,7 @@ async function api(req, res) {
   if (url.pathname === "/api/bootstrap") {
     const [pdvs, products, categories] = await Promise.all([
       query(`
-        SELECT p.id, p.nome, p.codigo_orion, p.is_cozinha, p.categoria,
+        SELECT p.id, p.nome, p.codigo_orion, p.is_cozinha, p.administrativo, p.categoria,
                COALESCE(ARRAY(
                  SELECT pc.categoria
                  FROM pdv_categorias pc
@@ -460,7 +466,7 @@ async function api(req, res) {
     const body = method === "GET" ? {} : await readBody(req);
     if (method === "GET") {
       return send(res, 200, { pdvs: await query(`
-        SELECT p.id, p.nome, p.codigo_orion, p.is_cozinha, p.categoria,
+        SELECT p.id, p.nome, p.codigo_orion, p.is_cozinha, p.administrativo, p.categoria,
                COALESCE(ARRAY(
                  SELECT pc.categoria
                  FROM pdv_categorias pc
@@ -477,12 +483,16 @@ async function api(req, res) {
       const categoria = normalizeText(body.categoria, 120).toUpperCase() || null;
       const categorias = normalizeCategories(body.categorias);
       if (!nome || !senha) return send(res, 400, { error: "Nome e senha são obrigatórios." });
+      await ensurePdvAdministrativoColumn();
+      // PDV Administrativo: setor interno que consome estoque sem vender. Pede como qualquer
+      // PDV, mas o que ele retira sai da empresa como consumo -- nao vira saldo de revenda.
+      const administrativo = body.administrativo === true;
       const pdv = await query(
-        `INSERT INTO pdvs (nome, senha, codigo_orion, is_cozinha, categoria)
-         VALUES ($1, $2, $3, $4, $5)
+        `INSERT INTO pdvs (nome, senha, codigo_orion, is_cozinha, administrativo, categoria)
+         VALUES ($1, $2, $3, $4, $5, $6)
          ON CONFLICT (nome) DO NOTHING
          RETURNING id`,
-        [nome, hashPassword(senha), normalizeText(body.codigo_orion, 60) || null, false, categoria]
+        [nome, hashPassword(senha), normalizeText(body.codigo_orion, 60) || null, false, administrativo, categoria]
       );
       const pdvId = pdv[0]?.id;
       // Novo PDV: associa categorias e já libera os produtos correspondentes no estoque
@@ -513,11 +523,36 @@ async function api(req, res) {
       const categorias = normalizeCategories(body.categorias);
       const nome = normalizeText(body.nome, 120).toUpperCase();
       if (!pdvId || !nome) return send(res, 400, { error: "PDV inválido." });
-      await query("UPDATE pdvs SET nome = $2, codigo_orion = $3, is_cozinha = $4, categoria = $5 WHERE id = $1", [
+      await ensurePdvAdministrativoColumn();
+
+      // Alternar a tag administrativa: permitido nos dois sentidos.
+      //
+      // PENDENTE DE DECISAO: virar administrativo com saldo residual em estoque_pdv ainda
+      // nao tem regra aprovada. A proposta em analise e dar baixa desse saldo como a mesma
+      // saida administrativa (consumo), zerando localmente com auditoria. Ate a aprovacao, a
+      // troca e RECUSADA quando ha saldo -- recusar nao perde nada e diz o motivo; zerar por
+      // conta propria aplicaria uma regra que ninguem aprovou, e deixar o saldo parado
+      // criaria estoque fantasma num perfil que nao mostra tela de saldo.
+      const eraAdministrativo = (await query("SELECT administrativo FROM pdvs WHERE id = $1", [pdvId]))[0]?.administrativo === true;
+      const administrativo = body.administrativo === true;
+      if (administrativo && !eraAdministrativo) {
+        const saldo = await query(
+          "SELECT COALESCE(SUM(quantidade), 0)::int AS total FROM estoque_pdv WHERE pdv_id = $1 AND quantidade > 0",
+          [pdvId]
+        );
+        if (saldo[0].total > 0) {
+          return send(res, 409, {
+            error: `Este PDV ainda tem ${saldo[0].total} unidade(s) em estoque. A regra de baixa do saldo ao virar administrativo está em definição — zere o estoque por inventário antes de trocar o perfil.`
+          });
+        }
+      }
+
+      await query("UPDATE pdvs SET nome = $2, codigo_orion = $3, is_cozinha = $4, administrativo = $5, categoria = $6 WHERE id = $1", [
         pdvId,
         nome,
         normalizeText(body.codigo_orion, 60) || null,
         false,
+        administrativo,
         normalizeText(body.categoria, 120).toUpperCase() || null
       ]);
       const senha = normalizeText(body.senha, 120);

@@ -27,7 +27,10 @@ export async function handleEstoqueRoutes(req, res, context) {
        ORDER BY p.nome`,
       [pdvId]
     );
-    send(res, 200, { products: rows });
+    // O perfil vai junto: a mesma rota alimenta a tela de pedido (que precisa da lista) e a
+    // de estoque (que nao deve mostrar saldo nenhum para o PDV administrativo).
+    const perfil = await query("SELECT administrativo FROM pdvs WHERE id = $1", [pdvId]);
+    send(res, 200, { products: rows, administrativo: perfil[0]?.administrativo === true });
     return true;
   }
 
@@ -36,10 +39,19 @@ export async function handleEstoqueRoutes(req, res, context) {
     if (!requireUser(req, res, "admin")) return true;
     const pdvId = asInt(url.searchParams.get("pdvId"));
     if (method === "GET") {
-      const pdvRows = await query("SELECT id, nome, categoria, is_cozinha FROM pdvs WHERE id = $1", [pdvId]);
+      const pdvRows = await query("SELECT id, nome, categoria, is_cozinha, administrativo FROM pdvs WHERE id = $1", [pdvId]);
       const pdv = pdvRows[0] || null;
+
       const categoryRows = await query("SELECT categoria FROM pdv_categorias WHERE pdv_id = $1 ORDER BY categoria", [pdvId]);
       const categorias = categoryRows.map((row) => row.categoria);
+
+      // PDV Administrativo nao tem saldo: e setor interno que consome, nao ponto de venda.
+      // A resposta diz que NAO HA saldo, em vez de devolver zero -- zero significaria
+      // "acabou o estoque", e a tela mostraria um numero que nunca vai mudar.
+      if (pdv?.administrativo) {
+        send(res, 200, { stock: [], pdv: { ...pdv, categorias }, sem_saldo: true });
+        return true;
+      }
       const rows = await query(
         `SELECT p.sku, p.nome, p.qtd_total AS estoque_central,
                 COALESCE(string_agg(DISTINCT pcg.categoria, ', ' ORDER BY pcg.categoria), '') AS categoria,
