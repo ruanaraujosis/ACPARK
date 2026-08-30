@@ -3867,6 +3867,9 @@ body.has-order-panel {
   overflow: hidden;
 }
 
+/* .detail-panel-overlay é a classe genérica (painel de inventário e afins); .release-detail-
+   overlay é mantida no seletor para o painel de pedido continuar exatamente como estava. */
+.detail-panel-overlay,
 .release-detail-overlay {
   position: fixed;
   inset: 0;
@@ -4020,6 +4023,27 @@ body.has-order-panel {
   flex: 1 1 auto;
   min-height: 0;
   overscroll-behavior: contain;
+}
+
+/* A tabela do inventário pode ter milhares de linhas (o Almoxarifado sozinho tem 4.500+
+   produtos): mesmo com alertas e filtros acima disputando espaço, ela nunca pode encolher a
+   ponto de sumir -- uma altura mínima garante que sempre sobra algo para rolar. */
+.order-panel-content > .table-wrap.inventario-tabela {
+  min-height: 12rem;
+}
+
+/* Contagem do Almoxarifado: diferente do painel de pedido, aqui a tabela não é a única coisa
+   acima do rodapé -- tem o aviso "conte tudo" e os filtros também, e o rodapé é alto (tem o
+   quadro de assinatura). Forçar só a tabela a encolher via flex a deixava sem espaço nenhum em
+   telas mais baixas. Em vez disso, o conteúdo inteiro rola como uma página normal, e só a
+   tabela ganha um teto -- senão ela sozinha esticaria a rolagem por milhares de produtos. */
+.contagem-propria-overlay .order-panel-content {
+  display: block;
+  overflow-y: auto;
+}
+
+.contagem-propria-overlay .order-panel-content > .table-wrap.inventario-tabela {
+  max-height: 46vh;
 }
 
 .order-panel-context {
@@ -4316,7 +4340,8 @@ body.has-order-panel {
 /* Responsivo: painel do pedido em telas pequenas */
 @media (max-width: 720px) {
   /* Em telas pequenas o espaço é escasso: o painel volta a ocupar a tela inteira */
-  .release-detail-overlay {
+  .release-detail-overlay,
+  .detail-panel-overlay {
     padding: 0;
   }
 
@@ -4403,6 +4428,9 @@ body.has-order-panel {
   margin-bottom: 1rem;
   border-color: rgba(0, 123, 135, 0.24);
   background: linear-gradient(135deg, rgba(0, 123, 135, 0.09), rgba(255, 255, 255, 0.96));
+  /* Direto dentro de .order-panel-content (painel de inventário): não pode ceder espaço para
+     a tabela -- quem tem que encolher e rolar é a tabela, nunca o aviso */
+  flex-shrink: 0;
 }
 
 .order-head-status {
@@ -4571,6 +4599,8 @@ tr[data-item-id].is-marked-remove .pdv-item-qty {
 /* Adicionar produto a um pedido pendente, na tela do PDV */
 .pdv-add-panel {
   margin-top: 0.85rem;
+  /* Dentro do painel de tela cheia do detalhe de inventário: não cede espaço à tabela */
+  flex-shrink: 0;
 }
 
 .pdv-add-form {
@@ -5018,6 +5048,9 @@ td input[type="number"] {
   flex-wrap: wrap;
   gap: 0.65rem;
   align-items: center;
+  /* Quando usada dentro de um .order-panel-content (painel de inventário em tela cheia), a
+     barra de ações não pode ceder espaço à tabela */
+  flex-shrink: 0;
 }
 
 .print-history-area .print-logo-header {
@@ -6541,6 +6574,9 @@ td input[type="number"] {
   gap: 0.6rem;
   align-items: center;
   margin-bottom: 0.75rem;
+  /* Dentro do painel de tela cheia (order-panel-content), quem rola é a tabela -- os filtros
+     mantêm o tamanho natural */
+  flex-shrink: 0;
 }
 
 .inventario-so-pendentes {
@@ -6763,10 +6799,6 @@ td input[type="number"] {
   text-align: right;
 }
 
-.inventario-detalhe-card {
-  margin-top: 1rem;
-}
-
 /* Linha marcada para remoção: some só ao salvar, para dar chance de desistir */
 .inventario-item-linha.is-marked-remove td {
   opacity: 0.45;
@@ -6794,6 +6826,9 @@ td input[type="number"] {
   border: 1px solid rgba(0, 123, 135, 0.16);
   border-radius: 16px;
   background: rgba(16, 182, 199, 0.05);
+  /* Dentro do painel de tela cheia da contagem do Almoxarifado: o quadro de assinatura tem
+     altura fixa (a área de desenho) e não pode ser espremido -- quem cede espaço é a tabela */
+  flex-shrink: 0;
 }
 
 /* Marca no menu que há assinatura esperando, para quem está em outra tela */

@@ -7726,19 +7726,60 @@ function bindReleasePanelClose(overlay) {
   });
 }
 
-// Monta a casca do painel usada nos estados de carregamento e erro
-function releasePanelShell(orderCode = "", inner = "") {
+// Casca genérica de um painel em tela cheia -- mesmo mecanismo do painel de pedido: overlay,
+// cabeçalho com eyebrow + título (+ selo/status opcional) + botão de fechar único, corpo
+// rolável. O painel de pedido (estados de carregamento/erro) e o painel de inventário
+// reaproveitam esta função para não duplicar HTML/CSS de abrir um painel de tela cheia.
+function orderPanelShell({ eyebrow = "", title = "", titleBadge = "", ariaLabel = "", headExtra = "", inner = "", foot = "" }) {
   return `
-    <section class="order-panel" role="dialog" aria-modal="true" aria-label="Painel do pedido ${esc(orderCode)}">
+    <section class="order-panel" role="dialog" aria-modal="true" aria-label="${esc(ariaLabel || title)}">
       <header class="order-panel-head">
         <div class="order-panel-head-main">
-          <p class="eyebrow">Liberação de pedido</p>
-          <h2>${esc(orderCode)}</h2>
+          <p class="eyebrow">${esc(eyebrow)}</p>
+          <h2>${esc(title)}${titleBadge ? ` ${titleBadge}` : ""}</h2>
         </div>
+        ${headExtra}
         <button class="order-panel-close" type="button" aria-label="Fechar painel">&times;</button>
       </header>
       <div class="order-panel-content">${inner}</div>
+      ${foot ? `<footer class="order-panel-foot">${foot}</footer>` : ""}
     </section>`;
+}
+
+// Cria e abre um overlay em tela cheia genérico, com a mesma trava de scroll do painel de
+// pedido. `overlayClass` identifica QUAL painel é (inventário, contagem própria, ...) para o
+// fechamento saber o que remover sem afetar outro painel.
+function openDetailOverlay(overlayClass) {
+  const overlay = document.createElement("div");
+  overlay.className = `detail-panel-overlay order-panel-overlay ${overlayClass}`;
+  document.body.appendChild(overlay);
+  document.body.classList.add("has-order-panel");
+  return overlay;
+}
+
+// Fecha o overlay genérico identificado por `overlayClass`
+function closeDetailOverlay(overlayClass) {
+  document.querySelector(`.${overlayClass}`)?.remove();
+  document.body.classList.remove("has-order-panel");
+}
+
+// Liga o botão X de um painel genérico ao fechamento informado
+function bindDetailPanelClose(overlay, onClose) {
+  overlay?.querySelectorAll(".order-panel-close").forEach((button) => {
+    if (button.dataset.bound === "true") return;
+    button.dataset.bound = "true";
+    button.addEventListener("click", onClose);
+  });
+}
+
+// Monta a casca do painel de pedido usada nos estados de carregamento e erro
+function releasePanelShell(orderCode = "", inner = "") {
+  return orderPanelShell({
+    eyebrow: "Liberação de pedido",
+    title: orderCode,
+    ariaLabel: `Painel do pedido ${orderCode}`,
+    inner
+  });
 }
 
 // Abre o painel do pedido em tela cheia
@@ -10223,7 +10264,8 @@ async function viewInventarios(options = {}) {
   const avisosAtivos = await request("/api/avisos", { silentLoading: true })
     .then((r) => r.avisos || [])
     .catch(() => []);
-  // Contagem do proprio Almoxarifado: mora na mesma aba, logo abaixo da lista
+  // Contagem do proprio Almoxarifado: um resumo curto na mesma aba; o formulário completo
+  // abre em painel de tela cheia, igual ao detalhe de cada PDV
   const contagemPropria = await request("/api/admin/inventario/proprio", { silentLoading: true })
     .catch(() => ({ inventario: null, itens: [], produtos: [] }));
 
@@ -10257,15 +10299,12 @@ async function viewInventarios(options = {}) {
           </tr>`))
         : `<p class="text-sm text-slate-500">Nenhum inventário ${filtro ? "neste estado" : "registrado"}.</p>`}
     </section>
-    ${blocoContagemDoAlmoxarifado(contagemPropria)}
-    ${blocoEmissaoDeAviso(avisosAtivos)}
-    <section id="inventario-detalhe"></section>`);
+    ${resumoContagemPropriaHtml(contagemPropria)}
+    ${blocoEmissaoDeAviso(avisosAtivos)}`);
 
   bindInventariosAdmin();
   bindEmissaoDeAviso();
-  atualizarResumoAlmox();
-  bindContagemDoAlmoxarifado(contagemPropria?.inventario?.codigo_inventario || null);
-  if (inventarioAdmin.codigoAberto) await abrirDetalheInventario(inventarioAdmin.codigoAberto);
+  bindResumoContagemPropria();
 }
 
 // Há quanto tempo a contagem foi feita. É o dado que sustenta o alerta de contagem velha:
@@ -10331,32 +10370,73 @@ async function salvarJanelaContagem(mudanca) {
 }
 
 // Detalhe: itens com saldo atual ao lado, edição, adição, remoção e confirmação
+// Abre o inventário em painel de tela cheia -- mesmo mecanismo do painel de pedido: overlay,
+// cabeçalho com eyebrow+status, corpo rolável, só o X fecha.
 async function abrirDetalheInventario(codigo) {
+  if (!codigo) return;
+  // fecharDetalheInventario() também zera codigoAberto -- por isso fecha um painel antigo
+  // ANTES de gravar o código do novo, nunca depois (senão o que acabou de ser gravado seria
+  // apagado na mesma respiração, e recarregarDetalheInventario() nunca mais encontraria nada)
+  fecharDetalheInventario();
   inventarioAdmin.codigoAberto = codigo;
-  const alvo = document.querySelector("#inventario-detalhe");
-  if (!alvo) return;
-  let dados;
+  const overlay = openDetailOverlay("inventario-detail-overlay");
+  overlay.innerHTML = orderPanelShell({
+    eyebrow: "Inventário",
+    title: codigo,
+    inner: `<div class="order-panel-loading">Carregando inventário...</div>`
+  });
+  bindDetailPanelClose(overlay, fecharDetalheInventario);
+  overlay.querySelector(".order-panel-close")?.focus();
+
   try {
-    dados = await request(`/api/admin/inventario?codigo=${encodeURIComponent(codigo)}`, { silentLoading: true });
+    const dados = await request(`/api/admin/inventario?codigo=${encodeURIComponent(codigo)}`, { silentLoading: true });
+    renderDetalheInventario(overlay, codigo, dados);
   } catch (error) {
-    toast(error.message || "Não foi possível abrir o inventário.", "error");
-    return;
+    overlay.innerHTML = orderPanelShell({
+      eyebrow: "Inventário",
+      title: codigo,
+      inner: `<div class="order-panel-message">
+        <strong>Não foi possível abrir o inventário.</strong>
+        <p>${esc(error.message || "Verifique a conexão e tente novamente.")}</p>
+      </div>`
+    });
+    bindDetailPanelClose(overlay, fecharDetalheInventario);
   }
+}
+
+// Recarrega o mesmo painel depois de uma ação (salvar, confirmar, adicionar, remover) --
+// espelha reloadReleasePanel do painel de pedido: atualiza no lugar, sem fechar o painel.
+async function recarregarDetalheInventario() {
+  const overlay = document.querySelector(".inventario-detail-overlay");
+  const codigo = inventarioAdmin.codigoAberto;
+  if (!overlay?.isConnected || !codigo) return;
+  try {
+    const dados = await request(`/api/admin/inventario?codigo=${encodeURIComponent(codigo)}`, { silentLoading: true });
+    renderDetalheInventario(overlay, codigo, dados);
+  } catch (error) {
+    toast(error.message || "Não foi possível atualizar o inventário.", "error");
+  }
+}
+
+// Fecha o painel do inventário
+function fecharDetalheInventario() {
+  closeDetailOverlay("inventario-detail-overlay");
+  inventarioAdmin.codigoAberto = null;
+}
+
+// Monta e injeta o conteúdo do painel: itens com saldo atual ao lado, edição, adição, remoção
+// e confirmação. Reaproveitado tanto na abertura quanto no recarregamento pós-ação.
+function renderDetalheInventario(overlay, codigo, dados) {
   const { inventario, itens = [], historico = [] } = dados;
   const editavel = inventario.status === "Enviado";
 
-  alvo.innerHTML = `
-    <div class="card inventario-detalhe-card" data-codigo="${esc(inventario.codigo_inventario)}">
-      <div class="inventario-topo">
-        <div>
-          <p class="eyebrow">Inventário</p>
-          <h4 class="section-title text-lg font-black">${esc(inventario.codigo_inventario)}</h4>
-          <span class="status-chip">${esc(ROTULO_STATUS_INVENTARIO[inventario.status] || inventario.status)}</span>
-        </div>
-        <button class="order-panel-timeline-open inventario-historico-abrir" type="button"
-          aria-label="Histórico de edição do inventário" title="Histórico de edição do inventário">🕐</button>
-      </div>
-
+  overlay.innerHTML = orderPanelShell({
+    eyebrow: "Inventário",
+    title: inventario.codigo_inventario,
+    titleBadge: `<span class="status-chip">${esc(ROTULO_STATUS_INVENTARIO[inventario.status] || inventario.status)}</span>`,
+    headExtra: `<button class="order-panel-timeline-open inventario-historico-abrir" type="button"
+      aria-label="Histórico de edição do inventário" title="Histórico de edição do inventário">🕐</button>`,
+    inner: `
       ${dados.ajustado_em_simulacao ? `<div class="release-alert card inventario-aviso-simulacao">
         <strong>Este ajuste ficou só no MyEstoque.</strong>
         <p>Quando ele foi aplicado, a integração com a OMIE estava em modo simulação: o
@@ -10415,31 +10495,33 @@ async function abrirDetalheInventario(codigo) {
           </label>
           <button class="btn inventario-add-confirm" type="button">Adicionar</button>
         </div>
-      </div>
-
+      </div>` : ""}
+    `,
+    // Ações no rodapé fixo, como no painel de pedido: independente de quantos produtos a
+    // tabela tiver (4 ou 4.500), o botão de confirmar precisa continuar visível sem rolar.
+    foot: editavel ? `
       <div class="order-card-actions no-print">
         <span class="text-sm text-slate-500">Confirmar não ajusta o estoque: pede a assinatura do PDV.</span>
         <button class="btn danger secondary inventario-excluir" type="button">Excluir inventário</button>
         <button class="btn secondary inventario-salvar" type="button">Salvar correções</button>
         <button class="btn inventario-confirmar" type="button">Confirmar e pedir assinatura</button>
-      </div>` : `
+      </div>` : inventario.status === "Em contagem" ? `
       <div class="order-card-actions no-print">
-        ${inventario.status === "Em contagem"
-          ? `<button class="btn danger secondary inventario-excluir" type="button">Excluir inventário</button>` : ""}
-      </div>`}
-    </div>`;
+        <button class="btn danger secondary inventario-excluir" type="button">Excluir inventário</button>
+      </div>` : ""
+  });
 
-  bindDetalheInventario(inventario.codigo_inventario, historico);
-  alvo.scrollIntoView({ behavior: "smooth", block: "start" });
+  bindDetailPanelClose(overlay, fecharDetalheInventario);
+  overlay.querySelector(".inventario-historico-abrir")?.addEventListener("click", () =>
+    abrirHistoricoInventario(codigo, historico));
+  bindDetalheInventario(overlay, codigo);
 }
 
-// Liga as ações do detalhe
-function bindDetalheInventario(codigo, historico) {
-  const card = document.querySelector(".inventario-detalhe-card");
+// Liga as ações do detalhe, tudo escopado ao overlay do painel (o botão de histórico fica no
+// cabeçalho e é ligado por quem monta o painel, não aqui)
+function bindDetalheInventario(overlay, codigo) {
+  const card = overlay;
   if (!card) return;
-
-  card.querySelector(".inventario-historico-abrir")?.addEventListener("click", () =>
-    abrirHistoricoInventario(codigo, historico));
 
   // Remoção só é aplicada ao salvar, para o Almoxarifado poder desistir
   card.querySelectorAll(".inventario-remover-item").forEach((botao) =>
@@ -10529,7 +10611,7 @@ async function adicionarProdutoAoInventario(botao, codigo) {
       body: JSON.stringify({ codigo_inventario: codigo, adicionar: [{ sku, quantidade, unidade_medida: "UNIDADE" }] })
     });
     toast("Produto adicionado ao inventário.");
-    await abrirDetalheInventario(codigo);
+    await recarregarDetalheInventario();
   } catch (error) {
     toast(error.message || "Não foi possível adicionar o produto.", "error");
   }
@@ -10556,7 +10638,7 @@ async function salvarCorrecoesInventario(botao, codigo) {
       body: JSON.stringify({ codigo_inventario: codigo, itens })
     });
     toast(`Correções salvas: ${r.editados} alterada(s), ${r.removidos} removida(s).`);
-    await abrirDetalheInventario(codigo);
+    await recarregarDetalheInventario();
   } catch (error) {
     toast(error.message || "Não foi possível salvar as correções.", "error");
   } finally {
@@ -10586,7 +10668,10 @@ async function confirmarInventario(botao, codigo) {
       body: JSON.stringify({ codigo_inventario: codigo })
     });
     toast("Contagem confirmada. O PDV foi chamado para assinar.");
+    // Atualiza a lista por trás (estado/contados mudaram) e o painel aberto (fica somente
+    // leitura, aguardando a assinatura)
     await viewInventarios();
+    await recarregarDetalheInventario();
   } catch (error) {
     toast(error.message || "Não foi possível confirmar a contagem.", "error");
   } finally {
@@ -10605,7 +10690,7 @@ async function excluirInventario(codigo) {
       body: JSON.stringify({ codigo_inventario: codigo, motivo })
     });
     toast("Inventário excluído.");
-    inventarioAdmin.codigoAberto = null;
+    fecharDetalheInventario();
     await viewInventarios();
   } catch (error) {
     toast(error.message || "Não foi possível excluir o inventário.", "error");
@@ -11051,34 +11136,101 @@ function bindEmissaoDeAviso() {
 // assina e conclui.
 
 // Bloco da contagem, exibido dentro da aba Inventários
-function blocoContagemDoAlmoxarifado(dados) {
-  const { inventario, itens = [], produtos = [] } = dados;
-  const contagens = new Map(itens.map((item) => [item.sku_produto, item]));
-  const categorias = [...new Set(produtos.flatMap((p) => String(p.categoria || "").split(",").map((c) => c.trim()).filter(Boolean)))]
-    .sort((a, b) => a.localeCompare(b, "pt-BR"));
-
+// Resumo curto na aba de Inventários: sem contagem aberta, convida a iniciar; com uma aberta,
+// mostra código/estado/contados e um botão "Abrir" -- mesma linguagem visual da lista de PDVs.
+// O formulário completo vive em painel de tela cheia (abrirContagemPropria).
+function resumoContagemPropriaHtml(dados) {
+  const { inventario, itens = [], produtos = [] } = dados || {};
   if (!inventario) {
     return `
       <section class="card">
         <p class="eyebrow">Contagem do Almoxarifado</p>
         <h4 class="section-title text-lg font-black">Contar o estoque central</h4>
-        <p class="mt-2 text-sm text-slate-600">Você conta, assina e conclui na mesma tela —
+        <p class="mt-2 text-sm text-slate-600">Você conta, assina e conclui no mesmo painel —
         não há segunda parte para conferir.</p>
         <button class="btn mt-3" id="almox-inventario-iniciar" type="button">Iniciar contagem do Almoxarifado</button>
       </section>`;
   }
-
+  const contados = itens.filter((item) => item.quantidade_contada !== null && item.quantidade_contada !== undefined).length;
   return `
-    <section class="card inventario-card" id="almox-contagem">
+    <section class="card">
       <div class="inventario-topo">
         <div>
           <p class="eyebrow">Contagem do Almoxarifado</p>
           <h4 class="section-title text-lg font-black">${esc(inventario.codigo_inventario)}</h4>
           <span class="status-chip">${esc(inventario.status)}</span>
         </div>
-        <div id="almox-resumo" class="inventario-resumo"></div>
+        <button class="btn secondary" id="almox-contagem-abrir" type="button">Abrir</button>
       </div>
+      <p class="text-sm text-slate-500">${contados} de ${produtos.length} contados</p>
+    </section>`;
+}
 
+// Liga o resumo: iniciar cria a contagem e já abre o painel; abrir só abre
+function bindResumoContagemPropria() {
+  document.querySelector("#almox-inventario-iniciar")?.addEventListener("click", async () => {
+    try {
+      await request("/api/admin/inventario/proprio", { method: "POST" });
+      await abrirContagemPropria();
+    } catch (error) {
+      toast(error.message || "Não foi possível iniciar a contagem.", "error");
+    }
+  });
+  document.querySelector("#almox-contagem-abrir")?.addEventListener("click", () => abrirContagemPropria());
+}
+
+// Abre a contagem do Almoxarifado em painel de tela cheia -- mesmo mecanismo do detalhe de
+// cada PDV e do painel de pedido.
+async function abrirContagemPropria() {
+  fecharContagemPropria();
+  const overlay = openDetailOverlay("contagem-propria-overlay");
+  overlay.innerHTML = orderPanelShell({
+    eyebrow: "Contagem do Almoxarifado",
+    title: "",
+    inner: `<div class="order-panel-loading">Carregando contagem...</div>`
+  });
+  bindDetailPanelClose(overlay, fecharContagemPropria);
+  overlay.querySelector(".order-panel-close")?.focus();
+  await recarregarContagemPropria(overlay);
+}
+
+// Recarrega o painel já aberto -- usado tanto pela abertura inicial quanto depois de salvar
+async function recarregarContagemPropria(overlayParam) {
+  const overlay = overlayParam || document.querySelector(".contagem-propria-overlay");
+  if (!overlay?.isConnected) return;
+  try {
+    const dados = await request("/api/admin/inventario/proprio", { silentLoading: true });
+    if (!dados.inventario) {
+      // Concluída ou excluída por outra sessão nesse meio-tempo: o painel não tem mais o que
+      // mostrar. A conclusão pelo próprio botão já fecha antes de chegar aqui.
+      fecharContagemPropria();
+      toast("A contagem do Almoxarifado não está mais disponível.", "error");
+      await viewInventarios();
+      return;
+    }
+    renderContagemPropria(overlay, dados);
+  } catch (error) {
+    toast(error.message || "Não foi possível atualizar a contagem.", "error");
+  }
+}
+
+function fecharContagemPropria() {
+  closeDetailOverlay("contagem-propria-overlay");
+}
+
+// Monta e injeta o conteúdo do painel de contagem do Almoxarifado
+function renderContagemPropria(overlay, dados) {
+  const { inventario, itens = [], produtos = [] } = dados;
+  const contagens = new Map(itens.map((item) => [item.sku_produto, item]));
+  const categorias = [...new Set(produtos.flatMap((p) => String(p.categoria || "").split(",").map((c) => c.trim()).filter(Boolean)))]
+    .sort((a, b) => a.localeCompare(b, "pt-BR"));
+
+  overlay.innerHTML = orderPanelShell({
+    eyebrow: "Contagem do Almoxarifado",
+    title: inventario.codigo_inventario,
+    titleBadge: `<span class="status-chip">${esc(inventario.status)}</span>`,
+    headExtra: `<div id="almox-resumo" class="inventario-resumo"></div>`,
+    inner: `
       <div class="release-alert card inventario-aviso-zera">
         <strong>Conte em unidades, e conte tudo.</strong>
         <p>Produto deixado <strong>em branco mantém o valor atual</strong> no estoque central
@@ -11116,8 +11268,11 @@ function blocoContagemDoAlmoxarifado(dados) {
               </tr>`;
             }))
           : `<p class="text-sm text-slate-500">Nenhum produto ativo no cadastro.</p>`}
-      </div>
-
+      </div>`,
+    // A assinatura fica no rodapé fixo (fora da área que rola), do mesmo jeito que o painel
+    // de pedido reserva o rodapé para as ações -- senão o quadro de assinatura (alto, com
+    // canvas) espremeria a tabela até quase sumir em telas mais baixas.
+    foot: `
       <div class="inventario-assinatura-area">
         <label class="grid gap-1 text-sm font-bold">Quem está assinando
           <input id="almox-assinante" type="text" placeholder="Nome completo do responsável" autocomplete="off" />
@@ -11130,8 +11285,12 @@ function blocoContagemDoAlmoxarifado(dados) {
           <button class="btn secondary" id="almox-salvar" type="button">Salvar contagem</button>
           <button class="btn" id="almox-concluir" type="button">Assinar e concluir</button>
         </div>
-      </div>
-    </section>`;
+      </div>`
+  });
+
+  bindDetailPanelClose(overlay, fecharContagemPropria);
+  atualizarResumoAlmox();
+  bindContagemDoAlmoxarifado(inventario.codigo_inventario);
 }
 
 // Resumo "X de Y contados" da contagem do Almoxarifado
@@ -11156,16 +11315,6 @@ function itensDaTelaAlmox() {
 
 // Liga filtros, assinatura e ações
 function bindContagemDoAlmoxarifado(codigo) {
-  document.querySelector("#almox-inventario-iniciar")?.addEventListener("click", async () => {
-    try {
-      await request("/api/admin/inventario/proprio", { method: "POST" });
-      await viewInventarios();
-    } catch (error) {
-      toast(error.message || "Não foi possível iniciar a contagem.", "error");
-    }
-  });
-  if (!codigo) return;
-
   const aplicarFiltros = () => {
     const termo = String(document.querySelector("#almox-busca")?.value || "").trim().toLowerCase();
     const categoria = String(document.querySelector("#almox-categoria")?.value || "").trim().toLowerCase();
@@ -11258,6 +11407,7 @@ function bindContagemDoAlmoxarifado(codigo) {
           cancelLabel: "Fechar"
         });
       }
+      fecharContagemPropria();
       await viewInventarios();
     } catch (error) {
       toast(error.message || "Não foi possível concluir o inventário.", "error");

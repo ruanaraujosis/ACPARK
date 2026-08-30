@@ -127,7 +127,10 @@ test("produto não contado não mostra baixa — ele mantém o valor", () => {
   // Esta coluna já disse as duas coisas. Em 29/08 a regra virou "sem contagem zera" e a tela
   // passou a mostrar a baixa inteira. Em 30/08 a regra foi invertida de novo, e mostrar a
   // baixa aqui anunciaria um estrago que não vai acontecer — o produto não é tocado.
-  const inicio = app.indexOf("async function abrirDetalheInventario");
+  // Em 30/08 (layout) o detalhe passou a abrir em painel de tela cheia: a tabela que estava
+  // dentro de abrirDetalheInventario foi para renderDetalheInventario, reaproveitada também
+  // no recarregamento pós-ação.
+  const inicio = app.indexOf("function renderDetalheInventario");
   const corpo = app.slice(inicio, app.indexOf("\n}\n", inicio));
   assert.match(corpo, /const diferenca = temContagem \? Number\(contado\) - Number\(item\.saldo_atual \|\| 0\) : null;/);
   assert.match(corpo, /não contado — mantém/, "precisa dizer que o valor é mantido");

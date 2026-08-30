@@ -88,7 +88,9 @@ test("o aviso aparece na conclusão e continua no detalhe depois", () => {
 test("a contagem do Almoxarifado é em unidade, sem seletor de embalagem", () => {
   // Decisão do usuário (commit 4da04af): "Sem seletor embalagem-unidade, os PDV devem contar
   // apenas por UNIDADE". Vale para as duas telas de contagem.
-  const bloco = app.slice(app.indexOf("function blocoContagemDoAlmoxarifado"), app.indexOf("\n}\n", app.indexOf("function blocoContagemDoAlmoxarifado")));
+  // Em 30/08 (layout) blocoContagemDoAlmoxarifado virou renderContagemPropria, que monta o
+  // conteúdo do painel de tela cheia em vez de um card colado no fim da página.
+  const bloco = app.slice(app.indexOf("function renderContagemPropria"), app.indexOf("\n}\n", app.indexOf("function renderContagemPropria")));
   assert.match(bloco, /"Contagem \(un\)"/);
   assert.doesNotMatch(semComentarios(bloco), /EMBALAGEM/i, "nenhuma menção a embalagem na contagem");
   const itens = app.slice(app.indexOf("function itensDaTelaAlmox"), app.indexOf("\n}\n", app.indexOf("function itensDaTelaAlmox")));
@@ -122,7 +124,7 @@ test("o cache-bust acompanhou a última mudança do app.js", () => {
   // Verificado na prova visual: com o mesmo ?v=, o navegador serviu a versão antiga e a
   // correção parecia não ter sido aplicada.
   const versao = html.match(/app\.js\?v=([^"]+)/)?.[1];
-  assert.equal(versao, "20260824-inventario-preserva-01");
+  assert.equal(versao, "20260830-inventario-painel-cheio");
   assert.match(html, new RegExp(`styles\\.css\\?v=${versao}`), "css e js compartilham a versão");
 });
 
