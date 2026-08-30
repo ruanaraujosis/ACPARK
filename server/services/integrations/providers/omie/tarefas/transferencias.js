@@ -1,6 +1,7 @@
 import { CODIGOS_ERRO, IntegrationError } from "../../../core/errors.js";
 import { emSimulacao, modoDeEscrita } from "../../../core/escrita.js";
 import * as lancamentos from "../../../core/stock-launches.repository.js";
+import { ehLimiteDeTaxa, pausarIntegracao, segundosDeEspera } from "../../../core/pausa-integracao.js";
 import { chamarOmie, ENDPOINTS } from "../omie.api.js";
 import {
   montarCompensacaoTransferencia,
@@ -221,6 +222,27 @@ export async function enviarTransferencias(contexto) {
       });
       resumo.enviados += 1;
     } catch (erro) {
+      // Bloqueio por consumo: para o lote AQUI. Continuar queimaria as chamadas restantes
+      // contra uma porta fechada e renovaria a punicao -- foi exatamente isso que manteve o
+      // laco vivo no incidente de 29/08/2026 (50 chamadas bloqueadas a cada 5 minutos).
+      if (ehLimiteDeTaxa(erro)) {
+        const espera = segundosDeEspera(erro);
+        const pausa = await pausarIntegracao(client, integracao.id, {
+          segundos: espera,
+          motivo: erro.message
+        });
+        resumo.falhas += 1;
+        await lancamentos.registrarResultado(client, lancamento.id, {
+          status: lancamentos.STATUS.ERRO,
+          erro: erro?.message || String(erro)
+        });
+        resumo.bloqueado_por_limite = true;
+        resumo.pausado_ate = pausa?.pausadaAte || null;
+        resumo.alerta = espera
+          ? `A API pediu para esperar ${espera}s. O restante da fila continua na proxima janela.`
+          : "A API bloqueou o acesso por consumo. O restante da fila continua depois.";
+        return resumo;
+      }
       resumo.falhas += 1;
       await lancamentos.registrarResultado(client, lancamento.id, {
         status: lancamentos.STATUS.ERRO,

@@ -176,6 +176,11 @@ export async function sincronizarFatores(contexto) {
         continue;
       }
       resumo.falhas += 1;
+      // A mensagem real precisa sobreviver. Ate 29/08/2026 este catch fazia so
+      // `falhas += 1; break;`, e a tela mostrava "falha na API" para qualquer causa -- foi
+      // preciso investigar o banco para descobrir que a conta estava bloqueada por consumo.
+      resumo.erro = erro?.message || String(erro);
+      resumo.erro_codigo = erro?.codigo || null;
       // Uma falha de rede no meio do lote nao deve descartar o que ja foi lido
       break;
     }
@@ -205,7 +210,9 @@ export async function sincronizarFatores(contexto) {
   if (resumo.invalidos) {
     resumo.alerta = `${resumo.invalidos} produto(s) com fator invalido no cadastro do ERP. Veja a lista de pendencias e corrija la.`;
   } else if (resumo.falhas) {
-    resumo.alerta = `A leitura parou apos ${resumo.lidos} produto(s) por falha na API. O restante continua na proxima execucao.`;
+    resumo.alerta = resumo.erro
+      ? `A leitura parou apos ${resumo.lidos} produto(s): ${resumo.erro}`
+      : `A leitura parou apos ${resumo.lidos} produto(s) por falha na API. O restante continua na proxima execucao.`;
   }
 
   return resumo;

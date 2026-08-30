@@ -4,6 +4,20 @@
 // de pedido". Nenhum provider especifico aparece aqui -- quem traduz isso para o formato de
 // uma API e o provider.
 
+// A coluna que guarda as causas distintas nasce em runtime, no padrao ensureXxx do projeto.
+// Memoizada: a fila chama registrarResultado em laco, e um ALTER por lancamento seria caro.
+let historicoPronto = null;
+export function ensureHistoricoDeErros(client) {
+  historicoPronto ||= client
+    .query("ALTER TABLE integration_stock_launches ADD COLUMN IF NOT EXISTS historico_erros JSONB")
+    .then(() => true)
+    .catch((erro) => {
+      historicoPronto = null; // deixa tentar de novo
+      throw erro;
+    });
+  return historicoPronto;
+}
+
 export const EVENTOS = Object.freeze({
   RETIRADA: "RETIRADA",
   COMPENSACAO: "COMPENSACAO",
@@ -130,7 +144,14 @@ export async function listarAbertos(client, { integrationId = null, limite = 50,
 }
 
 // Marca o resultado do lancamento. Em simulacao o payload e gravado e nada e enviado.
+//
+// `erro` NAO sobrescreve cegamente a causa anterior. Ate 29/08/2026 cada retentativa apagava
+// a mensagem da tentativa passada: 10 dos 12 lancamentos recusados por saldo negativo tiveram
+// a causa real substituida por "API bloqueada por consumo", e o diagnostico so foi recuperado
+// olhando o que sobrou. Agora cada causa distinta fica em historico_erros, que sobrevive as
+// retentativas seguintes; `erro` continua sendo a mais recente, para a tela nao mudar.
 export async function registrarResultado(client, id, { status, payload, resposta, externalId, erro }) {
+  await ensureHistoricoDeErros(client);
   const resultado = await client.query(
     `UPDATE integration_stock_launches
      SET status = $2,
@@ -138,6 +159,19 @@ export async function registrarResultado(client, id, { status, payload, resposta
          resposta = COALESCE($4::jsonb, resposta),
          external_id = COALESCE($5, external_id),
          erro = $6,
+         -- Guarda cada causa DISTINTA, sem apagar as anteriores
+         historico_erros = CASE
+           WHEN $6::text IS NULL THEN historico_erros
+           WHEN historico_erros IS NULL THEN jsonb_build_array(
+             jsonb_build_object('erro', $6::text, 'em', to_char(CURRENT_TIMESTAMP, 'YYYY-MM-DD HH24:MI:SS'))
+           )
+           WHEN historico_erros @> jsonb_build_array(jsonb_build_object('erro', $6::text)) THEN historico_erros
+           -- Teto de 5 causas distintas: o suficiente para diagnosticar sem a coluna crescer
+           WHEN jsonb_array_length(historico_erros) >= 5 THEN historico_erros
+           ELSE historico_erros || jsonb_build_array(
+             jsonb_build_object('erro', $6::text, 'em', to_char(CURRENT_TIMESTAMP, 'YYYY-MM-DD HH24:MI:SS'))
+           )
+         END,
          tentativas = tentativas + 1,
          enviado_em = CASE WHEN $2 = 'ENVIADO' THEN CURRENT_TIMESTAMP ELSE enviado_em END,
          updated_at = CURRENT_TIMESTAMP

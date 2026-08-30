@@ -52,6 +52,19 @@ function ehErroDeCredencial(faultstring = "") {
   return /app_key|app_secret|acesso negado|nao autorizado|invalid|credencial/i.test(String(faultstring));
 }
 
+// Bloqueio por consumo excessivo. A OMIE devolve isso como faultstring comum, e nao como HTTP
+// 429 com Retry-After -- por isso a logica de status retentavel do http.client nao alcanca.
+//
+// A mensagem carrega o prazo: "API bloqueada por consumo indevido. Tente novamente em 1690
+// segundos." Ler esse numero e o que permite ao nucleo esperar de verdade em vez de bater de
+// novo em 5 minutos e renovar a punicao (incidente de 29/08/2026).
+export function lerBloqueioPorConsumo(faultstring = "") {
+  const texto = String(faultstring);
+  if (!/bloqueada por consumo/i.test(texto)) return null;
+  const encontrado = texto.match(/(\d+)\s*segundos?/i);
+  return { segundos: encontrado ? Number(encontrado[1]) : null };
+}
+
 // Chamada unica a OMIE, usada por todas as tarefas deste provider
 export async function chamarOmie({
   integracao,
@@ -81,6 +94,19 @@ export async function chamarOmie({
 
   if (dados.faultstring || dados.faultcode) {
     const credencial = ehErroDeCredencial(dados.faultstring);
+
+    // Bloqueio por consumo vem antes das demais classificacoes: nao e erro de dados (o
+    // payload nem foi olhado) e insistir piora. O nucleo cuida da espera.
+    const bloqueio = lerBloqueioPorConsumo(dados.faultstring);
+    if (bloqueio) {
+      throw new IntegrationError(String(dados.faultstring).slice(0, 500), {
+        codigo: CODIGOS_ERRO.LIMITE_TAXA,
+        status: resposta.status,
+        retentavel: true,
+        detalhes: { call, retomarEmSegundos: bloqueio.segundos }
+      });
+    }
+
     throw new IntegrationError(String(dados.faultstring || "Falha na chamada a OMIE.").slice(0, 500), {
       codigo: credencial ? CODIGOS_ERRO.AUTENTICACAO : CODIGOS_ERRO.DADOS,
       status: resposta.status,
