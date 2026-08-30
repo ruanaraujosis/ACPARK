@@ -162,3 +162,19 @@ export function extrairLista(dados = {}, camposConhecidos = []) {
 export function ehSemRegistros(erro) {
   return /n[aã]o existem registros/i.test(String(erro?.message || ""));
 }
+
+// Produto que NAO EXISTE MAIS na OMIE, respondido numa consulta de UM produto:
+// "ERROR: Produto nao cadastrado para o ID [11072266739] !"
+//
+// Predicado separado de ehSemRegistros de proposito. Aquele significa "fim da paginacao" em
+// movimentos, saldos e evidencia de compra; ampliar ele faria um produto inexistente ser
+// lido como fim de lista naqueles lacos, truncando a leitura em silencio. Aqui o significado
+// e outro: este produto especifico sumiu, siga para o proximo.
+//
+// Sem isto, um unico produto morto travava a leitura inteira de fatores: o laco fazia break
+// na primeira falha e os 2.346 produtos seguintes nunca eram lidos. Ficou escondido enquanto
+// a conta estava bloqueada por consumo, e so apareceu quando a mensagem real passou a ser
+// registrada (29/08/2026).
+export function ehProdutoInexistente(erro) {
+  return /produto n[aã]o cadastrado/i.test(String(erro?.message || ""));
+}

@@ -1,5 +1,5 @@
 import { interpretarFator, STATUS_FATOR } from "../../../core/fator-conversao.js";
-import { chamarOmie, ehSemRegistros, ENDPOINTS } from "../omie.api.js";
+import { chamarOmie, ehProdutoInexistente, ehSemRegistros, ENDPOINTS } from "../omie.api.js";
 
 const CALL = "ConsultarProduto";
 
@@ -163,8 +163,10 @@ export async function sincronizarFatores(contexto) {
         }
       }
     } catch (erro) {
-      // Produto que sumiu do ERP nao e falha da leitura: marca como lido para nao travar a fila
-      if (ehSemRegistros(erro)) {
+      // Produto que sumiu do ERP nao e falha da leitura: marca como lido para nao travar a fila.
+      // Duas formas da OMIE dizer isso: "nao existem registros" (sem caracteristica) e
+      // "produto nao cadastrado para o ID" (o produto em si nao existe mais).
+      if (ehSemRegistros(erro) || ehProdutoInexistente(erro)) {
         resumo.nao_encontrados += 1;
         await gravarFator(
           client,
