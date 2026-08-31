@@ -3279,6 +3279,184 @@ function printDamageReport(devolucoes = [], options = {}) {
   setTimeout(safeStartPrint, 2500);
 }
 
+// Monta o HTML do relatório consolidado de estoque, em A4 retrato. Agrupado por categoria
+// (produtos.categoria, ordem alfabética -- mesmo critério usado no resto do sistema); as
+// colunas de Preço ficam sempre em branco, de propósito: este relatório não calcula nem
+// busca preço de lugar nenhum, só existe para ficar visualmente igual ao modelo de planilha.
+function buildInventoryReportPrintHtml(dados) {
+  const { corte, geradoEm, pdvs = [], linhas = [] } = dados;
+  const generatedAt = moneyDate(geradoEm || new Date().toISOString());
+  const generatedBy = state.user?.name || "Almoxarifado";
+  const totalColunas = 2 + pdvs.length + 3; // Produto + UN + PDVs + Almoxarifado + Total + 2 preço
+
+  // Agrupa as linhas por categoria, na mesma ordem alfabética que a consulta já devolveu
+  const grupos = [];
+  let grupoAtual = null;
+  for (const linha of linhas) {
+    if (!grupoAtual || grupoAtual.categoria !== linha.categoria) {
+      grupoAtual = { categoria: linha.categoria, linhas: [] };
+      grupos.push(grupoAtual);
+    }
+    grupoAtual.linhas.push(linha);
+  }
+
+  const linhaHtml = (linha) => `
+    <tr>
+      <td>${esc(linha.nome)}<span class="relatorio-sku">${esc(linha.sku)}</span></td>
+      <td class="num">UN</td>
+      ${pdvs.map((pdv) => `<td class="num">${Number(linha.pdvs[pdv.id] || 0)}</td>`).join("")}
+      <td class="num">${Number(linha.almoxarifado || 0)}</td>
+      <td class="num relatorio-total">${Number(linha.total || 0)}</td>
+      <td></td>
+      <td></td>
+    </tr>`;
+
+  const corpoTabela = grupos.length
+    ? grupos.map((grupo) => `
+        <tr class="relatorio-categoria"><td colspan="${totalColunas}">${esc(grupo.categoria)}</td></tr>
+        ${grupo.linhas.map(linhaHtml).join("")}`).join("")
+    : `<tr><td colspan="${totalColunas}">Nenhum produto contado até esta data de corte.</td></tr>`;
+
+  return `<!doctype html>
+    <html lang="pt-BR">
+    <head>
+      <meta charset="utf-8" />
+      <title>Relatório de estoque</title>
+      <style>
+        @page { size: A4 portrait; margin: 8mm; }
+        * { box-sizing: border-box; }
+        body { margin: 0; background: #fff; color: #102f35; font-family: Arial, Helvetica, sans-serif; font-size: 7px; line-height: 1.25; }
+        .report-header { display: flex; align-items: center; gap: 10px; padding-bottom: 6px; margin-bottom: 8px; border-bottom: 2px solid #007b87; }
+        .report-header img { width: 60px; height: auto; }
+        .eyebrow { margin: 0 0 2px; color: #f4760f; font-size: 8px; font-weight: 800; letter-spacing: 0.05em; text-transform: uppercase; }
+        h1 { margin: 0; color: #005f68; font-size: 13px; line-height: 1.1; }
+        .meta { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 4px 0 0; color: #3f5962; font-size: 8px; }
+        table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+        th, td { padding: 2px 3px; border: 1px solid #c9dde0; vertical-align: middle; overflow-wrap: break-word; }
+        th { background: #eaf8fa; color: #005f68; font-size: 6.2px; font-weight: 800; text-transform: uppercase; line-height: 1.15; }
+        thead { display: table-header-group; }
+        tr { break-inside: avoid; page-break-inside: avoid; }
+        td.num { text-align: right; font-variant-numeric: tabular-nums; }
+        col.produto { width: 17%; }
+        col.un { width: 3.5%; }
+        col.total, col.almox { width: 5.5%; }
+        col.preco { width: 6%; }
+        .relatorio-sku { display: block; color: #64848c; font-size: 5.8px; }
+        .relatorio-total { font-weight: 800; }
+        .relatorio-categoria td { background: #005f68; color: #fff; font-weight: 900; text-transform: uppercase; font-size: 7.2px; padding: 3px 4px; }
+        .report-footer { position: fixed; right: 0; bottom: 0; left: 0; padding-top: 3px; border-top: 1px solid #d4e4e6; color: #60727a; font-size: 6.5px; text-align: center; }
+        @media print {
+          body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+        }
+      </style>
+    </head>
+    <body>
+      <header class="report-header">
+        <img src="/logo-print.png" alt="Águas Correntes Park" />
+        <div>
+          <p class="eyebrow">ÁGUAS CORRENTES PARK</p>
+          <h1>Relatório de estoque consolidado</h1>
+          <div class="meta">
+            <span><strong>Corte:</strong> ${esc(moneyDate(`${corte}T00:00:00`))}</span>
+            <span><strong>Emissão:</strong> ${esc(generatedAt)}</span>
+            <span><strong>Usuário:</strong> ${esc(generatedBy)}</span>
+          </div>
+        </div>
+      </header>
+      <table>
+        <colgroup>
+          <col class="produto" />
+          <col class="un" />
+          ${pdvs.map(() => `<col class="almox" />`).join("")}
+          <col class="almox" />
+          <col class="total" />
+          <col class="preco" />
+          <col class="preco" />
+        </colgroup>
+        <thead>
+          <tr>
+            <th>Produto</th>
+            <th>UN</th>
+            ${pdvs.map((pdv) => `<th>${esc(pdv.nome)}</th>`).join("")}
+            <th>Almoxarifado</th>
+            <th>Total</th>
+            <th>Preço Unit.</th>
+            <th>Preço Total</th>
+          </tr>
+        </thead>
+        <tbody>${corpoTabela}</tbody>
+      </table>
+      <footer class="report-footer">ACPARK Gestão - Relatório de estoque consolidado - ${esc(generatedAt)}</footer>
+    </body>
+    </html>`;
+}
+
+// Dispara a impressão do relatório de estoque -- mesmo mecanismo do printDamageReport
+function printInventoryReport(dados) {
+  const printWindow = window.open("", "_blank", "width=1024,height=768");
+  if (!printWindow) {
+    toast("O navegador bloqueou a janela de impressão.", "error");
+    return;
+  }
+  printWindow.document.open();
+  printWindow.document.write(buildInventoryReportPrintHtml(dados));
+  printWindow.document.close();
+  const startPrint = () => {
+    printWindow.focus();
+    printWindow.print();
+  };
+  const images = [...printWindow.document.images];
+  if (!images.length) {
+    setTimeout(startPrint, 200);
+    return;
+  }
+  let pending = images.length;
+  let printed = false;
+  const safeStartPrint = () => {
+    if (printed) return;
+    printed = true;
+    setTimeout(startPrint, 250);
+  };
+  const done = () => {
+    pending -= 1;
+    if (pending <= 0) safeStartPrint();
+  };
+  images.forEach((image) => {
+    if (image.complete) done();
+    else {
+      image.addEventListener("load", done, { once: true });
+      image.addEventListener("error", done, { once: true });
+    }
+  });
+  setTimeout(safeStartPrint, 2500);
+}
+
+// Exporta o relatório de estoque em .xlsx real -- mesmas colunas, mesmos dados e mesmo
+// critério de inclusão do relatório impresso (a mesma resposta da API alimenta os dois).
+// Reaproveita downloadWorkbook (já usado pelo Histórico) em vez de gerar planilha na mão.
+function exportInventoryReport(dados) {
+  const { corte, pdvs = [], linhas = [] } = dados;
+  const headers = ["Produto", "SKU", "Categoria", "Unidade de Medida",
+    ...pdvs.map((pdv) => pdv.nome), "Almoxarifado", "Total", "Preço Unitário", "Preço Total"];
+  const rows = [headers, ...linhas.map((linha) => [
+    linha.nome,
+    linha.sku,
+    linha.categoria,
+    "UN",
+    ...pdvs.map((pdv) => Number(linha.pdvs[pdv.id] || 0)),
+    Number(linha.almoxarifado || 0),
+    Number(linha.total || 0),
+    "",
+    ""
+  ])];
+  downloadWorkbook(`relatorio_estoque_${corte}.xlsx`, [{
+    name: "Relatório de estoque",
+    rows,
+    headerRow: 1,
+    cols: [28, 12, 16, 6, ...pdvs.map(() => 12), 12, 10, 12, 12]
+  }]);
+}
+
 // View administrativa de avarias
 async function viewDamagesAdmin(filters = {}) {
   const isDamageHistory = Boolean(filters.historyOnly);
@@ -10366,12 +10544,60 @@ async function viewInventarios(options = {}) {
           </tr>`))
         : `<p class="text-sm text-slate-500">Nenhum inventário ${filtro ? "neste estado" : "registrado"}.</p>`}
     </section>
+    ${blocoRelatorioDeEstoque()}
     ${resumoContagemPropriaHtml(contagemPropria)}
     ${blocoEmissaoDeAviso(avisosAtivos)}`);
 
   bindInventariosAdmin(janela);
   bindEmissaoDeAviso();
   bindResumoContagemPropria();
+  bindRelatorioDeEstoque();
+}
+
+// Relatório consolidado de estoque: "quanto tem em cada PDV", combinando o inventário
+// Confirmado mais recente de cada PDV/Almoxarifado numa data de corte -- ver a rota
+// /api/admin/inventario/relatorio para a regra completa.
+function blocoRelatorioDeEstoque() {
+  return `
+    <section class="card">
+      <p class="eyebrow">Consolidado</p>
+      <h4 class="section-title text-lg font-black">Relatório de estoque</h4>
+      <p class="mt-1 text-sm text-slate-600">Combina o inventário confirmado mais recente de
+      cada PDV e do Almoxarifado até a data escolhida.</p>
+      <div class="inventario-relatorio-form">
+        <label class="grid gap-1 text-sm font-bold">Data de corte
+          <input type="date" id="relatorio-corte" value="${esc(today())}" />
+        </label>
+        <button class="btn secondary" id="relatorio-imprimir" type="button">Imprimir (A4)</button>
+        <button class="btn secondary" id="relatorio-excel" type="button">Exportar Excel</button>
+      </div>
+    </section>`;
+}
+
+// Busca os dados do relatório na data de corte escolhida
+async function buscarDadosRelatorioDeEstoque() {
+  const corte = document.querySelector("#relatorio-corte")?.value;
+  if (!corte) {
+    toast("Escolha a data de corte do relatório.", "error");
+    return null;
+  }
+  try {
+    return await request(`/api/admin/inventario/relatorio?corte=${encodeURIComponent(corte)}`);
+  } catch (error) {
+    toast(error.message || "Não foi possível gerar o relatório.", "error");
+    return null;
+  }
+}
+
+function bindRelatorioDeEstoque() {
+  document.querySelector("#relatorio-imprimir")?.addEventListener("click", async () => {
+    const dados = await buscarDadosRelatorioDeEstoque();
+    if (dados) printInventoryReport(dados);
+  });
+  document.querySelector("#relatorio-excel")?.addEventListener("click", async () => {
+    const dados = await buscarDadosRelatorioDeEstoque();
+    if (dados) exportInventoryReport(dados);
+  });
 }
 
 // Há quanto tempo a contagem foi feita. É o dado que sustenta o alerta de contagem velha:

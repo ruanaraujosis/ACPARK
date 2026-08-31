@@ -6689,6 +6689,19 @@ td input[type="number"] {
   white-space: nowrap;
 }
 
+/* Data de corte + ações do relatório de estoque consolidado */
+.inventario-relatorio-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+.inventario-relatorio-form input[type="date"] {
+  min-width: 10rem;
+}
+
 /* A lista costuma ser longa; rolar dentro do cartão mantém o resumo e as ações à vista */
 .inventario-tabela {
   max-height: 60vh;

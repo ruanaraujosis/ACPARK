@@ -474,6 +474,111 @@ async function rotasDoAlmoxarifado(req, res, context) {
     return true;
   }
 
+  // Relatório consolidado de estoque: "quanto tem em cada PDV" numa data de corte.
+  //
+  // Cada PDV confirma o próprio inventário numa data diferente, e o Almoxarifado o dele --
+  // não existe UM inventário só que responda "quanto tem em todo lugar". A saída é combinar,
+  // para cada PDV e para o Almoxarifado, o inventário Confirmado mais recente até a data de
+  // corte escolhida. Read-only: nenhum ajuste é reprocessado, só leitura do que já foi
+  // aplicado (ajuste_aplicado_em é o timestamp certo -- confirmado_em, para inventário de PDV,
+  // marca só a revisão do Almoxarifado, antes de o PDV assinar e o ajuste entrar de fato).
+  if (url.pathname === "/api/admin/inventario/relatorio" && method === "GET") {
+    if (!requireUser(req, res, "admin")) return true;
+    const corte = String(url.searchParams.get("corte") || "").slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(corte)) {
+      send(res, 400, { error: "Informe uma data de corte válida (AAAA-MM-DD)." });
+      return true;
+    }
+
+    // PDVs administrativos ficam fora das colunas: não vendem, então não têm saldo de
+    // revenda -- não faz sentido uma coluna de estoque para eles neste relatório.
+    const pdvs = await query("SELECT id, nome FROM pdvs WHERE administrativo = FALSE ORDER BY nome");
+
+    // Um vencedor por local (pdv_id ou NULL = Almoxarifado). DISTINCT ON trata NULL como um
+    // grupo só, igual a qualquer outro pdv_id -- o Almoxarifado entra na mesma consulta.
+    const vencedores = await query(
+      `SELECT DISTINCT ON (pdv_id) id, pdv_id, codigo_inventario, ajuste_aplicado_em
+       FROM inventarios
+       WHERE status = $1 AND ajuste_aplicado_em < ($2::date + INTERVAL '1 day')
+       ORDER BY pdv_id, ajuste_aplicado_em DESC`,
+      [STATUS_INVENTARIO.CONFIRMADO, corte]
+    );
+    const pdvIdPorInventario = new Map(vencedores.map((v) => [v.id, v.pdv_id]));
+
+    const itensContados = vencedores.length
+      ? await query(
+          `SELECT inventario_id, sku_produto, quantidade_contada
+           FROM inventario_itens
+           WHERE inventario_id = ANY($1) AND quantidade_contada IS NOT NULL`,
+          [vencedores.map((v) => v.id)]
+        )
+      : [];
+
+    // Local: "ALMOX" ou o id do PDV -- chave única para separar quem contou o quê
+    const CHAVE_ALMOX = "ALMOX";
+    const chaveDoLocal = (pdvId) => (pdvId === null ? CHAVE_ALMOX : String(pdvId));
+    const contadoPorLocal = new Map(vencedores.map((v) => [chaveDoLocal(v.pdv_id), new Map()]));
+    for (const item of itensContados) {
+      const pdvId = pdvIdPorInventario.get(item.inventario_id);
+      contadoPorLocal.get(chaveDoLocal(pdvId)).set(item.sku_produto, Number(item.quantidade_contada));
+    }
+
+    // Saldo atual, para preservar quem não contou nesta rodada (mesma regra já usada no
+    // ajuste: ausência de contagem mantém o valor, nunca zera).
+    const saldosPdv = await query("SELECT pdv_id, sku_produto, quantidade FROM estoque_pdv");
+    const saldoPdvPorChave = new Map(saldosPdv.map((s) => [`${s.pdv_id}|${s.sku_produto}`, Number(s.quantidade)]));
+
+    const produtos = await query(
+      // Por categoria primeiro, depois nome: o relatório agrupa visualmente por categoria, e
+      // isso só funciona se as linhas da mesma categoria já vierem consecutivas.
+      "SELECT sku, nome, categoria, qtd_total FROM produtos WHERE ativo = TRUE ORDER BY categoria, nome"
+    );
+
+    // Critério de inclusão: a linha só aparece se pelo menos um local (PDV ou Almoxarifado)
+    // contou o produto na respectiva contagem vencedora -- catálogo inteiro sem ninguém ter
+    // tocado no produto não vira linha de relatório.
+    const skusContados = new Set();
+    for (const mapa of contadoPorLocal.values()) for (const sku of mapa.keys()) skusContados.add(sku);
+
+    const linhas = [];
+    for (const produto of produtos) {
+      if (!skusContados.has(produto.sku)) continue;
+      const porPdv = {};
+      let total = 0;
+      for (const pdv of pdvs) {
+        const contado = contadoPorLocal.get(String(pdv.id))?.get(produto.sku);
+        const valor = contado !== undefined ? contado : (saldoPdvPorChave.get(`${pdv.id}|${produto.sku}`) ?? 0);
+        porPdv[pdv.id] = valor;
+        total += valor;
+      }
+      const contadoAlmox = contadoPorLocal.get(CHAVE_ALMOX)?.get(produto.sku);
+      const almoxarifado = contadoAlmox !== undefined ? contadoAlmox : Number(produto.qtd_total || 0);
+      total += almoxarifado;
+
+      linhas.push({
+        sku: produto.sku,
+        nome: produto.nome,
+        categoria: produto.categoria || "Sem categoria",
+        pdvs: porPdv,
+        almoxarifado,
+        total
+      });
+    }
+
+    send(res, 200, {
+      corte,
+      geradoEm: new Date().toISOString(),
+      pdvs,
+      vencedores: vencedores.map((v) => ({
+        pdv_id: v.pdv_id,
+        codigo_inventario: v.codigo_inventario,
+        ajuste_aplicado_em: v.ajuste_aplicado_em
+      })),
+      linhas
+    });
+    return true;
+  }
+
   // Detalhe de um inventário, com saldo atual ao lado de cada contagem
   if (url.pathname === "/api/admin/inventario" && method === "GET") {
     if (!requireUser(req, res, "admin")) return true;
