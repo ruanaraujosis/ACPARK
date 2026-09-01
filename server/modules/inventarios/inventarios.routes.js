@@ -523,11 +523,6 @@ async function rotasDoAlmoxarifado(req, res, context) {
       contadoPorLocal.get(chaveDoLocal(pdvId)).set(item.sku_produto, Number(item.quantidade_contada));
     }
 
-    // Saldo atual, para preservar quem não contou nesta rodada (mesma regra já usada no
-    // ajuste: ausência de contagem mantém o valor, nunca zera).
-    const saldosPdv = await query("SELECT pdv_id, sku_produto, quantidade FROM estoque_pdv");
-    const saldoPdvPorChave = new Map(saldosPdv.map((s) => [`${s.pdv_id}|${s.sku_produto}`, Number(s.quantidade)]));
-
     const produtos = await query(
       // Por categoria primeiro, depois nome: o relatório agrupa visualmente por categoria, e
       // isso só funciona se as linhas da mesma categoria já vierem consecutivas.
@@ -540,6 +535,10 @@ async function rotasDoAlmoxarifado(req, res, context) {
     const skusContados = new Set();
     for (const mapa of contadoPorLocal.values()) for (const sku of mapa.keys()) skusContados.add(sku);
 
+    // Por coluna: só mostra valor se AQUELE local contou o produto no próprio ciclo vencedor.
+    // null = "este local não contou este produto agora" -- diferente de contado como zero, e
+    // diferente do saldo atual preservado (que é a regra certa para o AJUSTE, não para esta
+    // leitura: aqui, célula sem contagem fica em branco, nunca herda um número de outro momento).
     const linhas = [];
     for (const produto of produtos) {
       if (!skusContados.has(produto.sku)) continue;
@@ -547,13 +546,12 @@ async function rotasDoAlmoxarifado(req, res, context) {
       let total = 0;
       for (const pdv of pdvs) {
         const contado = contadoPorLocal.get(String(pdv.id))?.get(produto.sku);
-        const valor = contado !== undefined ? contado : (saldoPdvPorChave.get(`${pdv.id}|${produto.sku}`) ?? 0);
-        porPdv[pdv.id] = valor;
-        total += valor;
+        porPdv[pdv.id] = contado !== undefined ? contado : null;
+        if (contado !== undefined) total += contado;
       }
       const contadoAlmox = contadoPorLocal.get(CHAVE_ALMOX)?.get(produto.sku);
-      const almoxarifado = contadoAlmox !== undefined ? contadoAlmox : Number(produto.qtd_total || 0);
-      total += almoxarifado;
+      const almoxarifado = contadoAlmox !== undefined ? contadoAlmox : null;
+      if (contadoAlmox !== undefined) total += contadoAlmox;
 
       linhas.push({
         sku: produto.sku,

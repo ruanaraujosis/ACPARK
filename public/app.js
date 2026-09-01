@@ -3283,10 +3283,18 @@ function printDamageReport(devolucoes = [], options = {}) {
 // (produtos.categoria, ordem alfabética -- mesmo critério usado no resto do sistema); as
 // colunas de Preço ficam sempre em branco, de propósito: este relatório não calcula nem
 // busca preço de lugar nenhum, só existe para ficar visualmente igual ao modelo de planilha.
+// Data/usuário do cabeçalho -- compartilhado entre impressão e Excel para os dois nunca
+// mostrarem "gerado por/quando" diferente um do outro.
+function inventoryReportMeta(dados) {
+  return {
+    generatedAt: moneyDate(dados.geradoEm || new Date().toISOString()),
+    generatedBy: state.user?.name || "Almoxarifado"
+  };
+}
+
 function buildInventoryReportPrintHtml(dados) {
-  const { corte, geradoEm, pdvs = [], linhas = [] } = dados;
-  const generatedAt = moneyDate(geradoEm || new Date().toISOString());
-  const generatedBy = state.user?.name || "Almoxarifado";
+  const { corte, pdvs = [], linhas = [] } = dados;
+  const { generatedAt, generatedBy } = inventoryReportMeta(dados);
   const totalColunas = 2 + pdvs.length + 3; // Produto + UN + PDVs + Almoxarifado + Total + 2 preço
 
   // Agrupa as linhas por categoria, na mesma ordem alfabética que a consulta já devolveu
@@ -3300,13 +3308,20 @@ function buildInventoryReportPrintHtml(dados) {
     grupoAtual.linhas.push(linha);
   }
 
+  // Não contado neste ciclo (null) vira travessão, nunca "0" -- 0 é uma contagem real,
+  // diferente de célula vazia (mesma distinção já usada na tela de contagem).
+  const celula = (valor) =>
+    valor === null || valor === undefined
+      ? `<td class="num relatorio-nao-contado">—</td>`
+      : `<td class="num">${Number(valor)}</td>`;
+
   const linhaHtml = (linha) => `
     <tr>
       <td>${esc(linha.nome)}<span class="relatorio-sku">${esc(linha.sku)}</span></td>
       <td class="num">UN</td>
-      ${pdvs.map((pdv) => `<td class="num">${Number(linha.pdvs[pdv.id] || 0)}</td>`).join("")}
-      <td class="num">${Number(linha.almoxarifado || 0)}</td>
-      <td class="num relatorio-total">${Number(linha.total || 0)}</td>
+      ${pdvs.map((pdv) => celula(linha.pdvs[pdv.id])).join("")}
+      ${celula(linha.almoxarifado)}
+      <td class="num relatorio-total">${Number(linha.total)}</td>
       <td></td>
       <td></td>
     </tr>`;
@@ -3343,6 +3358,7 @@ function buildInventoryReportPrintHtml(dados) {
         col.preco { width: 6%; }
         .relatorio-sku { display: block; color: #64848c; font-size: 5.8px; }
         .relatorio-total { font-weight: 800; }
+        .relatorio-nao-contado { color: #a8bcc0; }
         .relatorio-categoria td { background: #005f68; color: #fff; font-weight: 900; text-transform: uppercase; font-size: 7.2px; padding: 3px 4px; }
         .report-footer { position: fixed; right: 0; bottom: 0; left: 0; padding-top: 3px; border-top: 1px solid #d4e4e6; color: #60727a; font-size: 6.5px; text-align: center; }
         @media print {
@@ -3431,30 +3447,96 @@ function printInventoryReport(dados) {
   setTimeout(safeStartPrint, 2500);
 }
 
-// Exporta o relatório de estoque em .xlsx real -- mesmas colunas, mesmos dados e mesmo
-// critério de inclusão do relatório impresso (a mesma resposta da API alimenta os dois).
-// Reaproveita downloadWorkbook (já usado pelo Histórico) em vez de gerar planilha na mão.
-function exportInventoryReport(dados) {
+// Cores da identidade visual já usadas na impressão (.report-header/.relatorio-categoria em
+// buildInventoryReportPrintHtml) -- a planilha replica as mesmas, não uma paleta nova.
+const RELATORIO_COR_TEAL = "FF005F68";
+const RELATORIO_COR_TEAL_CLARO = "FFEAF8FA";
+const RELATORIO_COR_BRANCO = "FFFFFFFF";
+
+// Exporta o relatório de estoque em .xlsx real -- mesmas colunas, mesmo critério de inclusão e
+// mesmo cabeçalho/destaque de categoria da impressão (a mesma resposta da API alimenta os
+// dois, então nunca podem divergir no corte de dados). Usa ExcelJS (public/vendor/exceljs.min.js)
+// em vez do downloadWorkbook/SheetJS já carregado: o SheetJS aqui é a edição gratuita, que não
+// grava negrito nem cor de fundo em célula -- só a paga faz isso. Testado: SheetJS ignora
+// silenciosamente cell.s ao escrever; ExcelJS grava fonte e preenchimento reais no styles.xml.
+async function exportInventoryReport(dados) {
   const { corte, pdvs = [], linhas = [] } = dados;
   const headers = ["Produto", "SKU", "Categoria", "Unidade de Medida",
     ...pdvs.map((pdv) => pdv.nome), "Almoxarifado", "Total", "Preço Unitário", "Preço Total"];
-  const rows = [headers, ...linhas.map((linha) => [
-    linha.nome,
-    linha.sku,
-    linha.categoria,
-    "UN",
-    ...pdvs.map((pdv) => Number(linha.pdvs[pdv.id] || 0)),
-    Number(linha.almoxarifado || 0),
-    Number(linha.total || 0),
-    "",
-    ""
-  ])];
-  downloadWorkbook(`relatorio_estoque_${corte}.xlsx`, [{
-    name: "Relatório de estoque",
-    rows,
-    headerRow: 1,
-    cols: [28, 12, 16, 6, ...pdvs.map(() => 12), 12, 10, 12, 12]
-  }]);
+
+  if (!window.ExcelJS) {
+    // Sem a lib de estilo, cai pro .csv simples -- mesma rede de segurança do downloadWorkbook
+    const linhasPlanas = linhas.map((linha) => [
+      linha.nome, linha.sku, linha.categoria, "UN",
+      ...pdvs.map((pdv) => linha.pdvs[pdv.id] ?? ""),
+      linha.almoxarifado ?? "", linha.total, "", ""
+    ]);
+    downloadCsv(`relatorio_estoque_${corte}.csv`, [headers, ...linhasPlanas]);
+    return;
+  }
+
+  const { generatedAt, generatedBy } = inventoryReportMeta(dados);
+  const totalColunas = headers.length;
+  const workbook = new window.ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet("Relatório de estoque");
+
+  sheet.mergeCells(1, 1, 1, totalColunas);
+  sheet.getCell(1, 1).value = "ÁGUAS CORRENTES PARK — Relatório de estoque consolidado";
+  sheet.getCell(1, 1).font = { bold: true, size: 14, color: { argb: RELATORIO_COR_TEAL } };
+
+  sheet.mergeCells(2, 1, 2, totalColunas);
+  sheet.getCell(2, 1).value =
+    `Corte: ${moneyDate(`${corte}T00:00:00`)}    Emissão: ${generatedAt}    Usuário: ${generatedBy}`;
+  sheet.getCell(2, 1).font = { italic: true, color: { argb: "FF3F5962" } };
+
+  const headerRowIndex = 4;
+  const headerRow = sheet.getRow(headerRowIndex);
+  headerRow.values = headers;
+  headerRow.eachCell((cell) => {
+    cell.font = { bold: true, color: { argb: RELATORIO_COR_TEAL } };
+    cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: RELATORIO_COR_TEAL_CLARO } };
+  });
+  sheet.autoFilter = { from: { row: headerRowIndex, column: 1 }, to: { row: headerRowIndex, column: totalColunas } };
+
+  // Uma linha de categoria (destacada) antes de cada grupo -- mesmo agrupamento visual da
+  // impressão, na mesma ordem em que a API já devolveu (categoria, depois nome).
+  let categoriaAtual = null;
+  let rowIndex = headerRowIndex + 1;
+  for (const linha of linhas) {
+    if (linha.categoria !== categoriaAtual) {
+      categoriaAtual = linha.categoria;
+      sheet.mergeCells(rowIndex, 1, rowIndex, totalColunas);
+      const celulaCategoria = sheet.getCell(rowIndex, 1);
+      celulaCategoria.value = categoriaAtual;
+      celulaCategoria.font = { bold: true, color: { argb: RELATORIO_COR_BRANCO } };
+      celulaCategoria.fill = { type: "pattern", pattern: "solid", fgColor: { argb: RELATORIO_COR_TEAL } };
+      rowIndex += 1;
+    }
+    // null (não contado por este local no ciclo vencedor) vira célula vazia de verdade --
+    // nunca "0", que é uma contagem real e diferente.
+    sheet.getRow(rowIndex).values = [
+      linha.nome, linha.sku, linha.categoria, "UN",
+      ...pdvs.map((pdv) => linha.pdvs[pdv.id]),
+      linha.almoxarifado, linha.total, null, null
+    ];
+    rowIndex += 1;
+  }
+
+  const larguras = [28, 12, 16, 8, ...pdvs.map(() => 12), 12, 10, 12, 12];
+  larguras.forEach((largura, indice) => { sheet.getColumn(indice + 1).width = largura; });
+
+  const buffer = await workbook.xlsx.writeBuffer();
+  const blob = new Blob([buffer], {
+    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+  });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = ensureXlsxFilename(`relatorio_estoque_${corte}.xlsx`);
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
 }
 
 // View administrativa de avarias
@@ -10596,7 +10678,12 @@ function bindRelatorioDeEstoque() {
   });
   document.querySelector("#relatorio-excel")?.addEventListener("click", async () => {
     const dados = await buscarDadosRelatorioDeEstoque();
-    if (dados) exportInventoryReport(dados);
+    if (!dados) return;
+    try {
+      await exportInventoryReport(dados);
+    } catch (error) {
+      toast(error.message || "Não foi possível exportar a planilha.", "error");
+    }
   });
 }
 
