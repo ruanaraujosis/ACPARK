@@ -7633,7 +7633,8 @@ function releasePanelItemsTable(group = [], editable = false) {
         data-requested="${esc(requested)}"
         data-released="${esc(released)}"
         data-product="${esc(item.produto || "")}"
-        data-sku="${esc(item.sku_produto || item.sku || "")}">
+        data-sku="${esc(item.sku_produto || item.sku || "")}"
+        ${fatorValido ? `data-fator="${fator}" data-embalagem="${esc(item.embalagem || "")}"` : ""}>
         ${editable ? `<td class="order-panel-pick">
           <label class="release-select-control" title="Selecionar produto">
             <input class="bulk-order-item" type="checkbox" value="${esc(item.id)}" aria-label="Selecionar ${esc(item.produto || "")}">
@@ -8711,8 +8712,13 @@ function orderCard(group) {
       </div>` : ""}
       ${!isEditableStatus ? `<div class="release-alert card no-print"><strong>Pedido bloqueado para edição.</strong><p>Envie o pedido para Em andamento para alterar produtos ou quantidades.</p></div>` : ""}
       ${!isEditableStatus
-        ? table(["Produto", "Estoque central", "Estoque PDV", "Min", "Max", "Quantidade solicitada", "Quantidade liberada"], visibleItems.map((o) => `
-        <tr data-id="${o.id}" data-version="${o.version || 1}" data-requested="${o.quantidade_solicitada}" data-released="${o.quantidade_liberada || 0}">
+        ? table(["Produto", "Estoque central", "Estoque PDV", "Min", "Max", "Quantidade solicitada", "Quantidade liberada"], visibleItems.map((o) => {
+          // Sem coluna visível de embalagem nesta tabela (pedido travado, não editável) --
+          // o fator vai só como atributo, pra a impressão do cupom conseguir converter.
+          const fatorNaoEditavel = Number(o.fator_conversao);
+          const fatorNaoEditavelValido = o.fator_status !== "INVALIDO" && Number.isSafeInteger(fatorNaoEditavel) && fatorNaoEditavel > 1;
+          return `
+        <tr data-id="${o.id}" data-version="${o.version || 1}" data-requested="${o.quantidade_solicitada}" data-released="${o.quantidade_liberada || 0}" data-sku="${esc(o.sku_produto || "")}" ${fatorNaoEditavelValido ? `data-fator="${fatorNaoEditavel}" data-embalagem="${esc(o.embalagem || "")}"` : ""}>
           <td>${esc(o.produto)} ${o.item_origem === "ALMOX" ? `<span class="order-source-badge">Almox</span>` : ""}</td>
           <td class="release-number-cell">${centralStockValue(o)}</td>
           <td class="release-number-cell">${stockValue(o.estoque_pdv)}</td>
@@ -8720,7 +8726,8 @@ function orderCard(group) {
           <td class="release-number-cell">${stockValue(o.estoque_maximo)}</td>
           <td class="release-number-cell">${o.quantidade_solicitada}</td>
           <td class="release-number-cell">${o.quantidade_liberada}</td>
-        </tr>`)).replace("table-wrap", "table-wrap release-items-table-wrap")
+        </tr>`;
+        })).replace("table-wrap", "table-wrap release-items-table-wrap")
         : table(["Selecionar", "Produto", "Estoque PDV", "Min", "Max", "Solicitado", "Liberar", "Falta enviar", "Estoque central"], tableItems.map((o) => {
         const draftItem = draftById.get(String(o.id));
         const requestedQty = Number(o.quantidade_solicitada || 0);
@@ -8747,7 +8754,7 @@ function orderCard(group) {
         const saldoLabel = saldo < 0 ? "Saldo negativo" : saldo === 0 ? "Saldo zerado" : "Saldo disponível";
         const canBulkDeleteItem = canRemoveProducts;
         return `
-        <tr data-id="${o.id}" data-version="${o.version || 1}" data-requested="${o.quantidade_solicitada}" data-product="${esc(o.produto)}" data-sku="${esc(o.sku_produto || "")}" data-released="${esc(releasedQty)}" class="release-item-row ${rowState} ${isRemoved ? "is-marked-remove" : ""} ${hiddenCompleted ? "hidden" : ""}">
+        <tr data-id="${o.id}" data-version="${o.version || 1}" data-requested="${o.quantidade_solicitada}" data-product="${esc(o.produto)}" data-sku="${esc(o.sku_produto || "")}" data-released="${esc(releasedQty)}" ${fatorKanbanValido ? `data-fator="${fatorKanban}" data-embalagem="${esc(o.embalagem || "")}"` : ""} class="release-item-row ${rowState} ${isRemoved ? "is-marked-remove" : ""} ${hiddenCompleted ? "hidden" : ""}">
           <td class="release-remove-cell">
             <label class="release-select-control" title="${canBulkDeleteItem ? "Selecionar produto para exclusão" : "Produto bloqueado para exclusão"}">
               <input class="bulk-order-item" type="checkbox" value="${esc(o.id)}" ${canBulkDeleteItem ? "" : "disabled"} aria-label="Selecionar ${esc(o.produto)} para exclusão">
@@ -8821,6 +8828,15 @@ function schedulePrintCleanup(cleanup) {
   setTimeout(run, 3500);
 }
 
+// Converte a quantidade em unidade (a que o backend guarda) para embalagem, pro cupom impresso
+// -- mesma conta de formatarSolicitadoEmbalagem, mas com o nome da embalagem do produto em vez
+// de "EMB", porque quem separa o pedido no depósito lê "Fardo", não a sigla genérica.
+function formatarQuantidadeImpressaoPedido(unidades, fator, embalagem) {
+  const valor = (Number(unidades) || 0) / fator;
+  const rotulo = embalagem || "EMB";
+  return `${valor.toFixed(2).replace(".", ",")} ${rotulo}`;
+}
+
 // Dispara a impressão de um pedido
 async function printOrder(card, options = {}) {
   if (!card) return;
@@ -8853,7 +8869,16 @@ async function printOrder(card, options = {}) {
       cells[cells.length - 1]?.textContent?.trim()
     ];
     const releasedQty = releasedCandidates.find((value) => value !== undefined && value !== null && String(value).trim() !== "") ?? "0";
-    return { product, requested: printReleasedQty ? releasedQty : requestedQty };
+    const quantidadeBruta = printReleasedQty ? releasedQty : requestedQty;
+    // Pedido do usuário (01/09/2026): o cupom mostra em embalagem, não em unidade -- o
+    // depósito separa caixa/fardo fechado, não conta unidade por unidade. Cai pra unidade só
+    // quando o produto não tem fator confiável (mesma regra já usada no resto do sistema).
+    const fator = Number(row.dataset.fator);
+    const fatorValido = row.dataset.fator && Number.isSafeInteger(fator) && fator > 1;
+    const requested = fatorValido
+      ? formatarQuantidadeImpressaoPedido(quantidadeBruta, fator, row.dataset.embalagem)
+      : quantidadeBruta;
+    return { product, requested };
   }).filter((item) => item.product && item.product !== "Nenhum registro encontrado.");
 
   // Sem isso o cupom herdava o @page A4 global e imprimia como folha cheia, não como recibo estreito

@@ -49,6 +49,51 @@ test("cupom imprime solicitado quando Pendente e liberado em Em Andamento/Aguard
   assert.match(printOrderBlock, /printReleasedQty \? releasedQty : requestedQty/);
 });
 
+test("cupom imprime em embalagem, não em unidade, quando o produto tem fator confiável", () => {
+  // Pedido do usuário (01/09/2026): o depósito separa caixa/fardo fechado, não unidade a
+  // unidade -- mostrar "24" quando na verdade são "2 Fardos" obrigava a converter de cabeça.
+  const printOrderBlock = appSource.slice(appSource.indexOf("async function printOrder"), appSource.indexOf("// Extrai os itens de retirada a partir do card do pedido"));
+  assert.match(printOrderBlock, /const fator = Number\(row\.dataset\.fator\);/);
+  assert.match(printOrderBlock, /const fatorValido = row\.dataset\.fator && Number\.isSafeInteger\(fator\) && fator > 1;/);
+  assert.match(printOrderBlock, /formatarQuantidadeImpressaoPedido\(quantidadeBruta, fator, row\.dataset\.embalagem\)/);
+  // Sem fator confiável, continua exatamente como antes -- sem essa condição, item sem
+  // embalagem cadastrada (fator inválido/ausente) quebraria ou mostraria "NaN Fardo"
+  assert.match(printOrderBlock, /const requested = fatorValido\s*\n\s*\? formatarQuantidadeImpressaoPedido/);
+});
+
+test("a conversão usa a quantidade já escolhida pelo status (solicitada ou liberada), nunca recalcula outra", () => {
+  // Se a conversão lesse requestedQty/releasedQty direto, em vez do valor já escolhido pela
+  // regra de status, um pedido Em Andamento imprimiria embalagem da quantidade errada.
+  const printOrderBlock = appSource.slice(appSource.indexOf("async function printOrder"), appSource.indexOf("// Extrai os itens de retirada a partir do card do pedido"));
+  assert.match(printOrderBlock, /const quantidadeBruta = printReleasedQty \? releasedQty : requestedQty;/);
+  const posQuantidadeBruta = printOrderBlock.indexOf("const quantidadeBruta");
+  const posFormatar = printOrderBlock.indexOf("formatarQuantidadeImpressaoPedido(quantidadeBruta");
+  assert.ok(posQuantidadeBruta > -1 && posFormatar > posQuantidadeBruta, "quantidadeBruta precisa existir antes de ser convertida");
+});
+
+test("formatarQuantidadeImpressaoPedido divide pelo fator e nomeia a embalagem do produto, não uma sigla genérica", () => {
+  const fnSrc = appSource.slice(appSource.indexOf("function formatarQuantidadeImpressaoPedido"), appSource.indexOf("// Dispara a impressão de um pedido"));
+  assert.match(fnSrc, /const valor = \(Number\(unidades\) \|\| 0\) \/ fator;/);
+  // Item incompleto (sem embalagem cadastrada) cai num rótulo genérico, nunca "undefined"
+  assert.match(fnSrc, /const rotulo = embalagem \|\| "EMB";/);
+  // Fração real (pedido não múltiplo exato da embalagem) tem que aparecer, não ser escondida
+  assert.match(fnSrc, /valor\.toFixed\(2\)\.replace\("\.", ","\)/);
+});
+
+test("as três tabelas que alimentam o cupom (painel, kanban editável e kanban travado) marcam o fator na própria linha", () => {
+  // O cupom lê row.dataset.fator direto da <tr> -- se uma das três fontes não gravar isso,
+  // pedidos vindos daquele status/tela voltam a imprimir em unidade sem ninguém perceber.
+  const painel = appSource.slice(appSource.indexOf("function releasePanelItemsTable"), appSource.indexOf("function releasePanelItemsTable") + 3000);
+  assert.match(painel, /\$\{fatorValido \? `data-fator="\$\{fator\}" data-embalagem="\$\{esc\(item\.embalagem \|\| ""\)\}"` : ""\}/);
+
+  const kanbanEditavel = appSource.slice(appSource.indexOf('data-released="${esc(releasedQty)}"'), appSource.indexOf('data-released="${esc(releasedQty)}"') + 200);
+  assert.match(kanbanEditavel, /\$\{fatorKanbanValido \? `data-fator="\$\{fatorKanban\}" data-embalagem="\$\{esc\(o\.embalagem \|\| ""\)\}"` : ""\}/);
+
+  const kanbanTravado = appSource.slice(appSource.indexOf("fatorNaoEditavel = Number"), appSource.indexOf("fatorNaoEditavel = Number") + 600);
+  assert.match(kanbanTravado, /fatorNaoEditavelValido = o\.fator_status !== "INVALIDO" && Number\.isSafeInteger\(fatorNaoEditavel\) && fatorNaoEditavel > 1;/);
+  assert.match(kanbanTravado, /\$\{fatorNaoEditavelValido \? `data-fator="\$\{fatorNaoEditavel\}" data-embalagem="\$\{esc\(o\.embalagem \|\| ""\)\}"` : ""\}/);
+});
+
 test("history print keeps A4 sheet format (@page global, sem override para 80mm)", () => {
   assert.match(stylesSource, /@page \{\s*\n\s*size: A4 portrait;\s*\n\s*margin: 12mm;/);
   assert.match(stylesSource, /body\.printing-history \.print-history-area \{[\s\S]*?width: 186mm/);
