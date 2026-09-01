@@ -353,7 +353,7 @@ aparecer no destino, e ninguém saberia sem conferir os dois locais.
 | PDV          | Ajuste por inventário                     | **MyEstoque**      |
 | PDV          | Baixa por venda                           | Sistema de vendas  |
 | PDV          | Entrada por devolução de venda            | Sistema de vendas  |
-| PDV Administrativo | Saída por consumo interno           | **MyEstoque** (travado) |
+| PDV Administrativo | Saída por consumo interno           | **MyEstoque**      |
 
 Como regra, o MyEstoque envia **movimento, nunca saldo absoluto** — escrever saldo apagaria os
 lançamentos do sistema de vendas. O tipo `SLD` continua travado por teste no caminho da
@@ -368,34 +368,33 @@ qualquer PDV, mas o que retira **sai da empresa como consumo** e não vira saldo
 Por isso a retirada dele **não** gera transferência: transferência diria que a mercadoria
 continua na empresa, só que em outro local.
 
-| Campo    | Valor                 | Significado                                   |
-| -------- | --------------------- | --------------------------------------------- |
-| `tipo`   | `SAI`                 | Saída do estoque                              |
-| `motivo` | `__MOTIVO_PENDENTE__` | **Placeholder — decisão do usuário em aberto** |
-| `origem` | `AJU`                 | Ajuste manual                                 |
+| Campo    | Valor  | Significado                                            |
+| -------- | ------ | ------------------------------------------------------- |
+| `tipo`   | `SAI`  | Saída do estoque                                         |
+| `motivo` | `PDV`  | **Confirmado pelo usuário em 01/09/2026** (ver abaixo)   |
+| `origem` | `AJU`  | Ajuste manual                                            |
 
-**Nada é enviado hoje.** O domínio de `motivo` para `tipo = SAI` na OMIE tem exatamente quatro
-valores, conferidos na documentação da própria conta
-(`app.omie.com.br/api/v1/estoque/ajuste/?WSDL=&readable=`):
+O domínio de `motivo` para `tipo = SAI` na OMIE tem exatamente quatro valores, conferidos na
+documentação da própria conta (`app.omie.com.br/api/v1/estoque/ajuste/?WSDL=&readable=`), e
+**nenhum significa literalmente "consumo interno"**:
 
 | Código | Descrição                                | Serve para consumo interno? |
-| ------ | ---------------------------------------- | --------------------------- |
-| `INV`  | Ajuste por Inventário                    | Não — poluiria a contagem   |
-| `PER`  | Baixa por Perda ou Quebra                | Não — perda ≠ consumo       |
-| `OPS`  | Integração com Ordem de Produção – Saída | Não — não há ordem          |
-| `PDV`  | Integração com PDV                       | Não — não vem do PDV        |
+| ------ | ----------------------------------------- | --------------------------- |
+| `INV`  | Ajuste por Inventário                     | Não — poluiria a contagem   |
+| `PER`  | Baixa por Perda ou Quebra                 | Não — perda ≠ consumo       |
+| `OPS`  | Integração com Ordem de Produção – Saída  | Não — não há ordem          |
+| `PDV`  | Integração com PDV                        | **Escolhido** — não vem literalmente de um PDV de venda, mas foi o código que o usuário escolheu entre os quatro existentes |
 
-Ou seja: **não existe** um motivo "consumo interno" no domínio da API. Enquanto o usuário não
-escolher, valem **duas travas em série**:
+Categorização fiscal/contábil é decisão do usuário, não técnica — por isso a escolha não foi
+presumida. Como `PDV` sozinho não deixa claro que a saída é de consumo administrativo (e não de
+venda), cada lançamento leva uma observação fixa no próprio registro da OMIE (definida pelo
+usuário): *"SAIDA PARA USO DE SETORES COMO ESCRITORIO, ACPASS e LIMPEZA."*, concatenada com o
+código do pedido de origem. A partir desta confirmação, esta tarefa segue a **mesma trava
+genérica** das outras (`core/escrita.js`, exige `modo_escrita: REAL`) — não existe mais trava
+própria de motivo.
 
-1. a genérica do núcleo (`core/escrita.js`), que exige `modo_escrita: REAL`;
-2. a específica desta tarefa (`tarefas/consumo-administrativo.js`), que se recusa a sair da
-   simulação enquanto o motivo for o sentinela — **mesmo com `REAL` ligado**.
-
-O lançamento é enfileirado mesmo assim, de propósito: quando o motivo for definido, o histórico
-de consumo já estará montado e conferido, em vez de começar do zero naquele dia. O evento é
-`CONSUMO_ADMIN`, e não `RETIRADA`, para a tarefa de transferências nunca ler estas linhas e
-montar `TRF` em cima delas.
+O evento é `CONSUMO_ADMIN`, e não `RETIRADA`, para a tarefa de transferências nunca ler estas
+linhas e montar `TRF` em cima delas.
 
 Outros pontos do perfil:
 

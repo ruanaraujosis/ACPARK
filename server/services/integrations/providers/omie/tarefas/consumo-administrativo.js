@@ -1,15 +1,21 @@
 import { emSimulacao, modoDeEscrita } from "../../../core/escrita.js";
 import * as lancamentos from "../../../core/stock-launches.repository.js";
-import {
-  MOTIVO_CONSUMO_ADMINISTRATIVO_PENDENTE,
-  montarSaidaConsumoAdministrativo,
-} from "../omie.operacoes.js";
+import { ehLimiteDeTaxa, pausarIntegracao, segundosDeEspera } from "../../../core/pausa-integracao.js";
+import { chamarOmie, ENDPOINTS } from "../omie.api.js";
+import { montarSaidaConsumoAdministrativo } from "../omie.operacoes.js";
 import {
   idExternoDoProduto,
   valorUnitarioDoProduto,
 } from "./transferencias.js";
 
+const CALL = "IncluirAjusteEstoque";
 const LANCAMENTOS_POR_JOB = 25;
+
+// Texto fixo pedido pelo usuario (01/09/2026): motivo "PDV" nao diz por si so que a saida e de
+// consumo administrativo, entao a observacao de cada lancamento deixa isso explicito no
+// proprio registro da OMIE.
+const OBSERVACAO_CONSUMO_ADMINISTRATIVO =
+  "SAIDA PARA USO DE SETORES COMO ESCRITORIO, ACPASS e LIMPEZA.";
 
 // Envia para a OMIE a SAIDA por consumo interno de um PDV Administrativo.
 //
@@ -18,13 +24,12 @@ const LANCAMENTOS_POR_JOB = 25;
 // por isso o movimento e "SAI" e nunca "TRF": transferencia diria que a mercadoria continua
 // na empresa, so que em outro local.
 //
-// ESTA TAREFA NAO ENVIA NADA HOJE. O motivo do ajuste ainda nao foi escolhido (ver
-// MOTIVO_CONSUMO_ADMINISTRATIVO_PENDENTE em omie.operacoes.js: o dominio de "SAI" na OMIE nao
-// tem um codigo para consumo interno). Enquanto o motivo for o sentinela, a tarefa se recusa a
-// sair da simulacao -- mesmo com modo_escrita = REAL. Sao duas travas em serie, e nao uma:
-// a generica do nucleo (modo REAL) e esta, especifica do motivo.
+// Motivo confirmado pelo usuario em 01/09/2026 (MOTIVO_CONSUMO_ADMINISTRATIVO = "PDV" em
+// omie.operacoes.js) -- a partir daqui esta tarefa segue a mesma trava generica das outras
+// (core/escrita.js: so envia de verdade com modo_escrita = REAL), sem trava propria adicional.
 export async function enviarConsumoAdministrativo(contexto) {
-  const { client, integracao, configuracao, payload } = contexto;
+  const { client, integracao, segredos, configuracao, payload, fetchImpl } = contexto;
+  const simulacao = emSimulacao(configuracao);
 
   const abertos = await lancamentos.listarAbertos(client, {
     integrationId: integracao.id,
@@ -42,20 +47,9 @@ export async function enviarConsumoAdministrativo(contexto) {
     enviados: 0,
     falhas: 0,
     sem_vinculo_de_produto: 0,
-    bloqueado_por_motivo_pendente: false,
   };
 
   if (!abertos.length) return resumo;
-
-  // Trava especifica: sem um motivo real escolhido, nada sai daqui em hipotese nenhuma.
-  const motivoIndefinido =
-    MOTIVO_CONSUMO_ADMINISTRATIVO_PENDENTE.startsWith("__");
-  const simulacao = emSimulacao(configuracao) || motivoIndefinido;
-  if (motivoIndefinido) {
-    resumo.bloqueado_por_motivo_pendente = true;
-    resumo.alerta =
-      "Saída por consumo administrativo montada mas NÃO enviada: o código de motivo da OMIE para consumo interno ainda não foi escolhido.";
-  }
 
   for (const lancamento of abertos) {
     try {
@@ -87,40 +81,85 @@ export async function enviarConsumoAdministrativo(contexto) {
         codigoLocalOrigem: lancamento.local_origem,
         quantidade: lancamento.quantidade,
         valorUnitario,
-        observacao: `Consumo interno do pedido ${lancamento.codigo_pedido} (PDV Administrativo) no MyEstoque.`,
+        observacao: `Consumo interno do pedido ${lancamento.codigo_pedido} (PDV Administrativo) no MyEstoque. ${OBSERVACAO_CONSUMO_ADMINISTRATIVO}`,
       });
 
       // fonte_valor e anotacao de auditoria e NAO vai na chamada: campo desconhecido faz a
       // OMIE recusar o payload inteiro.
       const corpoGravado = { ...corpo, fonte_valor: fonteDoValor };
 
+      // MODO SIMULACAO: o payload e gravado para conferencia e nada sai daqui.
       if (simulacao) {
         await lancamentos.registrarResultado(client, lancamento.id, {
           status: lancamentos.STATUS.SIMULADO,
           payload: corpoGravado,
           resposta: {
             simulado: true,
-            observacao: motivoIndefinido
-              ? "Nada foi enviado a OMIE: o motivo do ajuste para consumo interno ainda nao foi escolhido."
-              : "Nada foi enviado a OMIE (modo simulacao).",
+            observacao: "Nada foi enviado a OMIE (modo simulacao).",
           },
         });
         resumo.simulados += 1;
         continue;
       }
 
-      // Inalcancavel enquanto o motivo for o sentinela. Fica explicito para o dia em que o
-      // motivo real for escolhido: a partir dali, so a trava do nucleo (modo REAL) decide.
-      throw new Error(
-        "Envio real de consumo administrativo ainda nao liberado.",
-      );
+      const resposta = await chamarOmie({
+        integracao,
+        segredos,
+        endpoint: ENDPOINTS.AJUSTE,
+        call: CALL,
+        params: corpo,
+        fetchImpl,
+      });
+
+      await lancamentos.registrarResultado(client, lancamento.id, {
+        status: lancamentos.STATUS.ENVIADO,
+        payload: corpoGravado,
+        resposta: resposta.dados,
+        // Mesmo formato de resposta da transferencia (mesmo endpoint IncluirAjusteEstoque):
+        // id_ajuste/id_movest, nao codigo_lancamento nem nCodAjuste.
+        externalId:
+          String(
+            resposta.dados?.id_ajuste ||
+              resposta.dados?.id_movest ||
+              resposta.dados?.codigo_lancamento ||
+              resposta.dados?.nCodAjuste ||
+              "",
+          ) || null,
+      });
+      resumo.enviados += 1;
     } catch (erro) {
+      // Mesma trava da transferencia: bloqueio por limite de taxa para o lote inteiro aqui,
+      // em vez de continuar queimando chamadas contra uma porta fechada.
+      if (ehLimiteDeTaxa(erro)) {
+        const espera = segundosDeEspera(erro);
+        const pausa = await pausarIntegracao(client, integracao.id, {
+          segundos: espera,
+          motivo: erro.message,
+        });
+        resumo.falhas += 1;
+        await lancamentos.registrarResultado(client, lancamento.id, {
+          status: lancamentos.STATUS.ERRO,
+          erro: erro?.message || String(erro),
+        });
+        resumo.bloqueado_por_limite = true;
+        resumo.pausado_ate = pausa?.pausadaAte || null;
+        resumo.alerta = espera
+          ? `A API pediu para esperar ${espera}s. O restante da fila continua na proxima janela.`
+          : "A API bloqueou o acesso por consumo. O restante da fila continua depois.";
+        return resumo;
+      }
       resumo.falhas += 1;
       await lancamentos.registrarResultado(client, lancamento.id, {
         status: lancamentos.STATUS.ERRO,
         erro: erro?.message || String(erro),
       });
     }
+  }
+
+  if (resumo.falhas) {
+    resumo.alerta = `${resumo.falhas} lancamento(s) falharam. Veja o erro de cada um na fila de lancamentos.`;
+  } else if (simulacao && resumo.simulados) {
+    resumo.alerta = `${resumo.simulados} lancamento(s) apenas simulados. Nada foi enviado a OMIE.`;
   }
 
   return resumo;

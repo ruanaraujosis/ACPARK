@@ -193,33 +193,49 @@ test("a saída por consumo é SAI, nunca TRF", () => {
   );
 });
 
-test("o motivo é um placeholder impossível de confundir com código real", () => {
-  // O domínio de `motivo` para tipo SAI na OMIE tem quatro valores (INV, PER, OPS, PDV) e
-  // nenhum significa consumo interno — a escolha é do usuário e está pendente.
+test("o motivo confirmado é PDV, um dos quatro valores reais do domínio SAI da OMIE", () => {
+  // Nenhum dos quatro (INV, PER, OPS, PDV) significa literalmente "consumo interno" -- o
+  // usuário escolheu PDV em 01/09/2026 sabendo disso (categorização fiscal é decisão dele).
   assert.match(
     operacoes,
-    /export const MOTIVO_CONSUMO_ADMINISTRATIVO_PENDENTE = "__MOTIVO_PENDENTE__";/,
+    /export const MOTIVO_CONSUMO_ADMINISTRATIVO = "PDV";/,
   );
-  for (const jaUsado of ["TRF", "INV", "PER"]) {
-    assert.notEqual(
-      "__MOTIVO_PENDENTE__",
-      jaUsado,
-      `o placeholder não pode reusar ${jaUsado}`,
-    );
-  }
+  // O sentinela antigo não pode sobreviver em nenhuma forma -- reintroduzi-lo bloquearia
+  // o envio de novo sem ninguém perceber.
+  assert.doesNotMatch(operacoes, /__MOTIVO_PENDENTE__/);
 });
 
-test("a tarefa não envia enquanto o motivo for o sentinela, nem em modo REAL", () => {
-  // Duas travas em série: a genérica do núcleo (modo REAL) e esta, específica do motivo.
+test("a observação de cada lançamento deixa explícito que é consumo administrativo, já que o motivo (PDV) não diz isso sozinho", () => {
   assert.match(
     tarefa,
-    /const motivoIndefinido =\s*MOTIVO_CONSUMO_ADMINISTRATIVO_PENDENTE\.startsWith\("__"\);/,
+    /OBSERVACAO_CONSUMO_ADMINISTRATIVO =\s*\n?\s*"SAIDA PARA USO DE SETORES COMO ESCRITORIO, ACPASS e LIMPEZA\."/,
   );
   assert.match(
     tarefa,
-    /const simulacao = emSimulacao\(configuracao\) \|\| motivoIndefinido;/,
+    /observacao: `Consumo interno do pedido \$\{lancamento\.codigo_pedido\} \(PDV Administrativo\) no MyEstoque\. \$\{OBSERVACAO_CONSUMO_ADMINISTRATIVO\}`/,
   );
-  assert.match(tarefa, /bloqueado_por_motivo_pendente/);
+});
+
+test("a tarefa não tem mais trava própria -- segue a mesma trava genérica das outras (modo REAL)", () => {
+  // Motivo definido: a única trava que resta é a do núcleo, igual transferências e inventário.
+  assert.doesNotMatch(tarefa, /motivoIndefinido/);
+  assert.doesNotMatch(tarefa, /bloqueado_por_motivo_pendente/);
+  assert.match(tarefa, /const simulacao = emSimulacao\(configuracao\);/);
+});
+
+test("o envio real usa o mesmo endpoint/chamada da transferência (IncluirAjusteEstoque)", () => {
+  // Consumo administrativo também é um ajuste de estoque (tipo SAI) -- mesma API, tipo diferente.
+  assert.match(tarefa, /const CALL = "IncluirAjusteEstoque";/);
+  assert.match(tarefa, /endpoint: ENDPOINTS\.AJUSTE,/);
+  assert.match(tarefa, /call: CALL,/);
+});
+
+test("bloqueio por limite de taxa para o lote inteiro, igual a transferência", () => {
+  // Mesmo incidente que já custou caro na transferência (29/08/2026): continuar batendo
+  // numa API que acabou de recusar por consumo renova a punição em vez de esperar.
+  assert.match(tarefa, /if \(ehLimiteDeTaxa\(erro\)\) \{/);
+  assert.match(tarefa, /await pausarIntegracao\(client, integracao\.id/);
+  assert.match(tarefa, /return resumo;/);
 });
 
 test("a tarefa filtra o próprio evento, para não brigar com as outras", () => {

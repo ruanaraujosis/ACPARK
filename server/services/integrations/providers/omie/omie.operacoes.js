@@ -243,20 +243,26 @@ export function montarAjusteInventario({
 
 // ===== Saida por consumo administrativo =====
 
-// Motivo AINDA NAO DEFINIDO para a saida por consumo interno (PDV Administrativo).
+// Motivo da saida por consumo interno (PDV Administrativo). CONFIRMADO PELO USUARIO em
+// 01/09/2026.
 //
 // O dominio de `motivo` para tipo "SAI" na OMIE tem exatamente quatro valores, conferidos na
 // documentacao da propria conta (app.omie.com.br/api/v1/estoque/ajuste/?WSDL=&readable=):
-//   INV - Ajuste por Inventario     (ja usado pelo inventario; usar aqui poluiria a contagem)
-//   PER - Baixa por Perda ou Quebra (recusado: perda e consumo legitimo sao coisas distintas
+//   INV - Ajuste por Inventario     (descartado: ja usado pelo inventario, usar aqui poluiria
+//                                    a contagem)
+//   PER - Baixa por Perda ou Quebra (descartado: perda e consumo legitimo sao coisas distintas
 //                                    para relatorio fiscal e gerencial)
-//   OPS - Integracao com Ordem de Producao - Saida  (nao ha ordem de producao envolvida)
-//   PDV - Integracao com PDV        (marcaria o movimento como vindo do PDV, que nao e o caso)
+//   OPS - Integracao com Ordem de Producao - Saida  (descartado: nao ha ordem de producao)
+//   PDV - Integracao com PDV        (ESCOLHIDO -- nominalmente marcaria o movimento como vindo
+//                                    de um PDV de venda, o que nao e literalmente o caso aqui,
+//                                    mas a categorizacao fiscal/contabil e decisao do usuario,
+//                                    nao tecnica, e ele optou por este mesmo assim)
 //
-// Ou seja: NAO EXISTE um motivo "consumo interno" no dominio da API. A escolha e do usuario e
-// esta pendente. Ate la o payload sai com este sentinela, que a OMIE recusaria de imediato --
-// e proposital: e impossivel um envio real passar despercebido com ele.
-export const MOTIVO_CONSUMO_ADMINISTRATIVO_PENDENTE = "__MOTIVO_PENDENTE__";
+// Nao existe um motivo "consumo interno" dedicado no dominio da API -- PDV foi o escolhido
+// entre as quatro opcoes existentes. A observacao de cada lancamento (ver tarefas/
+// consumo-administrativo.js) deixa explicito no proprio registro da OMIE que a saida e de
+// consumo administrativo, nao de venda, compensando o motivo nao ser literal.
+export const MOTIVO_CONSUMO_ADMINISTRATIVO = "PDV";
 
 // Monta o payload de SAIDA por consumo administrativo (IncluirAjusteEstoque, tipo "SAI").
 //
@@ -271,7 +277,7 @@ export function montarSaidaConsumoAdministrativo({
   valorUnitario,
   data = new Date(),
   observacao,
-  motivo = MOTIVO_CONSUMO_ADMINISTRATIVO_PENDENTE
+  motivo = MOTIVO_CONSUMO_ADMINISTRATIVO
 }) {
   if (!codigoLocalOrigem) {
     throw new Error("Saida por consumo administrativo exige o local de origem (almoxarifado).");

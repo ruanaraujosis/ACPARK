@@ -180,12 +180,11 @@ export const providerOmie = {
       id: "CONSUMO_ADMINISTRATIVO",
       rotulo: "Saidas por consumo administrativo",
       descricao:
-        "Envia a SAIDA do estoque gerada pela retirada de um PDV Administrativo -- setor interno que consome sem vender. Tipo 'SAI', nunca 'TRF': a mercadoria deixa o estoque, nao muda de lugar. NAO ENVIA HOJE: o codigo de motivo da OMIE para consumo interno ainda nao foi escolhido, e a tarefa se recusa a sair da simulacao ate la.",
+        "Envia a SAIDA do estoque gerada pela retirada de um PDV Administrativo -- setor interno que consome sem vender. Tipo 'SAI', motivo 'PDV' (confirmado pelo usuario em 01/09/2026 -- nenhum dos quatro codigos do dominio significa literalmente consumo interno, a observacao de cada lancamento deixa isso explicito no registro da OMIE). Nunca 'TRF': a mercadoria deixa o estoque, nao muda de lugar.",
       prioridade: "ALTA",
       // Escrita altera dado no sistema externo: o nucleo exige modo REAL explicito para enviar
       escrita: true,
       requerConfiguracao: ["local_almoxarifado"],
-      // Ligar o relogio e seguro porque a tarefa nao envia enquanto o motivo for o sentinela
       intervaloPadraoMs: 5 * MINUTO,
       executar: enviarConsumoAdministrativo
     },
