@@ -7593,11 +7593,13 @@ function releasePanelStock(value) {
 
 // Monta a tabela única de itens: editável na separação, somente leitura nas demais etapas
 // Formata a coluna "Solicitado" do painel do Almoxarifado em embalagens, a partir do que está
-// liberado (não do pedido original): assim o almoxarifado vê, ao lado do campo em unidades,
-// quantas embalagens fechadas aquele valor representa (ex: liberar 15 un com fator 15 = 1,00 EMB).
+// liberado (não do pedido original): assim o almoxarifado vê quantas embalagens fechadas aquele
+// valor representa (ex: liberar 15 un com fator 15 = 1,00 EMB). Mostrava também a contagem de
+// unidades por embalagem ("- (15un)"), mas o usuário pediu (02/09/2026) pra deixar só a
+// quantidade da embalagem, sem a anotação de unidade ao lado.
 function formatarSolicitadoEmbalagem(unidadesLiberadas, fator) {
   const valor = (Number(unidadesLiberadas) || 0) / fator;
-  return `${valor.toFixed(2).replace(".", ",")} EMB - (${fator}un)`;
+  return `${valor.toFixed(2).replace(".", ",")} EMB`;
 }
 
 function releasePanelItemsTable(group = [], editable = false) {
