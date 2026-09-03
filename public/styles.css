@@ -6174,9 +6174,17 @@ td input[type="number"] {
   }
 
   body.printing-receipt:not(.printing-withdrawal-receipt) .order-request-print-target .receipt-row {
-    grid-template-columns: minmax(0, 1fr) 13mm !important;
+    /* Produto | EMB | QTD -- duas colunas fixas, uma para cada quantidade (02/09/2026) */
+    grid-template-columns: minmax(0, 1fr) 10mm 13mm !important;
     border-bottom: 0 !important;
     padding: 3px 0 !important;
+  }
+
+  /* EMB (2ª coluna) precisa do mesmo alinhamento à direita que QTD (última) já tinha --
+     a regra genérica de .receipt-row span:last-child não alcança a coluna do meio */
+  body.printing-receipt:not(.printing-withdrawal-receipt) .order-request-print-target .receipt-row span:nth-child(2) {
+    text-align: right !important;
+    white-space: nowrap !important;
   }
 
   body.printing-receipt:not(.printing-withdrawal-receipt) .order-request-print-target .receipt-item-dash {

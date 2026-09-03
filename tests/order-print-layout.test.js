@@ -18,7 +18,8 @@ test("manual order print uses dedicated receipt layout instead of screen card", 
 test("order print css keeps receipt clean and left aligned", () => {
   assert.match(stylesSource, /order-request-print-target/);
   assert.match(stylesSource, /text-align: left/);
-  assert.match(stylesSource, /grid-template-columns: minmax\(0, 1fr\) 13mm/);
+  // Produto | EMB | QTD -- três colunas desde 02/09/2026 (era só Produto | QTD)
+  assert.match(stylesSource, /grid-template-columns: minmax\(0, 1fr\) 10mm 13mm/);
 });
 
 test("order receipt prints as 80mm cupom, not full A4 sheet", () => {
@@ -49,35 +50,48 @@ test("cupom imprime solicitado quando Pendente e liberado em Em Andamento/Aguard
   assert.match(printOrderBlock, /printReleasedQty \? releasedQty : requestedQty/);
 });
 
-test("cupom imprime em embalagem, não em unidade, quando o produto tem fator confiável", () => {
-  // Pedido do usuário (01/09/2026): o depósito separa caixa/fardo fechado, não unidade a
-  // unidade -- mostrar "24" quando na verdade são "2 Fardos" obrigava a converter de cabeça.
+test("o cupom tem coluna EMB própria, separada de QTD -- não mais um texto misturando as duas", () => {
+  // Motivo da mudança (02/09/2026): "0,75 20" no cupom -- o produto tem cadastro de embalagem
+  // guardando só um número ("20"), e colar isso no texto da quantidade confundia mais do que
+  // ajudava. Cada quantidade agora tem coluna própria, "faca isso nas impressões de todos os
+  // status" (pedido explícito) -- por isso a mudança mora na extração comum a Pendente,
+  // Em Andamento, Aguardando Retirada e Finalizado, não numa tela por vez.
+  assert.match(appSource, /<span>Produto<\/span>\s*\n\s*<span>EMB<\/span>\s*\n\s*<span>QTD<\/span>/);
+  const printOrderBlock = appSource.slice(appSource.indexOf("async function printOrder"), appSource.indexOf("// Extrai os itens de retirada a partir do card do pedido"));
+  assert.match(printOrderBlock, /<span>\$\{esc\(item\.product\)\}<\/span>\s*\n\s*<span>\$\{esc\(item\.emb\)\}<\/span>\s*\n\s*<span>\$\{esc\(item\.qtd\)\}<\/span>/);
+});
+
+test("EMB mostra a conversão só quando o fator é confiável; sem fator, mostra travessão", () => {
   const printOrderBlock = appSource.slice(appSource.indexOf("async function printOrder"), appSource.indexOf("// Extrai os itens de retirada a partir do card do pedido"));
   assert.match(printOrderBlock, /const fator = Number\(row\.dataset\.fator\);/);
   assert.match(printOrderBlock, /const fatorValido = row\.dataset\.fator && Number\.isSafeInteger\(fator\) && fator > 1;/);
-  assert.match(printOrderBlock, /formatarQuantidadeImpressaoPedido\(quantidadeBruta, fator, row\.dataset\.embalagem\)/);
-  // Sem fator confiável, continua exatamente como antes -- sem essa condição, item sem
-  // embalagem cadastrada (fator inválido/ausente) quebraria ou mostraria "NaN Fardo"
-  assert.match(printOrderBlock, /const requested = fatorValido\s*\n\s*\? formatarQuantidadeImpressaoPedido/);
+  assert.match(printOrderBlock, /const emb = fatorValido \? formatarEmbalagensImpressaoPedido\(quantidadeBruta, fator\) : "—";/);
 });
 
-test("a conversão usa a quantidade já escolhida pelo status (solicitada ou liberada), nunca recalcula outra", () => {
+test("QTD nunca converte -- continua sempre a quantidade em unidade, igual antes de existir EMB", () => {
+  // QTD é a mesma quantidadeBruta (solicitada ou liberada, conforme o status) sem divisão
+  // nenhuma -- só a coluna EMB deriva; QTD nunca dependeu de fator/embalagem.
+  const printOrderBlock = appSource.slice(appSource.indexOf("async function printOrder"), appSource.indexOf("// Extrai os itens de retirada a partir do card do pedido"));
+  assert.match(printOrderBlock, /return \{ product, emb, qtd: quantidadeBruta \};/);
+});
+
+test("a conversão de EMB usa a quantidade já escolhida pelo status (solicitada ou liberada), nunca recalcula outra", () => {
   // Se a conversão lesse requestedQty/releasedQty direto, em vez do valor já escolhido pela
-  // regra de status, um pedido Em Andamento imprimiria embalagem da quantidade errada.
+  // regra de status, um pedido Em Andamento mostraria EMB da quantidade errada.
   const printOrderBlock = appSource.slice(appSource.indexOf("async function printOrder"), appSource.indexOf("// Extrai os itens de retirada a partir do card do pedido"));
   assert.match(printOrderBlock, /const quantidadeBruta = printReleasedQty \? releasedQty : requestedQty;/);
   const posQuantidadeBruta = printOrderBlock.indexOf("const quantidadeBruta");
-  const posFormatar = printOrderBlock.indexOf("formatarQuantidadeImpressaoPedido(quantidadeBruta");
+  const posFormatar = printOrderBlock.indexOf("formatarEmbalagensImpressaoPedido(quantidadeBruta");
   assert.ok(posQuantidadeBruta > -1 && posFormatar > posQuantidadeBruta, "quantidadeBruta precisa existir antes de ser convertida");
 });
 
-test("formatarQuantidadeImpressaoPedido divide pelo fator e nomeia a embalagem do produto, não uma sigla genérica", () => {
-  const fnSrc = appSource.slice(appSource.indexOf("function formatarQuantidadeImpressaoPedido"), appSource.indexOf("// Dispara a impressão de um pedido"));
-  assert.match(fnSrc, /const valor = \(Number\(unidades\) \|\| 0\) \/ fator;/);
-  // Item incompleto (sem embalagem cadastrada) cai num rótulo genérico, nunca "undefined"
-  assert.match(fnSrc, /const rotulo = embalagem \|\| "EMB";/);
-  // Fração real (pedido não múltiplo exato da embalagem) tem que aparecer, não ser escondida
-  assert.match(fnSrc, /valor\.toFixed\(2\)\.replace\("\.", ","\)/);
+test("formatarEmbalagensImpressaoPedido só divide pelo fator -- não concatena nome/número de embalagem no texto", () => {
+  // A causa do bug original: concatenar row.dataset.embalagem (às vezes só um número, tipo
+  // "20") no mesmo texto da quantidade. A função nova nem recebe embalagem como parâmetro.
+  const fnSrc = appSource.slice(appSource.indexOf("function formatarEmbalagensImpressaoPedido"), appSource.indexOf("// Dispara a impressão de um pedido"));
+  assert.match(fnSrc, /function formatarEmbalagensImpressaoPedido\(unidades, fator\) \{/);
+  assert.doesNotMatch(fnSrc, /embalagem/i, "a função não deve mais receber nem usar o nome/número da embalagem");
+  assert.match(fnSrc, /\(\(Number\(unidades\) \|\| 0\) \/ fator\)\.toFixed\(2\)\.replace\("\.", ","\)/);
 });
 
 test("as três tabelas que alimentam o cupom (painel, kanban editável e kanban travado) marcam o fator na própria linha", () => {

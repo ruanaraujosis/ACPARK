@@ -8830,13 +8830,13 @@ function schedulePrintCleanup(cleanup) {
   setTimeout(run, 3500);
 }
 
-// Converte a quantidade em unidade (a que o backend guarda) para embalagem, pro cupom impresso
-// -- mesma conta de formatarSolicitadoEmbalagem, mas com o nome da embalagem do produto em vez
-// de "EMB", porque quem separa o pedido no depósito lê "Fardo", não a sigla genérica.
-function formatarQuantidadeImpressaoPedido(unidades, fator, embalagem) {
-  const valor = (Number(unidades) || 0) / fator;
-  const rotulo = embalagem || "EMB";
-  return `${valor.toFixed(2).replace(".", ",")} ${rotulo}`;
+// Calcula a coluna EMB do cupom: quantidade de embalagens solicitadas pelo PDV, derivada da
+// mesma quantidade em unidade que a coluna QTD já mostra. Coluna própria, ao lado de QTD --
+// decisão do usuário (02/09/2026), depois de ver o número da embalagem colado ao nome dela
+// (ex.: "0,75 20", quando o cadastro do produto guarda só um número em "embalagem", não um
+// nome como "Fardo") confundindo mais do que ajudando no cupom.
+function formatarEmbalagensImpressaoPedido(unidades, fator) {
+  return ((Number(unidades) || 0) / fator).toFixed(2).replace(".", ",");
 }
 
 // Dispara a impressão de um pedido
@@ -8872,15 +8872,13 @@ async function printOrder(card, options = {}) {
     ];
     const releasedQty = releasedCandidates.find((value) => value !== undefined && value !== null && String(value).trim() !== "") ?? "0";
     const quantidadeBruta = printReleasedQty ? releasedQty : requestedQty;
-    // Pedido do usuário (01/09/2026): o cupom mostra em embalagem, não em unidade -- o
-    // depósito separa caixa/fardo fechado, não conta unidade por unidade. Cai pra unidade só
-    // quando o produto não tem fator confiável (mesma regra já usada no resto do sistema).
+    // Coluna EMB própria (02/09/2026): quantas embalagens aquela quantidade em unidade
+    // representa. QTD continua em unidade, sem conversão -- as duas colunas convivem, em vez
+    // de uma tentar carregar as duas informações misturadas no mesmo texto.
     const fator = Number(row.dataset.fator);
     const fatorValido = row.dataset.fator && Number.isSafeInteger(fator) && fator > 1;
-    const requested = fatorValido
-      ? formatarQuantidadeImpressaoPedido(quantidadeBruta, fator, row.dataset.embalagem)
-      : quantidadeBruta;
-    return { product, requested };
+    const emb = fatorValido ? formatarEmbalagensImpressaoPedido(quantidadeBruta, fator) : "—";
+    return { product, emb, qtd: quantidadeBruta };
   }).filter((item) => item.product && item.product !== "Nenhum registro encontrado.");
 
   // Sem isso o cupom herdava o @page A4 global e imprimia como folha cheia, não como recibo estreito
@@ -8907,13 +8905,15 @@ async function printOrder(card, options = {}) {
     <div class="receipt-items">
       <div class="receipt-row receipt-row-head">
         <span>Produto</span>
+        <span>EMB</span>
         <span>QTD</span>
       </div>
       <div class="receipt-item-dash"></div>
       ${rows.map((item) => `
         <div class="receipt-row">
           <span>${esc(item.product)}</span>
-          <span>${esc(item.requested)}</span>
+          <span>${esc(item.emb)}</span>
+          <span>${esc(item.qtd)}</span>
         </div>
         <div class="receipt-item-dash"></div>
       `).join("") || `<div class="receipt-note">Nenhum produto informado.</div>`}
