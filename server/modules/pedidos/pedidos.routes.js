@@ -710,14 +710,21 @@ export async function handlePedidosRoutes(req, res, context) {
 
       const deleted = await tx(async (client) => {
         const rows = await client.query(
-          `SELECT id, status, quantidade_liberada, pdv_id, sku_produto,
-                  retirada_assinatura, retirada_em, pronto_retirada_em, liberado_em,
-                  COALESCE(item_origem, 'PDV') AS item_origem,
-                  COALESCE(release_mode, '') AS release_mode
-           FROM pedidos
-           WHERE codigo_pedido = $1
-           ORDER BY id
-           FOR UPDATE`,
+          // LEFT JOIN de propósito: um produto removido do cadastro depois do pedido não pode
+          // sumir a linha do FOR UPDATE nem travar a auditoria -- só perde o nome bonito.
+          // "FOR UPDATE OF p": travar só pedidos -- Postgres recusa FOR UPDATE no lado nulo de
+          // um LEFT JOIN ("FOR UPDATE não pode ser aplicado ao lado com valores nulos de uma
+          // junção externa"), e produtos nem precisa de lock aqui, só do nome pra auditoria.
+          `SELECT p.id, p.status, p.quantidade_solicitada, p.quantidade_liberada, p.pdv_id, p.sku_produto,
+                  pr.nome AS produto,
+                  p.retirada_assinatura, p.retirada_em, p.pronto_retirada_em, p.liberado_em,
+                  COALESCE(p.item_origem, 'PDV') AS item_origem,
+                  COALESCE(p.release_mode, '') AS release_mode
+           FROM pedidos p
+           LEFT JOIN produtos pr ON pr.sku = p.sku_produto
+           WHERE p.codigo_pedido = $1
+           ORDER BY p.id
+           FOR UPDATE OF p`,
           [orderCode]
         );
         if (!rows.rows.length) {
@@ -739,9 +746,9 @@ export async function handlePedidosRoutes(req, res, context) {
         if (rowsToDelete.some((item) => item.retirada_assinatura || item.retirada_em || item.pronto_retirada_em || item.liberado_em)) {
           blockedReasons.push("retirada, assinatura ou liberação registrada");
         }
-        if (rowsToDelete.some((item) => item.item_origem !== "PDV")) {
-          blockedReasons.push("item incluído fora do pedido original do PDV");
-        }
+        // Item incluído pelo Almoxarifado (item_origem !== "PDV") NÃO bloqueia mais a exclusão
+        // (decisão do usuário, 08/09/2026) -- o histórico por item abaixo já registra a origem
+        // de cada linha, então essa informação não se perde, só deixa de travar a exclusão.
         if (rowsToDelete.some((item) => item.release_mode)) {
           blockedReasons.push("operação de liberação parcial em andamento");
         }
@@ -785,6 +792,34 @@ export async function handlePedidosRoutes(req, res, context) {
           throw error;
         }
 
+        const usuario = user.name || user.role || "Almoxarifado";
+
+        // Um registro de auditoria por item ANTES de apagar (não um resumo agregado só): quem
+        // olhar o relatório de edição precisa ver produto, SKU, quantidade e origem de cada
+        // linha cancelada, não só "pedido excluído" sem detalhe. Ação própria (item_cancelado)
+        // em vez de reaproveitar pedido_excluido_definitivamente aqui: a palavra "cancelado"
+        // precisa aparecer no relatório, e um rótulo por linha deixa isso explícito de cara.
+        for (const item of rowsToDelete) {
+          await client.query(
+            `INSERT INTO pedido_auditoria (codigo_pedido, acao, usuario, observacao, dados)
+             VALUES ($1, $2, $3, $4, $5::jsonb)`,
+            [
+              orderCode,
+              "item_cancelado",
+              usuario,
+              `Item cancelado: ${item.produto || item.sku_produto} (${item.sku_produto}). ${justification}`,
+              JSON.stringify({
+                produto: item.produto || null,
+                sku_produto: item.sku_produto,
+                quantidade_solicitada: asInt(item.quantidade_solicitada),
+                quantidade_liberada: asInt(item.quantidade_liberada) || null,
+                item_origem: item.item_origem,
+                status: normalizeOrderStatus(item.status)
+              })
+            ]
+          );
+        }
+
         const result = await client.query("DELETE FROM pedidos WHERE codigo_pedido = $1 RETURNING id", [orderCode]);
         await client.query(
           `INSERT INTO pedido_auditoria (codigo_pedido, acao, usuario, observacao, dados)
@@ -792,7 +827,7 @@ export async function handlePedidosRoutes(req, res, context) {
           [
             orderCode,
             "pedido_excluido_definitivamente",
-            user.name || user.role || "Almoxarifado",
+            usuario,
             justification,
             JSON.stringify({
               total_itens: result.rows.length,

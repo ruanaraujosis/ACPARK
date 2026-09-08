@@ -7747,7 +7747,11 @@ function releaseTimelineLabel(acao = "") {
   if (acao === "status_alterado_kanban") return "Movido no quadro";
   if (acao === "status_alterado_painel") return "Movido no painel";
   if (acao === "retirada_confirmada") return "Retirada confirmada";
-  if (acao === "pedido_excluido") return "Pedido excluído";
+  // A rota grava "pedido_excluido_definitivamente" (era comparado com "pedido_excluido", que
+  // nunca bate -- a linha caía direto no rótulo cru abaixo)
+  if (acao === "pedido_excluido_definitivamente") return "Pedido excluído";
+  // Um registro por item cancelado na exclusão -- "cancelado" precisa aparecer aqui de propósito
+  if (acao === "item_cancelado") return "Item cancelado";
   return acao || "Alteração";
 }
 
@@ -7790,10 +7794,24 @@ async function openReleaseTimelineModal(orderCode = "") {
           const de = linha.dados?.status_anterior;
           const para = linha.dados?.novo_status;
           const caminho = de && para ? `${esc(de)} → ${esc(para)}` : para ? esc(para) : "";
+          // item_cancelado: produto/SKU/quantidade/origem em vez do caminho de status, que
+          // esse tipo de linha não tem
+          const detalheItem = linha.acao === "item_cancelado"
+            ? [
+                linha.dados?.produto || linha.dados?.sku_produto,
+                linha.dados?.sku_produto && linha.dados?.produto ? `(${linha.dados.sku_produto})` : "",
+                "·",
+                `Solicitado ${Number(linha.dados?.quantidade_solicitada) || 0}`,
+                linha.dados?.quantidade_liberada ? `· Liberado ${Number(linha.dados.quantidade_liberada)}` : "",
+                "·",
+                linha.dados?.item_origem === "PDV" ? "Pedido original do PDV" : "Incluído pelo Almoxarifado"
+              ].filter(Boolean).join(" ")
+            : "";
           return `
           <li>
             <strong>${esc(releaseTimelineLabel(linha.acao))}</strong>
             ${caminho ? `<span class="order-panel-timeline-path">${caminho}</span>` : ""}
+            ${detalheItem ? `<span class="order-panel-timeline-path">${esc(detalheItem)}</span>` : ""}
             <small>${esc(linha.usuario || "Almoxarifado")} · ${esc(moneyDate(linha.criado_em))}</small>
           </li>`;
         }).join("")}
