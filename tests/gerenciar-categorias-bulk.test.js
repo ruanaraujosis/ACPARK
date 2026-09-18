@@ -4,6 +4,7 @@ import fs from "node:fs";
 
 const app = fs.readFileSync("public/app.js", "utf8").split("\r\n").join("\n");
 const routes = fs.readFileSync("server/index.js", "utf8").split("\r\n").join("\n");
+const styles = fs.readFileSync("public/styles.css", "utf8").split("\r\n").join("\n");
 
 // Recorta o bloco da tela de categorias, do início da renderização até a próxima função de view
 const painel = app.slice(app.indexOf("const renderCategories = async"), app.indexOf("cancelCategoryEdit.addEventListener"));
@@ -42,4 +43,16 @@ test("excluir selecionados pede confirmação e reusa a mesma rota da remoção 
 test("a rota já aceitava lista de skus antes desta mudança -- a exclusão em massa não precisou de rota nova", () => {
   const rota = routes.slice(routes.indexOf('"/api/admin/category-products"'), routes.indexOf("// Painel gerencial"));
   assert.match(rota, /Array\.isArray\(body\.skus\)/);
+});
+
+test("a lista de produtos vinculados é maior nesta tela, sem crescer a lista de produtos do pedido (mesma classe, tela diferente)", () => {
+  // Pedido do usuário: 430px (herdado da tela de pedidos) só mostrava 5 linhas por vez numa
+  // categoria com 40+ produtos. Escopado a .category-detail-screen de propósito -- a classe
+  // .category-product-table também é usada pela lista de produtos disponíveis do pedido do
+  // PDV (public/app.js:523, tela diferente), que não deve mudar de tamanho junto.
+  assert.match(styles, /\.category-detail-screen \.category-product-table \{\s*\n\s*max-height: 700px;/);
+  const generico = styles.slice(styles.indexOf(".category-product-table {"), styles.indexOf(".category-product-table {") + 200);
+  assert.match(generico, /max-height: 430px;/, "a versão genérica (tela de pedidos) continua 430px");
+  // A lista de "Adicionar produtos" (mesma tela) cresceu do mesmo jeito, por consistência
+  assert.match(styles, /\.category-add-list \{[\s\S]{0,60}max-height: 700px;/);
 });

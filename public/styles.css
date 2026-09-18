@@ -2473,6 +2473,15 @@ body.sheet-manager-open {
   border-radius: 18px;
 }
 
+/* Tela de "Gerenciar categorias": lista de produtos vinculados maior, pedido do usuário --
+   categorias reais chegam a 40+ produtos e 430px (herdado da lista de produtos do pedido,
+   outra tela) mostrava só 5 linhas por vez. Escopado à tela de categorias de propósito: a
+   classe é compartilhada com a lista de produtos disponíveis do pedido do PDV, que não deve
+   crescer junto. */
+.category-detail-screen .category-product-table {
+  max-height: 700px;
+}
+
 .category-product-table table {
   min-width: 680px;
 }
@@ -2659,7 +2668,7 @@ body.sheet-manager-open {
 
 .category-add-list {
   display: grid;
-  max-height: 430px;
+  max-height: 700px;
   overflow-y: auto;
   border: 1px solid rgba(0, 123, 135, 0.12);
   border-radius: 18px;
