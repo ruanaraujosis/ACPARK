@@ -6366,15 +6366,20 @@ async function viewProductsV2(options = {}) {
       await renderCategories();
     });
     document.querySelector(".delete-category-btn")?.addEventListener("click", async (event) => {
+      // Guarda o nome ANTES do await: currentTarget vira null assim que o dispatch do clique
+      // termina, e confirmSystem só resolve bem depois (espera clique no diálogo) -- lendo
+      // event.currentTarget.dataset.name só depois do await, o botão de excluir nunca
+      // enviava a requisição (TypeError silencioso: "Cannot read properties of null").
+      const categoryName = event.currentTarget.dataset.name;
       const confirmed = await confirmSystem({
         title: "Excluir categoria",
-        message: `Excluir a categoria ${event.currentTarget.dataset.name}?`,
+        message: `Excluir a categoria ${categoryName}?`,
         consequence: "Essa ação não altera o estoque central, mas remove a organização da categoria.",
         confirmLabel: "Excluir",
         danger: true
       });
       if (!confirmed) return;
-      await request("/api/admin/categories", { method: "DELETE", body: JSON.stringify({ nome: event.currentTarget.dataset.name }) });
+      await request("/api/admin/categories", { method: "DELETE", body: JSON.stringify({ nome: categoryName }) });
       toast("Categoria excluída.");
       selectedCategoryName = "";
       showCategoryAvailableProducts = false;

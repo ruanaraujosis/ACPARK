@@ -56,3 +56,23 @@ test("a lista de produtos vinculados é maior nesta tela, sem crescer a lista de
   // A lista de "Adicionar produtos" (mesma tela) cresceu do mesmo jeito, por consistência
   assert.match(styles, /\.category-add-list \{[\s\S]{0,60}max-height: 700px;/);
 });
+
+test("Excluir categoria lê o nome antes do await de confirmação, não depois", () => {
+  // Bug real reportado pelo usuário: "o botão excluir não está excluindo". currentTarget do
+  // evento vira null assim que o dispatch do clique termina -- e confirmSystem só resolve
+  // bem depois (espera clique num diálogo). Ler event.currentTarget.dataset.name só na
+  // chamada final (depois do await) lançava TypeError silencioso e a requisição de exclusão
+  // nunca saía. Verificado de ponta a ponta contra banco descartável: sem o fix a categoria
+  // sobrevivia ao clique; com o fix, categoria e vínculos em produto_categorias são apagados.
+  const handler = painel.slice(painel.indexOf('".delete-category-btn"'), painel.indexOf('".delete-category-btn"') + 900);
+  assert.match(handler, /const categoryName = event\.currentTarget\.dataset\.name;/);
+  const posCategoryName = handler.indexOf("const categoryName");
+  const posAwaitConfirm = handler.indexOf("await confirmSystem");
+  assert.ok(posCategoryName > -1 && posCategoryName < posAwaitConfirm, "categoryName precisa ser lido antes do await confirmSystem");
+  // Depois da captura, nenhuma outra leitura de event.currentTarget sobra no handler -- tudo
+  // usa a variável já guardada, então um novo await no meio não reintroduz o mesmo bug
+  const semComentarios = handler.replace(/^\s*\/\/.*$/gm, "");
+  const linhaCaptura = "const categoryName = event.currentTarget.dataset.name;";
+  const aposCaptura = semComentarios.slice(semComentarios.indexOf(linhaCaptura) + linhaCaptura.length);
+  assert.doesNotMatch(aposCaptura, /event\.currentTarget/);
+});
