@@ -2702,6 +2702,14 @@ body.sheet-manager-open {
   justify-content: space-between;
 }
 
+/* "Selecionar tudo" da exclusão em massa de produtos vinculados -- mesma linha do contador
+   e do botão de excluir selecionados, mas alinhado à esquerda, ao contrário deles */
+.category-select-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
 @media (max-width: 760px) {
   .category-add-row {
     grid-template-columns: 1fr;

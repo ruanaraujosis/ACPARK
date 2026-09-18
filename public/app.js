@@ -6216,9 +6216,19 @@ async function viewProductsV2(options = {}) {
               <strong>Produtos vinculados</strong>
               <input class="category-product-search" type="search" placeholder="Pesquisar produto" />
             </div>
+            ${assigned.length ? `
+            <div class="category-save-row">
+              <label class="category-select-all">
+                <input type="checkbox" id="category-linked-select-all" aria-label="Selecionar todos os produtos vinculados">
+                <span>Selecionar tudo</span>
+              </label>
+              <span id="category-linked-selected-count">0 produto(s) selecionado(s)</span>
+              <button class="btn danger" id="delete-selected-category-products" type="button" disabled>Excluir selecionados</button>
+            </div>` : ""}
             <div class="category-product-table">
-              ${assigned.length ? table(["SKU", "Produto", "Origem", "Ação"], assigned.map((product) => `
+              ${assigned.length ? table(["", "SKU", "Produto", "Origem", "Ação"], assigned.map((product) => `
                 <tr class="category-product-row" data-search="${esc(`${product.sku} ${product.nome} ${product.origem || "manual"}`.toLowerCase())}">
+                  <td class="category-check-cell"><input type="checkbox" class="category-linked-check" value="${esc(product.sku)}" aria-label="Selecionar ${esc(product.nome)}"></td>
                   <td>${esc(product.sku)}</td>
                   <td>${esc(product.nome)}</td>
                   <td>${esc(product.origem || "manual")}</td>
@@ -6276,6 +6286,44 @@ async function viewProductsV2(options = {}) {
       document.querySelectorAll(".category-product-row").forEach((row) => {
         row.classList.toggle("hidden", term && !row.dataset.search.includes(term));
       });
+    });
+    // Seleção em massa dos produtos vinculados, para excluir várias de uma vez em vez de um
+    // por um -- mesmo problema que a Liberação já resolveu para itens de pedido
+    const updateLinkedSelectedCount = () => {
+      const total = document.querySelectorAll(".category-linked-check:checked").length;
+      const label = document.querySelector("#category-linked-selected-count");
+      if (label) label.textContent = `${total} produto(s) selecionado(s)`;
+      const deleteButton = document.querySelector("#delete-selected-category-products");
+      if (deleteButton) deleteButton.disabled = total === 0;
+    };
+    document.querySelectorAll(".category-linked-check").forEach((checkbox) => checkbox.addEventListener("change", updateLinkedSelectedCount));
+    updateLinkedSelectedCount();
+    document.querySelector("#category-linked-select-all")?.addEventListener("change", (event) => {
+      // Só marca o que está visível na busca -- selecionar tudo com um filtro ativo não
+      // deveria excluir produtos escondidos que a pessoa nem está vendo
+      document.querySelectorAll(".category-product-row:not(.hidden) .category-linked-check").forEach((checkbox) => {
+        checkbox.checked = event.target.checked;
+      });
+      updateLinkedSelectedCount();
+    });
+    document.querySelector("#delete-selected-category-products")?.addEventListener("click", async () => {
+      const skus = [...document.querySelectorAll(".category-linked-check:checked")].map((checkbox) => checkbox.value);
+      if (!skus.length) return;
+      const confirmed = await confirmSystem({
+        title: "Excluir produtos da categoria",
+        message: `Remover ${skus.length} produto(s) de ${selectedCategoryName}?`,
+        consequence: "Isso não altera o estoque central, só a organização por categoria.",
+        confirmLabel: "Excluir",
+        danger: true
+      });
+      if (!confirmed) return;
+      await request("/api/admin/category-products", {
+        method: "POST",
+        body: JSON.stringify({ skus, categoria: selectedCategoryName, action: "remove" })
+      });
+      toast(`${skus.length} produto(s) removido(s) da categoria.`);
+      await loadBootstrap();
+      await renderCategories();
     });
     document.querySelector(".category-available-search")?.addEventListener("input", (event) => {
       const term = String(event.target.value || "").trim().toLowerCase();

@@ -66,8 +66,9 @@ async function gravarProduto(client, integrationId, produto, cacheCategorias) {
   // unidades do mesmo item. Se as duas tarefas escrevessem saldo, a ultima a rodar venceria
   // e o estoque central ficaria oscilando entre o numero certo e zero.
   const categoria = await resolverCategoria(client, produto.familia, cacheCategorias);
+  const produtoNovo = !existente.rows[0];
 
-  if (existente.rows[0]) {
+  if (!produtoNovo) {
     // A categoria so e preenchida quando esta vazia. Sobrescrever a categoria de um produto
     // ja classificado o moveria entre as permissoes de pdv_categorias e ele sumiria da tela
     // de quem podia pedi-lo -- alinhar categoria com familia e decisao do operador, nao
@@ -95,9 +96,18 @@ async function gravarProduto(client, integrationId, produto, cacheCategorias) {
     );
   }
 
-  // A categoria tambem entra na tabela de vinculo produto x categoria, que e por onde
-  // varias telas filtram
-  if (categoria) {
+  // A categoria tambem entra na tabela de vinculo produto x categoria, que e por onde varias
+  // telas filtram -- MAS so na CRIACAO do produto, nunca depois. Mesma regra do campo
+  // produtos.categoria acima (alinhar com a familia e decisao do operador, nao efeito
+  // colateral de sincronizacao): antes o INSERT rodava em todo tick, sem WHERE NOT EXISTS
+  // dar conta de lembrar de uma remocao manual -- o Almoxarifado removia o produto da
+  // categoria pela tela de "Gerenciar categorias" e o proximo ciclo de sincronizacao
+  // reinseria o vinculo, porque o INSERT so verifica "o vinculo existe?", nunca "alguem
+  // tirou esse vinculo de proposito?". Confirmado com teste direto: DELETE seguido do
+  // mesmo INSERT reinseria a linha. Restringindo a criacao, uma classificacao automatica
+  // continua acontecendo (produto novo chega classificado), e uma remocao manual depois
+  // fica de pe.
+  if (categoria && produtoNovo) {
     await client.query(
       `INSERT INTO produto_categorias (sku_produto, categoria)
        SELECT $1, $2
