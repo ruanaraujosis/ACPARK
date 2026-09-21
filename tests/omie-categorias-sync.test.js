@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   codigoDeIntegracaoDaCategoria,
+  LIMITE_CODINT,
   recortarPendentes,
   montarPayloadFamilia,
   proximoCodigoDeFamilia,
@@ -307,7 +308,7 @@ test("com REAL e criacao liberada, cria a familia no ERP e guarda o vinculo", as
   assert.equal(resumo.familiasCriadasNoErp, 1);
   const envio = impl.chamadas.find((c) => c.corpo.call === "IncluirFamilia");
   assert.deepEqual(envio.corpo.param[0], {
-    codInt: "MYESTOQUE-MERCEARIA",
+    codInt: "ME-15-MERCEARIA",
     codFamilia: "15",
     nomeFamilia: "MERCEARIA",
   });
@@ -403,12 +404,20 @@ test("o codigo interno da familia nova continua a sequencia e nunca repete", () 
     "102",
   );
   assert.equal(proximoCodigoDeFamilia([]), "1");
-  assert.equal(
-    codigoDeIntegracaoDaCategoria("MATERIAL DE LIMPEZA"),
-    "MYESTOQUE-MATERIAL-DE-LIMPEZA",
+  // A OMIE limita [CODINT] a 20 caracteres: 6 de 12 criacoes falharam por isso em 21/09/2026
+  const longo = codigoDeIntegracaoDaCategoria("ALUGUEL DE EQUIPAMENTOS", "104");
+  assert.ok(
+    longo.length <= LIMITE_CODINT,
+    `codInt passou de ${LIMITE_CODINT}: ${longo}`,
+  );
+  assert.equal(longo, "ME-104-ALUGUEL-DE-EQ");
+  assert.notEqual(
+    longo,
+    codigoDeIntegracaoDaCategoria("ALUGUEL DE EQUIPAMENTOS TESTE", "105"),
+    "o codFamilia antes do nome impede dois codigos iguais quando o nome e cortado",
   );
   assert.deepEqual(montarPayloadFamilia({ nome: "MERCEARIA", codFamilia: 7 }), {
-    codInt: "MYESTOQUE-MERCEARIA",
+    codInt: "ME-7-MERCEARIA",
     codFamilia: "7",
     nomeFamilia: "MERCEARIA",
   });

@@ -54,17 +54,25 @@ export function proximoCodigoDeFamilia(familias = []) {
   return String(Math.max(0, ...usados) + 1);
 }
 
-// Codigo de integracao: marca quem criou a familia, para dar para auditar do lado do ERP
-export function codigoDeIntegracaoDaCategoria(nome) {
+// Codigo de integracao: marca quem criou a familia, para dar para auditar do lado do ERP.
+//
+// A OMIE limita [CODINT] a 20 caracteres -- medido em 21/09/2026, quando 6 de 12 criacoes
+// falharam com "O numero maximo de caracteres permitido para o elemento [CODINT] e de 20".
+// Por isso o prefixo e curto e o codigo da familia entra antes do nome: o nome pode ser
+// cortado sem risco de dois codigos iguais, porque codFamilia ja e unico.
+export const LIMITE_CODINT = 20;
+
+export function codigoDeIntegracaoDaCategoria(nome, codFamilia = "") {
   const limpo = chaveDeCategoria(nome)
     .replace(/[^A-Z0-9]+/g, "-")
     .replace(/^-|-$/g, "");
-  return `MYESTOQUE-${limpo}`.slice(0, 60);
+  const prefixo = codFamilia ? `ME-${codFamilia}-` : "ME-";
+  return `${prefixo}${limpo}`.slice(0, LIMITE_CODINT).replace(/-$/, "");
 }
 
 export function montarPayloadFamilia({ nome, codFamilia }) {
   return {
-    codInt: codigoDeIntegracaoDaCategoria(nome),
+    codInt: codigoDeIntegracaoDaCategoria(nome, codFamilia),
     codFamilia: String(codFamilia),
     nomeFamilia: String(nome).trim(),
   };
