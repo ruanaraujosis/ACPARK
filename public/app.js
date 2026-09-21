@@ -3468,6 +3468,7 @@ function printInventoryReport(dados) {
 const RELATORIO_COR_TEAL = "FF005F68";
 const RELATORIO_COR_TEAL_CLARO = "FFEAF8FA";
 const RELATORIO_COR_BRANCO = "FFFFFFFF";
+const RELATORIO_COR_ZEBRA = "FFF2F2F2";
 
 // Exporta o relatório de estoque em .xlsx real -- mesmas colunas, mesmo critério de inclusão e
 // mesmo cabeçalho/destaque de categoria da impressão (a mesma resposta da API alimenta os
@@ -3543,6 +3544,10 @@ async function exportInventoryReport(dados) {
   // impressão, na mesma ordem em que a API já devolveu (categoria, depois nome).
   let categoriaAtual = null;
   let rowIndex = headerRowIndex + 1;
+  // Zebra (listra) só nas linhas de produto -- conta à parte do rowIndex porque o banner de
+  // categoria não entra na alternância, senão a listra ficaria inconsistente entre grupos com
+  // número par/ímpar de produtos.
+  let indiceLinhaProduto = 0;
   for (const linha of linhas) {
     if (linha.categoria !== categoriaAtual) {
       categoriaAtual = linha.categoria;
@@ -3555,12 +3560,21 @@ async function exportInventoryReport(dados) {
     }
     // null (não contado por este local no ciclo vencedor) vira célula vazia de verdade --
     // nunca "0", que é uma contagem real e diferente.
-    sheet.getRow(rowIndex).values = [
+    const linhaProduto = sheet.getRow(rowIndex);
+    linhaProduto.values = [
       linha.nome, linha.sku, linha.unidade || "UN",
       ...pdvs.map((pdv) => linha.pdvs[pdv.id]),
       ...(incluiAlmoxarifado ? [linha.almoxarifado] : []),
       linha.total, linha.totalFardos, null, null
     ];
+    if (indiceLinhaProduto % 2 === 1) {
+      // includeEmpty: true -- célula não contada (null) também precisa da listra, senão o
+      // cinza vira colunas quebradas em vez de linha inteira
+      linhaProduto.eachCell({ includeEmpty: true }, (cell) => {
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: RELATORIO_COR_ZEBRA } };
+      });
+    }
+    indiceLinhaProduto += 1;
     rowIndex += 1;
   }
 
