@@ -664,6 +664,44 @@ ALTER SEQUENCE public.integration_audit_logs_id_seq OWNED BY public.integration_
 
 
 --
+-- Name: integration_category_links; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.integration_category_links (
+    id integer NOT NULL,
+    integration_id integer NOT NULL,
+    external_id text NOT NULL,
+    external_code text,
+    external_name text NOT NULL,
+    categoria text NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    ausente_desde timestamp with time zone,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+
+
+--
+-- Name: integration_category_links_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.integration_category_links_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: integration_category_links_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.integration_category_links_id_seq OWNED BY public.integration_category_links.id;
+
+
+--
 -- Name: integration_credentials; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2019,6 +2057,13 @@ ALTER TABLE ONLY public.integration_audit_logs ALTER COLUMN id SET DEFAULT nextv
 
 
 --
+-- Name: integration_category_links id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.integration_category_links ALTER COLUMN id SET DEFAULT nextval('public.integration_category_links_id_seq'::regclass);
+
+
+--
 -- Name: integration_credentials id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -2370,6 +2415,22 @@ ALTER TABLE ONLY public.integration_attempts
 
 ALTER TABLE ONLY public.integration_audit_logs
     ADD CONSTRAINT integration_audit_logs_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: integration_category_links integration_category_links_integration_id_external_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.integration_category_links
+    ADD CONSTRAINT integration_category_links_integration_id_external_id_key UNIQUE (integration_id, external_id);
+
+
+--
+-- Name: integration_category_links integration_category_links_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.integration_category_links
+    ADD CONSTRAINT integration_category_links_pkey PRIMARY KEY (id);
 
 
 --
@@ -2801,6 +2862,13 @@ ALTER TABLE ONLY public.user_order_alert_preferences
 --
 
 CREATE INDEX idx_avisos_ativo ON public.avisos USING btree (ativo, criado_em DESC) WHERE ativo;
+
+
+--
+-- Name: idx_category_links_categoria; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_category_links_categoria ON public.integration_category_links USING btree (integration_id, categoria);
 
 
 --

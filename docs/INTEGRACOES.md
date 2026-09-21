@@ -273,6 +273,7 @@ que vem do ERP. Desligando a integração, o fator sai junto em vez de deixar um
 | Capacidade             | O que faz                                                                       | Intervalo padrão |
 | ---------------------- | ------------------------------------------------------------------------------- | ---------------- |
 | `PRODUTOS`             | Importa o cadastro e mantém o vínculo SKU ↔ produto OMIE. **Não escreve saldo** | 1 h              |
+| `CATEGORIAS`           | Casa categoria local ↔ família OMIE pelo código. **Escrita**: só cria família    | 6 h              |
 | `FATORES`              | Lê o fator de conversão (unidades por embalagem) do cadastro                    | 30 min           |
 | `LOCAIS`               | Importa os locais de estoque                                                    | 6 h              |
 | `ESTOQUE_ALMOXARIFADO` | Saldo do local do almoxarifado → estoque central                                | 15 min           |
@@ -921,6 +922,197 @@ quanto saiu com valor simbólico, filtre por `payload->>'fonte_valor' = 'SIMBOLI
 
 O resumo da tarefa traz `com_valor_simbolico`, então dá para acompanhar se a cobertura de preço
 está melhorando sem consultar o banco.
+
+## Estrutura de produto (ficha técnica): levantamento medido em 27/08/2026
+
+Tudo abaixo foi medido contra a conta real, por chamadas de **leitura**. O que não foi
+verificado está marcado como tal — nada aqui vem da documentação sem confirmação.
+
+### O recurso existe: `geral/malha/`
+
+| Operação | Tipo do request | Estado |
+| --- | --- | --- |
+| `ListarEstruturas` | `malhaPesquisarRequest` | **Executada com sucesso** |
+| `ConsultarEstrutura` | `malhaConsultarRequest` | Existe; aceita `intProduto` e `codProduto` |
+| `IncluirEstrutura` | `malhaIncluirRequest` | **Executada com sucesso em 09/09/2026** |
+| `AlterarEstrutura` | `malhaAlterarRequest` | Existe (nome confirmado, **não executada**) |
+| `ExcluirEstrutura` | `malhaExcluirRequest` | Existe (nome confirmado, **não executada**) |
+
+`IncluirProduto` e `UpsertProduto` existem em `geral/produtos/`, ambos sobre o tipo
+`produto_servico_cadastro` — o mesmo do `ListarProdutos`.
+
+**Não existem** (a API responde `Method "X" not exists`): `ListarMalhas`, `ListarMalha`,
+`ListarCadastroMalha`, `ConsultarMalha`, `ListarEstrutura` (singular), `PesquisarMalha`,
+`PesquisarEstrutura`, `ListarCadastroEstrutura`, `IncluirItemEstrutura`. Os endpoints
+`produtos/malha`, `produtos/estrutura`, `produtos/malhaproducao` e `producao/ordemproducao`
+respondem **404** — não existem. Já `geral/malha` responde 500 com mensagem de método ou de
+schema, que é como se distingue "endpoint inexistente" de "nome de chamada errado".
+
+### Paginação
+
+`ListarEstruturas` usa **`nPagina` e `nRegPorPagina`** — não `pagina`/`registros_por_pagina`,
+que o resto da API usa. Tag errada devolve
+`Tag [PAGINA] não faz parte da estrutura do tipo complexo [malhaPesquisarRequest]`.
+
+### Formato da estrutura
+
+Resposta de `ListarEstruturas`, por produto:
+
+```
+ident: { idProduto, codProduto, descrProduto, tipoProduto, unidProduto,
+         idFamilia, codFamilia, descrFamilia, pesoLiqProduto, pesoBrutoProduto }
+itens: [ { idProdMalha, codProdMalha, descrProdMalha, quantProdMalha, unidProdMalha,
+           percPerdaProdMalha, tipoProdMalha, idMalha,
+           dIncProdMalha, hIncProdMalha, uIncProdMalha, dAltProdMalha, ... } ]
+custoProducao: { vGGF, vMOD }
+observacoes: {}
+```
+
+O componente carrega **`percPerdaProdMalha`** — é onde o fator de correção da ficha técnica
+cabe. **Não há campo de rendimento no `ident`**: pelo que a listagem mostra, a estrutura é
+declarada para uma unidade do produto-pai. Isso **não foi confirmado** contra `ConsultarEstrutura`.
+
+### Hierarquia é suportada — confirmado por dado real
+
+`KIT TRANSFERÊNCIA DECK` tem 112 componentes, e um deles é **`M.N - CARNE DE SOL`**, que por sua
+vez é um produto com registro de estrutura próprio. Ou seja, **componente pode ser produto
+composto** — que é exatamente o que as fichas hierárquicas exigem.
+
+Os produtos-pai têm `tipoProduto` **04** (13 casos) ou **03** (4 casos), e os componentes
+aparecem com `tipoProdMalha` 00, 01, 04, 07 e 99. Não há um único tipo obrigatório para ser pai
+nem para ser componente. **Não foi testado** se a OMIE recusa um produto de outro tipo como pai.
+
+### Quanto já existe hoje: 17 produtos
+
+Dos 17 com registro de estrutura, **apenas 2 têm componentes** (`PETISCO NUGGETS`, com 1, e
+`KIT TRANSFERÊNCIA DECK`, com 112). Os outros 15 são casca — registro criado, lista vazia.
+Praticamente todo o trabalho de ficha técnica está por fazer.
+
+### A convenção de nomes do cadastro
+
+O prefixo indica a natureza do item, e a família acompanha:
+
+| Prefixo | Família | Exemplo |
+| --- | --- | --- |
+| `M.P - ` | MATERIA PRIMA | `M.P - SAL REFINADO` |
+| `M.N - ` | MANIPULADOS | `M.N - CARNE DE SOL`, `M.N - PAÇOCA`, `M.N - DOCE DE LEITE` |
+| `U.C - ` | uso e consumo | `U.C - ALCOOL LIQ 70%` |
+| `EMB - ` | embalagem | `EMB - GARFO DESCARTAVEL` |
+
+**`M.N - ` é o prefixo do produto manipulado** — a camada intermediária entre matéria-prima e
+produto acabado. É onde os preparos das fichas devem entrar.
+
+### Bloqueio por consumo indevido
+
+Rodar a mesma varredura duas vezes seguidas derrubou a API com
+`ERROR: API bloqueada por consumo indevido. Tente novamente em 1780 segundos` e
+`faultcode: MISUSE_API_PROCESS` — **cerca de 30 minutos de bloqueio**, mais severo que o
+"Consumo redundante detectado" de 60s. Sondagem exploratória tem de ser feita **uma vez**, com o
+resultado gravado em arquivo para reler à vontade.
+
+
+### Gravação de estrutura: medido em 09/09/2026
+
+A primeira ficha técnica foi gravada de verdade — `PORCOES ARROZ COM BROCOLIS` (11294558945),
+com 5 componentes, um deles outro produto composto (`BROCOLIS COZIDO`).
+
+```
+IncluirEstrutura {
+  idProduto: 11294558945,
+  itemMalhaIncluir: [
+    { intMalha: "AB-11027569611", idProdMalha: 11027569611,
+      quantProdMalha: 0.17, percPerdaProdMalha: 0, obsProdMalha: "..." }
+  ]
+}
+```
+
+- **O pai é identificado por `idProduto`, o código interno.** Não é preciso mexer no
+  `codigo_produto_integracao` de nenhum cadastro existente. Uma sondagem anterior por
+  tentativa e erro tinha concluído o contrário — estava errada; a documentação oficial do
+  serviço e a gravação real confirmam `idProduto`.
+- **`intMalha` é obrigatório em cada item** e é o código de integração *da linha* da
+  estrutura, não do produto. Sem ele: `O preenchimento da tag [intMalha] é obrigatório!`.
+  Derivá-lo do par (pai, componente) dá idempotência de graça. Limite de 20 caracteres.
+- A resposta traz `itemMalhaStatus[]` com `codStatus: "ADD"` e o `idMalha` gerado por linha.
+- **A estrutura não carrega unidade.** A OMIE usa a unidade de estoque de cada componente:
+  um item cadastrado em `Litros` recebe a quantidade em litros, mesmo que a ficha diga kg.
+  Divergência de unidade entre ficha e cadastro tem de ser resolvida antes, não no payload.
+- **Idempotência confirmada:** `ConsultarEstrutura` antes de incluir; reexecutar com a
+  estrutura já preenchida não duplica nada.
+
+### O bloqueio por consumo indevido é recuperável
+
+`ERROR: API bloqueada por consumo indevido. Tente novamente em N segundos` (faultcode
+`MISUSE_API_PROCESS`) chega a ~30 minutos, mas **a requisição bloqueada não é processada** —
+esperar os N segundos que a própria mensagem informa e repetir é seguro, não duplica. Foi o
+que destravou a gravação desta ficha. O gatilho é volume de chamadas exploratórias em janela
+curta: sondagem de schema por tentativa e erro é o caminho errado — a documentação do serviço
+em `developer.omie.com.br` dá os campos exatos em uma consulta.
+
+### O que ficou em aberto
+
+- `ConsultarEstrutura` aceita `idProduto`, `intProduto` ou `codProduto`. Produto sem
+  estrutura responde `ERROR: Produto não encontrado!`; produto com registro vazio responde
+  normalmente com `itens: []`. É essa a diferença entre "não tem malha" e "malha vazia".
+- Campos obrigatórios de `IncluirProduto`: `codigo_produto_integracao` é exigido. Os demais
+  não foram levantados — o produto desta rodada foi criado à mão pelo usuário na tela.
+- Simultaneidade em gravação de estrutura: não testada. **Assumir serial**, como já vale para
+  característica.
+
+## Categorias ↔ famílias: levantamento e regras (21/09/2026)
+
+A capacidade `CATEGORIAS` nasceu de um incidente. Entre 11/09 e 21/09/2026 as famílias
+`MANIPULADOS` (11211329102) e `MATERIA PRIMA` (11195192740) foram **excluídas** na OMIE — a
+segunda recriada com outro código (11300560694). Como o casamento dos dois lados era pelo
+**nome**, ninguém percebeu: os produtos simplesmente passaram a responder `codigo_familia: 0`
+e `descricao_familia: ""`. Foram ~50 produtos manipulados e ~357 matérias-primas, sem um
+aviso sequer. A família excluída também impede alteração: `AlterarProduto` recusa qualquer
+payload que cite o código morto, com `Familia de Produto não cadastrado para o Código [...]`.
+
+### O que a API oferece — medido contra a conta
+
+| Operação                    | Endpoint         | Estado                                                     |
+| --------------------------- | ---------------- | ---------------------------------------------------------- |
+| `PesquisarFamilias`         | `geral/familias` | **Executada.** Pagina com `pagina`/`registros_por_pagina`   |
+| `ConsultarFamilia`          | `geral/familias` | Existe; aceita `codigo`                                     |
+| `IncluirFamilia`            | `geral/familias` | **Executada em 21/09/2026.** Exige `codigo`/`codInt`        |
+| `ListarFamilias`            | `geral/familias` | **Não existe** (`Method "ListarFamilias" not exists`)       |
+
+`IncluirFamilia` recebe `{ codInt, codFamilia, nomeFamilia }` e devolve `{ codigo, codInt }`.
+O `codigo` é o identificador interno (o mesmo que aparece em `produto.codigo_familia`);
+`codFamilia` é o código curto que o operador vê na tela — nesta conta, numérico sequencial.
+
+**`AlterarProduto` faz merge parcial, não substituição.** Medido campo a campo em 49 produtos:
+enviando só `{codigo_produto, codigo_familia}`, a releitura mostrou a família como o único
+campo alterado — preço, NCM, unidade e tipo intactos. O mesmo vale para `{codigo_produto, ncm}`
+e `{codigo_produto, unidade}`. Não é preciso remontar o cadastro inteiro para mudar um campo.
+
+**Produto inativo não pode ser alterado**: `AlterarProduto` e `UpsertProduto` recusam com
+`O produto com ID X está inativo e não pode ser alterado`, e não existe `AtivarProduto` nem
+`AlterarSituacaoProduto`. Reativar exige a tela da OMIE.
+
+### Regras da sincronização
+
+1. **O vínculo é pelo código da família, nunca pelo nome** (`integration_category_links`).
+   Foi a falta disso que tornou a exclusão invisível.
+2. **A OMIE manda no nome.** Família renomeada lá renomeia a categoria aqui — e a renomeação
+   atualiza junto `produtos.categoria`, `produto_categorias`, `pdv_categorias` e os próprios
+   vínculos, porque **nenhuma dessas tabelas tem chave estrangeira para `categorias.nome`**.
+   Parar na tabela `categorias` deixaria produto e permissão de PDV apontando para um nome
+   que não existe mais.
+3. **O MyEstoque só cria família** — nunca renomeia nem exclui no ERP.
+4. **Exclusão nunca propaga, nos dois sentidos.** Família que some vira alerta e vínculo
+   inativo; a categoria local fica de pé, porque `pdv_categorias` amarra permissão pelo nome
+   e apagá-la tiraria produtos da tela de quem podia pedi-los.
+5. **Acento e caixa não criam categoria nova** — mesma normalização da tarefa de produtos
+   (`CONVENIENCIA` ↔ `CONVENIÊNCIA`).
+
+### Duas chaves antes de enviar qualquer coisa
+
+A criação depende de `modo_escrita = REAL` **e** da configuração `criar_familia_na_omie = SIM`
+(padrão `NAO`). A segunda chave existe porque esta integração já está em `REAL` desde 13/08/2026
+por causa da transferência de estoque: sem ela, a capacidade nova nasceria enviando sem nunca
+ter passado por simulação. Em simulação a tarefa registra nos avisos o payload que enviaria.
 
 ## Armadilhas conhecidas
 

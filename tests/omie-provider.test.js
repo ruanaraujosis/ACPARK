@@ -386,6 +386,7 @@ test("o manifesto do provider declara credenciais e capacidades esperadas", () =
   const ids = providerOmie.capacidades.map((c) => c.id);
   assert.deepEqual(ids, [
     "PRODUTOS",
+    "CATEGORIAS",
     "FATORES",
     "EVIDENCIA_COMPRA",
     "LOCAIS",

@@ -15,7 +15,9 @@ export const ENDPOINTS = Object.freeze({
   // pedido de compra tem zero registros e nota de entrada tem uma, vazia
   RECEBIMENTOS: "produtos/recebimentonfe",
   // Caracteristicas do produto: onde o fator aprovado e gravado de volta no ERP
-  CARACTERISTICAS: "geral/prodcaract"
+  CARACTERISTICAS: "geral/prodcaract",
+  // Familias de produto: o agrupamento que vira categoria aqui
+  FAMILIAS: "geral/familias"
 });
 
 // Normaliza a URL base cadastrada, cortando qualquer caminho depois de /api/vN.

@@ -3,6 +3,7 @@ import { sincronizarEstoqueAlmoxarifado } from "./tarefas/estoque-almoxarifado.j
 import { SINCRONIZACAO_PDV_ATIVA } from "./omie.politica.js";
 import { CHAVE_MODO_ESCRITA } from "../../core/escrita.js";
 import { escreverFatoresAprovados } from "./tarefas/escrita-fator.js";
+import { CHAVE_CRIAR_FAMILIA, sincronizarCategorias } from "./tarefas/categorias.js";
 import { sincronizarEvidenciaDeCompra } from "./tarefas/evidencia-compra.js";
 import { PADRAO_CARACTERISTICA_FATOR, sincronizarFatores } from "./tarefas/fatores.js";
 import { sincronizarLocais } from "./tarefas/locais.js";
@@ -64,6 +65,16 @@ export const providerOmie = {
         "SIMULACAO monta o lancamento e nao envia nada. So mude para REAL depois de conferir os payloads simulados."
     },
     {
+      chave: CHAVE_CRIAR_FAMILIA,
+      rotulo: "Criar familia na OMIE",
+      tipo: "opcao",
+      opcoes: ["NAO", "SIM"],
+      obrigatoria: false,
+      padrao: "NAO",
+      ajuda:
+        "Com SIM, categoria que existe aqui e nao existe na OMIE e criada la como familia. Com NAO, a sincronizacao so mostra o que seria criado. Renomear e excluir familia nunca sao feitos pelo MyEstoque."
+    },
+    {
       chave: "caracteristica_fator",
       rotulo: "Caracteristica do fator de conversao",
       tipo: "texto",
@@ -89,6 +100,20 @@ export const providerOmie = {
       prioridade: "NORMAL",
       intervaloPadraoMs: 60 * MINUTO,
       executar: sincronizarProdutos
+    },
+    {
+      id: "CATEGORIAS",
+      rotulo: "Categorias x familias",
+      descricao:
+        "Mantem categoria local e familia da OMIE casadas pelo codigo da familia, nao pelo nome. A OMIE manda no nome: familia renomeada la renomeia a categoria aqui. O MyEstoque so pode CRIAR familia que ainda nao existe la -- nunca renomear nem excluir -- e exclusao nunca propaga em nenhum sentido.",
+      prioridade: "NORMAL",
+      // Pode criar familia no ERP: o nucleo exige modo REAL explicito, e a criacao ainda
+      // depende da configuracao criar_familia_na_omie, porque esta integracao ja esta em
+      // REAL por causa da transferencia de estoque -- sem a segunda chave, a capacidade
+      // nova nasceria enviando sem nunca ter passado por simulacao.
+      escrita: true,
+      intervaloPadraoMs: 6 * 60 * MINUTO,
+      executar: sincronizarCategorias
     },
     {
       id: "FATORES",
