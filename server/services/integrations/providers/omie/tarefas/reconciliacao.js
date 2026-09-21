@@ -5,6 +5,8 @@
 // numero que ja se sabe divergente e como esconder o problema: a divergencia vira registro
 // em stock_reconciliation_items e alguem decide o que fazer.
 
+import { SINCRONIZACAO_PDV_ATIVA } from "../omie.politica.js";
+
 const TIPOS = Object.freeze({
   SALDO_DESATUALIZADO: "SALDO_DESATUALIZADO",
   RESERVA_MAIOR_QUE_SALDO: "RESERVA_MAIOR_QUE_SALDO",
@@ -16,6 +18,17 @@ const HORAS_ATE_DESATUALIZAR = 6;
 
 export async function reconciliarEstoque(contexto) {
   const { client, integracao } = contexto;
+
+  // Saldo velho so e divergencia quando alguem deveria estar atualizando o saldo do PDV.
+  //
+  // Com a capacidade SALDOS desligada (ela espera a integracao de vendas), NENHUM PDV tem
+  // saldo sincronizado -- entao toda linha de estoque_pdv e "desatualizada" por definicao e
+  // a reconciliacao reportava 5.000 por execucao, sempre as mesmas. Medido em 21/09/2026:
+  // 330.000 itens acumulados, 100% do tipo SALDO_DESATUALIZADO, zero de saldo negativo ou
+  // reserva maior que o saldo -- o alerta que importa ficava afogado no ruido.
+  //
+  // Quando SALDOS voltar a rodar, a verificacao volta sozinha junto.
+  const conferirDesatualizado = SINCRONIZACAO_PDV_ATIVA;
 
   const execucao = await client.query(
     `INSERT INTO stock_reconciliations (integration_id, status, started_at)
@@ -47,8 +60,10 @@ export async function reconciliarEstoque(contexto) {
        AND (
          COALESCE(e.saldo_omie, 0) < 0
          OR COALESCE(e.quantidade_reservada_acpark, 0) > COALESCE(e.saldo_omie, 0)
-         OR e.ultima_sincronizacao IS NULL
-         OR e.ultima_sincronizacao < CURRENT_TIMESTAMP - ($5::int * INTERVAL '1 hour')
+         OR ($6::boolean AND (
+              e.ultima_sincronizacao IS NULL
+              OR e.ultima_sincronizacao < CURRENT_TIMESTAMP - ($5::int * INTERVAL '1 hour')
+            ))
        )
      LIMIT 5000`,
     [
@@ -56,14 +71,18 @@ export async function reconciliarEstoque(contexto) {
       TIPOS.SALDO_NEGATIVO,
       TIPOS.RESERVA_MAIOR_QUE_SALDO,
       TIPOS.SALDO_DESATUALIZADO,
-      HORAS_ATE_DESATUALIZAR
+      HORAS_ATE_DESATUALIZAR,
+      conferirDesatualizado
     ]
   );
 
   const resumo = {
     divergencias: divergencias.rowCount,
     por_tipo: {},
-    reconciliacao_id: reconciliacaoId
+    reconciliacao_id: reconciliacaoId,
+    // Fica no resumo para ninguem achar que "zero divergencias" significa que tudo foi
+    // conferido: com SALDOS desligado, saldo velho nem e olhado.
+    saldo_desatualizado_conferido: conferirDesatualizado
   };
 
   for (const linha of divergencias.rows) {

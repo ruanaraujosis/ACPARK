@@ -134,6 +134,16 @@ export async function registrarLancamento(client, dados) {
 // um ajuste de inventario, tentava montar payload de transferencia com ele (que exige local
 // de destino, nulo no inventario), falhava e marcava o lancamento como ERRO -- deixando-o
 // preso numa fila que a tarefa certa nunca leria de volta a tempo.
+// Depois deste numero de tentativas, o lancamento sai da fila e espera uma pessoa.
+//
+// Medido em 21/09/2026: oito retiradas de produto INATIVO na OMIE estavam sendo retentadas
+// desde 3 de setembro, com 814 a 923 tentativas cada. Nenhuma delas tinha como dar certo
+// sozinha -- a causa exige acao humana no ERP --, e cada tentativa gastava uma chamada da
+// API, com 25 respostas HTTP 429 e cinco bloqueios por consumo indevido no mesmo periodo.
+// Retentar e util enquanto a causa pode passar (internet, indisponibilidade); depois disso
+// e so ruido caro. `apenas` ignora o limite: reprocessar um item pela tela e ato humano.
+export const LIMITE_TENTATIVAS = 20;
+
 export async function listarAbertos(client, { integrationId = null, limite = 50, apenas = null, eventos = null } = {}) {
   const listaDeEventos = Array.isArray(eventos) && eventos.length ? eventos : null;
   const resultado = await client.query(
@@ -142,11 +152,23 @@ export async function listarAbertos(client, { integrationId = null, limite = 50,
        AND ($2::bigint IS NULL OR integration_id = $2 OR integration_id IS NULL)
        AND ($4::bigint IS NULL OR id = $4)
        AND ($5::text[] IS NULL OR evento = ANY($5::text[]))
+       AND ($4::bigint IS NOT NULL OR status <> 'ERRO' OR COALESCE(tentativas, 0) < $6)
      ORDER BY (status = 'ERRO'), created_at
      LIMIT $3`,
-    [STATUS_ABERTOS, integrationId, Math.min(Number(limite) || 50, 200), apenas, listaDeEventos]
+    [STATUS_ABERTOS, integrationId, Math.min(Number(limite) || 50, 200), apenas, listaDeEventos, LIMITE_TENTATIVAS]
   );
   return resultado.rows;
+}
+
+// Lancamentos que a fila parou de retentar: esgotaram as tentativas e dependem de alguem.
+export async function contarEsgotados(client, integrationId = null) {
+  const resultado = await client.query(
+    `SELECT COUNT(*)::int AS total FROM integration_stock_launches
+     WHERE status = 'ERRO' AND COALESCE(tentativas, 0) >= $2
+       AND ($1::bigint IS NULL OR integration_id = $1)`,
+    [integrationId, LIMITE_TENTATIVAS]
+  );
+  return resultado.rows[0]?.total || 0;
 }
 
 // Marca o resultado do lancamento. Em simulacao o payload e gravado e nada e enviado.

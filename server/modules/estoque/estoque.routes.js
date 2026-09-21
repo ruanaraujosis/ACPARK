@@ -60,7 +60,12 @@ export async function handleEstoqueRoutes(req, res, context) {
          FROM produtos p
          JOIN produto_categorias pcg ON pcg.sku_produto = p.sku
          LEFT JOIN estoque_pdv e ON e.sku_produto = p.sku AND e.pdv_id = $1
-         WHERE (
+         -- Produto inativo nunca aparece para o PDV pedir. Sem este filtro, item
+         -- descontinuado continuava na tela: nove retiradas de set/2026 so falharam na
+         -- OMIE ("O cadastro deste produto esta inativo"), depois de o pedido ja ter sido
+         -- feito, separado e retirado -- tarde demais para avisar alguem.
+         WHERE p.ativo IS NOT FALSE
+           AND (
            COALESCE(array_length($2::text[], 1), 0) > 0
            AND pcg.categoria = ANY($2::text[])
          )

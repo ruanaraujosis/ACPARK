@@ -180,3 +180,20 @@ export function ehSemRegistros(erro) {
 export function ehProdutoInexistente(erro) {
   return /produto n[aã]o cadastrado/i.test(String(erro?.message || ""));
 }
+
+// Ajuste que JA ENTROU na OMIE com a mesma chave de integracao:
+// "ERROR: Ja existe um ajuste de estoque para o codigo de integracao [X] com o ID Y".
+//
+// Isso e a idempotencia funcionando, nao falha: o lancamento esta la. Tratar como erro
+// deixava o item preso em ERRO e sendo retentado para sempre -- um deles chegou a 191
+// tentativas para um ajuste que ja existia desde a primeira (medido em 21/09/2026).
+export function ehAjusteJaExistente(erro) {
+  return /j[aá] existe um ajuste de estoque/i.test(String(erro?.message || ""));
+}
+
+// Extrai o ID que a OMIE informa na mensagem de ajuste duplicado, para o lancamento nao
+// perder a rastreabilidade do lado do ERP
+export function idDoAjusteJaExistente(erro) {
+  const achado = String(erro?.message || "").match(/com o ID\s*\[?(\d+)/i);
+  return achado ? achado[1] : null;
+}

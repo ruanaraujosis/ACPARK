@@ -2,7 +2,12 @@ import { CODIGOS_ERRO, IntegrationError } from "../../../core/errors.js";
 import { emSimulacao, modoDeEscrita } from "../../../core/escrita.js";
 import * as lancamentos from "../../../core/stock-launches.repository.js";
 import { ehLimiteDeTaxa, pausarIntegracao, segundosDeEspera } from "../../../core/pausa-integracao.js";
-import { chamarOmie, ENDPOINTS } from "../omie.api.js";
+import {
+  chamarOmie,
+  ehAjusteJaExistente,
+  ENDPOINTS,
+  idDoAjusteJaExistente,
+} from "../omie.api.js";
 import {
   montarCompensacaoTransferencia,
   montarTransferenciaEstoque,
@@ -243,6 +248,19 @@ export async function enviarTransferencias(contexto) {
           : "A API bloqueou o acesso por consumo. O restante da fila continua depois.";
         return resumo;
       }
+      // Ajuste que ja existe na OMIE com a mesma chave: idempotencia funcionando, nao
+      // falha. Sem este ramo o lancamento ficava em ERRO e era retentado para sempre.
+      if (ehAjusteJaExistente(erro)) {
+        await lancamentos.registrarResultado(client, lancamento.id, {
+          status: lancamentos.STATUS.ENVIADO,
+          externalId: idDoAjusteJaExistente(erro),
+          erro: null
+        });
+        resumo.enviados = (resumo.enviados || 0) + 1;
+        resumo.ja_existiam = (resumo.ja_existiam || 0) + 1;
+        continue;
+      }
+
       resumo.falhas += 1;
       await lancamentos.registrarResultado(client, lancamento.id, {
         status: lancamentos.STATUS.ERRO,
@@ -251,8 +269,21 @@ export async function enviarTransferencias(contexto) {
     }
   }
 
-  if (resumo.falhas) {
-    resumo.alerta = `${resumo.falhas} lancamento(s) falharam. Veja o erro de cada um na fila de lancamentos.`;
+  // Quem esgotou as tentativas nao volta para a fila sozinho: precisa aparecer no alerta,
+  // senao some da tela justamente por ter parado de ser tentado.
+  const esgotados = await lancamentos.contarEsgotados(client, integracao.id);
+  if (esgotados) {
+    resumo.esgotados = esgotados;
+  }
+
+  if (resumo.falhas || esgotados) {
+    const partes = [];
+    if (resumo.falhas) partes.push(`${resumo.falhas} lancamento(s) falharam`);
+    if (esgotados)
+      partes.push(
+        `${esgotados} parado(s) apos ${lancamentos.LIMITE_TENTATIVAS} tentativas, aguardando acao humana`
+      );
+    resumo.alerta = `${partes.join(" e ")}. Veja o erro de cada um na fila de lancamentos.`;
   } else if (simulacao && resumo.simulados) {
     resumo.alerta = `${resumo.simulados} lancamento(s) apenas simulados. Nada foi enviado a OMIE.`;
   }

@@ -1,7 +1,12 @@
 import { emSimulacao, modoDeEscrita } from "../../../core/escrita.js";
 import * as lancamentos from "../../../core/stock-launches.repository.js";
 import { ehLimiteDeTaxa, pausarIntegracao, segundosDeEspera } from "../../../core/pausa-integracao.js";
-import { chamarOmie, ENDPOINTS } from "../omie.api.js";
+import {
+  chamarOmie,
+  ehAjusteJaExistente,
+  ENDPOINTS,
+  idDoAjusteJaExistente,
+} from "../omie.api.js";
 import { montarAjusteInventario } from "../omie.operacoes.js";
 
 const CALL = "IncluirAjusteEstoque";
@@ -149,6 +154,19 @@ export async function enviarAjustesDeInventario(contexto) {
           : "A API bloqueou o acesso por consumo. O restante da fila continua depois.";
         return resumo;
       }
+      // Ajuste que ja existe na OMIE com a mesma chave: idempotencia funcionando, nao
+      // falha. Sem este ramo o lancamento ficava em ERRO e era retentado para sempre.
+      if (ehAjusteJaExistente(erro)) {
+        await lancamentos.registrarResultado(client, lancamento.id, {
+          status: lancamentos.STATUS.ENVIADO,
+          externalId: idDoAjusteJaExistente(erro),
+          erro: null
+        });
+        resumo.enviados = (resumo.enviados || 0) + 1;
+        resumo.ja_existiam = (resumo.ja_existiam || 0) + 1;
+        continue;
+      }
+
       resumo.falhas += 1;
       await lancamentos.registrarResultado(client, lancamento.id, {
         status: lancamentos.STATUS.ERRO,
