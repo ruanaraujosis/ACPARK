@@ -6714,17 +6714,37 @@ td input[type="number"] {
   white-space: nowrap;
 }
 
-/* Data de corte + ações do relatório de estoque consolidado */
-.inventario-relatorio-form {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  gap: 0.75rem;
-  margin-top: 0.75rem;
+/* Painel modal do relatório de estoque consolidado (data de corte + filtros + ações) --
+   mesmo padrão do .integration-modal: extende .photo-viewer-dialog em vez de recriar do zero */
+.relatorio-estoque-dialog {
+  width: min(560px, calc(100vw - 32px));
+  max-height: min(90vh, 760px);
+  /* Sem isso, .photo-viewer-dialog deixa cabeçalho e corpo cada um do tamanho do próprio
+     conteúdo -- o corpo cresce além da altura máxima do diálogo em vez de rolar por dentro
+     (mesmo padrão já usado em .order-timeline-modal .photo-viewer-dialog). */
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
 }
 
-.inventario-relatorio-form input[type="date"] {
+.relatorio-estoque-body {
+  /* .photo-viewer-body de onde herda define grid-template-columns/align-items/min-height
+     para o layout de 3 colunas do visualizador de fotos (seta, imagem, seta) -- sem
+     sobrescrever aqui, os blocos deste formulário ficavam lado a lado e se sobrepunham. */
+  display: grid;
+  grid-template-columns: 1fr;
+  align-items: stretch;
+  gap: 0.9rem;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.relatorio-estoque-body input[type="date"] {
   min-width: 10rem;
+}
+
+.relatorio-filtro-bloco {
+  display: grid;
+  gap: 0.5rem;
 }
 
 /* A lista costuma ser longa; rolar dentro do cartão mantém o resumo e as ações à vista */

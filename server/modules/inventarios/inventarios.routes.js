@@ -7,9 +7,14 @@
 // Lado do Almoxarifado (rotasDoAlmoxarifado, no fim do arquivo): enxerga todos os
 // inventários, corrige quantidade, adiciona/remove produto, exclui a contagem com
 // justificativa, controla a janela e confirma — o que pede a assinatura do PDV.
-import { query, tx, code, asInt } from "../../db.js";
+import { query, tx, pool, code, asInt } from "../../db.js";
 import { normalizeText, readBody, send } from "../../utils/http.js";
 import { estadoDaJanela, formatarDataBr } from "../../services/inventarios/janela-contagem.service.js";
+// fator de conversão/embalagem NÃO moram em produtos -- ficam em product_integration_mappings,
+// por integração. obterFatoresEmLote já é a forma testada e otimizada de ler isso em lote
+// (1,6ms para 60 SKUs, mesma função que pedidos.routes.js usa), com fallback fator=1 quando
+// não há vínculo com o ERP -- não reimplementar essa leitura aqui.
+import { obterFatoresEmLote } from "../../services/integrations/core/fator-conversao.repository.js";
 import { publishOrderAlert } from "../../services/order-alerts/order-alerts.events.js";
 import { handleEventosDoPdv, publicarEventoDoPdv } from "../../services/inventarios/inventario.events.js";
 import { aplicarAjusteLocal, enfileirarAjusteNaOmie } from "../../services/inventarios/ajuste-inventario.service.js";
@@ -474,6 +479,26 @@ async function rotasDoAlmoxarifado(req, res, context) {
     return true;
   }
 
+  // Opções de filtro do relatório de estoque: categorias e locais existentes, sempre o
+  // universo inteiro (não filtrado) -- é o que povoa os checkboxes do painel ao abrir, antes
+  // de qualquer corte ou filtro ser escolhido. Rota própria e sem corte de propósito: separada
+  // do relatório em si, que exige uma data de corte válida para rodar.
+  if (url.pathname === "/api/admin/inventario/relatorio/filtros" && method === "GET") {
+    if (!requireUser(req, res, "admin")) return true;
+    const categorias = await query(
+      "SELECT DISTINCT categoria FROM produtos WHERE ativo = TRUE AND categoria IS NOT NULL AND categoria <> '' ORDER BY categoria"
+    );
+    // Mesma regra da rota do relatório: administrativo não tem saldo de revenda
+    const pdvs = await query("SELECT id, nome FROM pdvs WHERE administrativo = FALSE ORDER BY nome");
+    send(res, 200, {
+      categorias: categorias.map((c) => c.categoria),
+      // "ALMOX" é o mesmo token que a rota do relatório usa internamente pro Almoxarifado --
+      // reaproveitado aqui pra não precisar de tradução entre front e back
+      locais: [...pdvs.map((p) => ({ id: String(p.id), nome: p.nome })), { id: "ALMOX", nome: "Almoxarifado" }]
+    });
+    return true;
+  }
+
   // Relatório consolidado de estoque: "quanto tem em cada PDV" numa data de corte.
   //
   // Cada PDV confirma o próprio inventário numa data diferente, e o Almoxarifado o dele --
@@ -490,19 +515,46 @@ async function rotasDoAlmoxarifado(req, res, context) {
       return true;
     }
 
+    // Filtro de categoria: lista separada por vírgula, comparada sem depender de acento/caixa
+    // exatos -- categoria pode vir do ERP com acentuação diferente da digitada manualmente.
+    // Ausente/vazio = sem filtro, mostra tudo (comportamento de sempre).
+    const categoriasFiltro = String(url.searchParams.get("categorias") || "")
+      .split(",").map((v) => v.trim()).filter(Boolean);
+    const categoriasFiltroChave = categoriasFiltro.length
+      ? new Set(categoriasFiltro.map((v) => v.toUpperCase()))
+      : null;
+
+    // Filtro de local: PDVs por id + o token "ALMOX" pro Almoxarifado, mesma lista que
+    // /relatorio/filtros devolve. Ausente/vazio = sem filtro, mostra tudo.
+    const locaisFiltroBruto = String(url.searchParams.get("locais") || "")
+      .split(",").map((v) => v.trim()).filter(Boolean);
+    const locaisFiltroAtivo = locaisFiltroBruto.length > 0;
+    const pdvIdsFiltro = new Set(locaisFiltroBruto.filter((v) => v !== "ALMOX").map(Number));
+    const incluiAlmoxarifado = !locaisFiltroAtivo || locaisFiltroBruto.includes("ALMOX");
+
     // PDVs administrativos ficam fora das colunas: não vendem, então não têm saldo de
     // revenda -- não faz sentido uma coluna de estoque para eles neste relatório.
-    const pdvs = await query("SELECT id, nome FROM pdvs WHERE administrativo = FALSE ORDER BY nome");
+    const pdvsTodos = await query("SELECT id, nome FROM pdvs WHERE administrativo = FALSE ORDER BY nome");
+    const pdvs = locaisFiltroAtivo ? pdvsTodos.filter((p) => pdvIdsFiltro.has(p.id)) : pdvsTodos;
 
     // Um vencedor por local (pdv_id ou NULL = Almoxarifado). DISTINCT ON trata NULL como um
     // grupo só, igual a qualquer outro pdv_id -- o Almoxarifado entra na mesma consulta.
-    const vencedores = await query(
+    const vencedoresTodos = await query(
       `SELECT DISTINCT ON (pdv_id) id, pdv_id, codigo_inventario, ajuste_aplicado_em
        FROM inventarios
        WHERE status = $1 AND ajuste_aplicado_em < ($2::date + INTERVAL '1 day')
        ORDER BY pdv_id, ajuste_aplicado_em DESC`,
       [STATUS_INVENTARIO.CONFIRMADO, corte]
     );
+    // Filtrado pelos MESMOS locais visíveis (o array `pdvs` já filtrado acima, não o filtro
+    // bruto de novo -- senão "só Almoxarifado selecionado" trataria a lista vazia de PDVs como
+    // "sem filtro" e incluiria todo mundo por engano): decisão do usuário (21/09/2026) -- quando
+    // o filtro de local esconde uma coluna, o Total (e o Total Fardos) passam a somar só o que
+    // está visível, não o parque inteiro por trás da cortina. O critério de inclusão de linha
+    // ("apareceu se alguém contou") também passa a valer só sobre os locais visíveis, pela
+    // mesma razão -- senão uma linha apareceria em branco por causa de um local escondido.
+    const pdvIdsVisiveis = new Set(pdvs.map((p) => p.id));
+    const vencedores = vencedoresTodos.filter((v) => (v.pdv_id === null ? incluiAlmoxarifado : pdvIdsVisiveis.has(v.pdv_id)));
     const pdvIdPorInventario = new Map(vencedores.map((v) => [v.id, v.pdv_id]));
 
     const itensContados = vencedores.length
@@ -526,12 +578,16 @@ async function rotasDoAlmoxarifado(req, res, context) {
     const produtos = await query(
       // Por categoria primeiro, depois nome: o relatório agrupa visualmente por categoria, e
       // isso só funciona se as linhas da mesma categoria já vierem consecutivas.
-      "SELECT sku, nome, categoria, qtd_total FROM produtos WHERE ativo = TRUE ORDER BY categoria, nome"
+      `SELECT sku, nome, categoria, qtd_total FROM produtos
+       WHERE ativo = TRUE
+         AND ($1::text[] IS NULL OR UPPER(TRIM(COALESCE(categoria, ''))) = ANY($1))
+       ORDER BY categoria, nome`,
+      [categoriasFiltroChave ? [...categoriasFiltroChave] : null]
     );
 
-    // Critério de inclusão: a linha só aparece se pelo menos um local (PDV ou Almoxarifado)
-    // contou o produto na respectiva contagem vencedora -- catálogo inteiro sem ninguém ter
-    // tocado no produto não vira linha de relatório.
+    // Critério de inclusão: a linha só aparece se pelo menos um local VISÍVEL (PDV ou
+    // Almoxarifado dentro do filtro de local aplicado) contou o produto na respectiva
+    // contagem vencedora -- catálogo inteiro sem ninguém ter tocado no produto não vira linha.
     const skusContados = new Set();
     for (const mapa of contadoPorLocal.values()) for (const sku of mapa.keys()) skusContados.add(sku);
 
@@ -563,10 +619,28 @@ async function rotasDoAlmoxarifado(req, res, context) {
       });
     }
 
+    // Total Fardos = Total (UND) / fator de conversão do produto. Produto sem fator cadastrado
+    // (ou com fator inválido no ERP) entra como fator 1 -- decisão do usuário (18/09/2026): a
+    // coluna nunca fica em branco/travessão por falta de fator, só reflete o mesmo Total.
+    // Calculado aqui (não no front) pela mesma razão de o resto da rota já montar os números
+    // prontos: o front só exibe. Sem arredondar/truncar -- é essa divisão que autoriza valor
+    // quebrado no relatório (contagem de embalagem raramente fecha em número inteiro de fardos).
+    const fatoresPorSku = await obterFatoresEmLote(pool, linhas.map((linha) => linha.sku));
+    for (const linha of linhas) {
+      const fator = fatoresPorSku.get(linha.sku)?.fator;
+      const fatorEfetivo = Number.isFinite(fator) && fator > 0 ? fator : 1;
+      linha.totalFardos = linha.total / fatorEfetivo;
+      // Unidade de medida real do cadastro OMIE (mesma consulta em lote, sem custo extra)
+      linha.unidade = fatoresPorSku.get(linha.sku)?.unit || "UN";
+    }
+
     send(res, 200, {
       corte,
       geradoEm: new Date().toISOString(),
       pdvs,
+      incluiAlmoxarifado,
+      categoriasFiltro,
+      locaisFiltro: locaisFiltroBruto,
       vencedores: vencedores.map((v) => ({
         pdv_id: v.pdv_id,
         codigo_inventario: v.codigo_inventario,

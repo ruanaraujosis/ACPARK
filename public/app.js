@@ -3293,9 +3293,25 @@ function inventoryReportMeta(dados) {
 }
 
 function buildInventoryReportPrintHtml(dados) {
-  const { corte, pdvs = [], linhas = [] } = dados;
+  const { corte, pdvs = [], linhas = [], incluiAlmoxarifado = true, categoriasFiltro = [], locaisFiltro = [] } = dados;
   const { generatedAt, generatedBy } = inventoryReportMeta(dados);
-  const totalColunas = 2 + pdvs.length + 3; // Produto + UN + PDVs + Almoxarifado + Total + 2 preço
+
+  // Colunas montadas numa lista só, em vez de uma conta separada de totalColunas: a versão
+  // anterior tinha as duas coisas divergindo (colgroup/thead com 1 coluna a mais que o colspan
+  // calculado à mão), e a linha de categoria ficava um pouco curta. Lista única elimina essa
+  // classe de bug -- e é o que também deixa a coluna Almoxarifado fácil de existir só quando
+  // o filtro de local não a esconde.
+  const colunas = [
+    { classe: "produto", rotulo: "Produto" },
+    { classe: "un", rotulo: "UN" },
+    ...pdvs.map((pdv) => ({ classe: "almox", rotulo: pdv.nome })),
+    ...(incluiAlmoxarifado ? [{ classe: "almox", rotulo: "Almoxarifado" }] : []),
+    { classe: "total", rotulo: "Total" },
+    { classe: "total", rotulo: "Total Fardos" },
+    { classe: "preco", rotulo: "Preço Unit." },
+    { classe: "preco", rotulo: "Preço Total" }
+  ];
+  const totalColunas = colunas.length;
 
   // Agrupa as linhas por categoria, na mesma ordem alfabética que a consulta já devolveu
   const grupos = [];
@@ -3318,10 +3334,11 @@ function buildInventoryReportPrintHtml(dados) {
   const linhaHtml = (linha) => `
     <tr>
       <td>${esc(linha.nome)}<span class="relatorio-sku">${esc(linha.sku)}</span></td>
-      <td class="num">UN</td>
+      <td class="num">${esc(linha.unidade || "UN")}</td>
       ${pdvs.map((pdv) => celula(linha.pdvs[pdv.id])).join("")}
-      ${celula(linha.almoxarifado)}
+      ${incluiAlmoxarifado ? celula(linha.almoxarifado) : ""}
       <td class="num relatorio-total">${Number(linha.total)}</td>
+      <td class="num">${Number(linha.totalFardos).toFixed(2).replace(".", ",")}</td>
       <td></td>
       <td></td>
     </tr>`;
@@ -3331,6 +3348,15 @@ function buildInventoryReportPrintHtml(dados) {
         <tr class="relatorio-categoria"><td colspan="${totalColunas}">${esc(grupo.categoria)}</td></tr>
         ${grupo.linhas.map(linhaHtml).join("")}`).join("")
     : `<tr><td colspan="${totalColunas}">Nenhum produto contado até esta data de corte.</td></tr>`;
+
+  // Resumo do filtro aplicado, só quando existe -- sem isso, um relatório com menos colunas ou
+  // linhas do que o catálogo inteiro pareceria estar faltando dado, em vez de filtrado de propósito
+  const filtroTexto = [
+    categoriasFiltro.length ? `Categorias: ${categoriasFiltro.join(", ")}` : "",
+    // Nomes de verdade, não os ids crus do filtro -- pdvs/incluiAlmoxarifado já vêm filtrados
+    // da API, então listam exatamente os locais visíveis nesta tabela
+    locaisFiltro.length ? `Locais: ${[...pdvs.map((pdv) => pdv.nome), ...(incluiAlmoxarifado ? ["Almoxarifado"] : [])].join(", ")}` : ""
+  ].filter(Boolean).join(" · ");
 
   return `<!doctype html>
     <html lang="pt-BR">
@@ -3376,28 +3402,17 @@ function buildInventoryReportPrintHtml(dados) {
             <span><strong>Corte:</strong> ${esc(moneyDate(`${corte}T00:00:00`))}</span>
             <span><strong>Emissão:</strong> ${esc(generatedAt)}</span>
             <span><strong>Usuário:</strong> ${esc(generatedBy)}</span>
+            ${filtroTexto ? `<span><strong>Filtro:</strong> ${esc(filtroTexto)}</span>` : ""}
           </div>
         </div>
       </header>
       <table>
         <colgroup>
-          <col class="produto" />
-          <col class="un" />
-          ${pdvs.map(() => `<col class="almox" />`).join("")}
-          <col class="almox" />
-          <col class="total" />
-          <col class="preco" />
-          <col class="preco" />
+          ${colunas.map((c) => `<col class="${c.classe}" />`).join("")}
         </colgroup>
         <thead>
           <tr>
-            <th>Produto</th>
-            <th>UN</th>
-            ${pdvs.map((pdv) => `<th>${esc(pdv.nome)}</th>`).join("")}
-            <th>Almoxarifado</th>
-            <th>Total</th>
-            <th>Preço Unit.</th>
-            <th>Preço Total</th>
+            ${colunas.map((c) => `<th>${esc(c.rotulo)}</th>`).join("")}
           </tr>
         </thead>
         <tbody>${corpoTabela}</tbody>
@@ -3460,16 +3475,23 @@ const RELATORIO_COR_BRANCO = "FFFFFFFF";
 // grava negrito nem cor de fundo em célula -- só a paga faz isso. Testado: SheetJS ignora
 // silenciosamente cell.s ao escrever; ExcelJS grava fonte e preenchimento reais no styles.xml.
 async function exportInventoryReport(dados) {
-  const { corte, pdvs = [], linhas = [] } = dados;
+  const { corte, pdvs = [], linhas = [], incluiAlmoxarifado = true, categoriasFiltro = [], locaisFiltro = [] } = dados;
   const headers = ["Produto", "SKU", "Categoria", "Unidade de Medida",
-    ...pdvs.map((pdv) => pdv.nome), "Almoxarifado", "Total", "Preço Unitário", "Preço Total"];
+    ...pdvs.map((pdv) => pdv.nome),
+    ...(incluiAlmoxarifado ? ["Almoxarifado"] : []),
+    "Total", "Total Fardos", "Preço Unitário", "Preço Total"];
+  // Índice (1-based) da coluna Total Fardos, pra aplicar o formato decimal só nela -- derivado
+  // do próprio array de headers (não uma conta manual): é exatamente esse tipo de aritmética
+  // hardcoded que já causou um off-by-one na impressão deste mesmo relatório antes.
+  const colunaTotalFardos = headers.indexOf("Total Fardos") + 1;
 
   if (!window.ExcelJS) {
     // Sem a lib de estilo, cai pro .csv simples -- mesma rede de segurança do downloadWorkbook
     const linhasPlanas = linhas.map((linha) => [
-      linha.nome, linha.sku, linha.categoria, "UN",
+      linha.nome, linha.sku, linha.categoria, linha.unidade || "UN",
       ...pdvs.map((pdv) => linha.pdvs[pdv.id] ?? ""),
-      linha.almoxarifado ?? "", linha.total, "", ""
+      ...(incluiAlmoxarifado ? [linha.almoxarifado ?? ""] : []),
+      linha.total, Number(linha.totalFardos).toFixed(2), "", ""
     ]);
     downloadCsv(`relatorio_estoque_${corte}.csv`, [headers, ...linhasPlanas]);
     return;
@@ -3484,9 +3506,17 @@ async function exportInventoryReport(dados) {
   sheet.getCell(1, 1).value = "ÁGUAS CORRENTES PARK — Relatório de estoque consolidado";
   sheet.getCell(1, 1).font = { bold: true, size: 14, color: { argb: RELATORIO_COR_TEAL } };
 
+  // Resumo do filtro aplicado, só quando existe -- mesmo texto que a impressão mostra, pros
+  // dois formatos nunca contarem uma história diferente sobre o que foi filtrado
+  const filtroTexto = [
+    categoriasFiltro.length ? `Categorias: ${categoriasFiltro.join(", ")}` : "",
+    locaisFiltro.length ? `Locais: ${[...pdvs.map((pdv) => pdv.nome), ...(incluiAlmoxarifado ? ["Almoxarifado"] : [])].join(", ")}` : ""
+  ].filter(Boolean).join("    ");
+
   sheet.mergeCells(2, 1, 2, totalColunas);
   sheet.getCell(2, 1).value =
-    `Corte: ${moneyDate(`${corte}T00:00:00`)}    Emissão: ${generatedAt}    Usuário: ${generatedBy}`;
+    `Corte: ${moneyDate(`${corte}T00:00:00`)}    Emissão: ${generatedAt}    Usuário: ${generatedBy}` +
+    (filtroTexto ? `    ${filtroTexto}` : "");
   sheet.getCell(2, 1).font = { italic: true, color: { argb: "FF3F5962" } };
 
   const headerRowIndex = 4;
@@ -3497,6 +3527,9 @@ async function exportInventoryReport(dados) {
     cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: RELATORIO_COR_TEAL_CLARO } };
   });
   sheet.autoFilter = { from: { row: headerRowIndex, column: 1 }, to: { row: headerRowIndex, column: totalColunas } };
+  // Total Fardos raramente fecha em número inteiro (é uma divisão por fator de embalagem) --
+  // formato de duas casas pra não aparecer com a precisão de ponto flutuante inteira do JS
+  sheet.getColumn(colunaTotalFardos).numFmt = "0.00";
 
   // Uma linha de categoria (destacada) antes de cada grupo -- mesmo agrupamento visual da
   // impressão, na mesma ordem em que a API já devolveu (categoria, depois nome).
@@ -3515,14 +3548,15 @@ async function exportInventoryReport(dados) {
     // null (não contado por este local no ciclo vencedor) vira célula vazia de verdade --
     // nunca "0", que é uma contagem real e diferente.
     sheet.getRow(rowIndex).values = [
-      linha.nome, linha.sku, linha.categoria, "UN",
+      linha.nome, linha.sku, linha.categoria, linha.unidade || "UN",
       ...pdvs.map((pdv) => linha.pdvs[pdv.id]),
-      linha.almoxarifado, linha.total, null, null
+      ...(incluiAlmoxarifado ? [linha.almoxarifado] : []),
+      linha.total, linha.totalFardos, null, null
     ];
     rowIndex += 1;
   }
 
-  const larguras = [28, 12, 16, 8, ...pdvs.map(() => 12), 12, 10, 12, 12];
+  const larguras = [28, 12, 16, 8, ...pdvs.map(() => 12), ...(incluiAlmoxarifado ? [12] : []), 10, 12, 12, 12];
   larguras.forEach((largura, indice) => { sheet.getColumn(indice + 1).width = largura; });
 
   const buffer = await workbook.xlsx.writeBuffer();
@@ -10449,7 +10483,7 @@ function linhaContagemInventario(produto, contado, somenteLeitura) {
         data-categorias="${esc(categorias)}">
       <td class="inventario-produto">${esc(produto.nome)}<span class="inventario-sku">${esc(produto.sku)}</span></td>
       <td class="inventario-categoria">${esc(produto.categoria || "-")}</td>
-      <td><input class="inventario-qtd" type="number" min="0" step="1" inputmode="numeric"
+      <td><input class="inventario-qtd" type="number" min="0" step="0.01" inputmode="decimal"
         placeholder="—" value="${preenchido ? esc(valor) : ""}"
         aria-label="Quantidade contada de ${esc(produto.nome)}"${somenteLeitura ? " disabled" : ""} /></td>
       <td class="inventario-data">${contado?.contado_em ? moneyDate(contado.contado_em) : `<span class="inventario-nao-contado">não contado</span>`}</td>
@@ -10724,58 +10758,141 @@ async function viewInventarios(options = {}) {
           </tr>`))
         : `<p class="text-sm text-slate-500">Nenhum inventário ${filtro ? "neste estado" : "registrado"}.</p>`}
     </section>
-    ${blocoRelatorioDeEstoque()}
     ${resumoContagemPropriaHtml(contagemPropria)}
-    ${blocoEmissaoDeAviso(avisosAtivos)}`);
+    ${blocoEmissaoDeAviso(avisosAtivos)}`,
+  // Botão próprio no cabeçalho, em vez do card "Consolidado" que ficava sempre visível no
+  // corpo da página -- o relatório agora abre num painel à parte (openRelatorioEstoqueModal)
+  `<button class="btn secondary" id="abrir-relatorio-estoque" type="button">RELATORIO</button>`);
 
   bindInventariosAdmin(janela);
   bindEmissaoDeAviso();
   bindResumoContagemPropria();
-  bindRelatorioDeEstoque();
+  document.querySelector("#abrir-relatorio-estoque")?.addEventListener("click", openRelatorioEstoqueModal);
+}
+
+// Chave do localStorage onde o filtro de categoria/local do relatório fica salvo entre
+// aberturas do painel -- preferência de tela por navegador, não dado pra compartilhar entre
+// usuários ou reler no servidor, por isso localStorage e não uma tabela nova.
+const CHAVE_FILTRO_RELATORIO_ESTOQUE = "relatorio-estoque-filtros";
+
+// Lê o filtro salvo. Nunca deixa um localStorage corrompido/de formato antigo quebrar a
+// abertura do painel -- na dúvida, volta pro estado "sem filtro nenhum".
+function lerFiltroRelatorioEstoqueSalvo() {
+  try {
+    const bruto = JSON.parse(localStorage.getItem(CHAVE_FILTRO_RELATORIO_ESTOQUE) || "{}");
+    return {
+      categorias: Array.isArray(bruto.categorias) ? bruto.categorias : [],
+      locais: Array.isArray(bruto.locais) ? bruto.locais : []
+    };
+  } catch {
+    return { categorias: [], locais: [] };
+  }
+}
+
+function salvarFiltroRelatorioEstoque(filtro) {
+  try {
+    localStorage.setItem(CHAVE_FILTRO_RELATORIO_ESTOQUE, JSON.stringify(filtro));
+  } catch {
+    // Navegador privado/sem storage: preferência simplesmente não persiste, sem quebrar o relatório
+  }
 }
 
 // Relatório consolidado de estoque: "quanto tem em cada PDV", combinando o inventário
 // Confirmado mais recente de cada PDV/Almoxarifado numa data de corte -- ver a rota
-// /api/admin/inventario/relatorio para a regra completa.
-function blocoRelatorioDeEstoque() {
-  return `
-    <section class="card">
-      <p class="eyebrow">Consolidado</p>
-      <h4 class="section-title text-lg font-black">Relatório de estoque</h4>
-      <p class="mt-1 text-sm text-slate-600">Combina o inventário confirmado mais recente de
-      cada PDV e do Almoxarifado até a data escolhida.</p>
-      <div class="inventario-relatorio-form">
+// /api/admin/inventario/relatorio para a regra completa. Painel modal (sobrepõe a tela),
+// mesmo padrão já usado no sistema (photo-viewer) em vez de um componente novo do zero.
+async function openRelatorioEstoqueModal() {
+  const salvo = lerFiltroRelatorioEstoqueSalvo();
+  const filtrosDisponiveis = await request("/api/admin/inventario/relatorio/filtros", { silentLoading: true })
+    .catch(() => ({ categorias: [], locais: [] }));
+
+  const listaFiltro = (opcoes, selecionados, classe) => opcoes.length
+    ? opcoes.map((opcao) => `
+        <label class="multi-filter-option">
+          <input class="${classe}" type="checkbox" value="${esc(opcao.valor)}" ${selecionados.includes(opcao.valor) ? "checked" : ""} />
+          <span>${esc(opcao.rotulo)}</span>
+        </label>`).join("")
+    : `<p class="text-sm text-slate-500 p-2">Nenhuma opção disponível.</p>`;
+
+  const opcoesCategorias = filtrosDisponiveis.categorias.map((c) => ({ valor: c, rotulo: c }));
+  const opcoesLocais = filtrosDisponiveis.locais.map((l) => ({ valor: l.id, rotulo: l.nome }));
+
+  const modal = document.createElement("div");
+  modal.className = "photo-viewer";
+  const close = () => modal.remove();
+  modal.innerHTML = `
+    <div class="photo-viewer-dialog relatorio-estoque-dialog" role="dialog" aria-modal="true" aria-label="Relatório de estoque">
+      <div class="photo-viewer-head">
+        <div><p class="eyebrow">Consolidado</p><h3>Relatório de estoque</h3></div>
+        <button class="icon-action close-relatorio-modal" type="button" aria-label="Fechar">&times;</button>
+      </div>
+      <div class="photo-viewer-body relatorio-estoque-body">
+        <p class="text-sm text-slate-600">Combina o inventário confirmado mais recente de cada
+        PDV e do Almoxarifado até a data escolhida.</p>
         <label class="grid gap-1 text-sm font-bold">Data de corte
           <input type="date" id="relatorio-corte" value="${esc(today())}" />
         </label>
-        <button class="btn secondary" id="relatorio-imprimir" type="button">Imprimir (A4)</button>
-        <button class="btn secondary" id="relatorio-excel" type="button">Exportar Excel</button>
+
+        <div class="relatorio-filtro-bloco">
+          <p class="eyebrow">Categorias</p>
+          <div class="multi-filter-head">
+            <label class="multi-filter-check"><input id="relatorio-categorias-select-all" type="checkbox" /><span>Selecionar tudo</span></label>
+            <span id="relatorio-categorias-count">${salvo.categorias.length} categoria(s) selecionada(s)</span>
+          </div>
+          <div class="multi-filter-options">${listaFiltro(opcoesCategorias, salvo.categorias, "relatorio-categoria-check")}</div>
+        </div>
+
+        <div class="relatorio-filtro-bloco">
+          <p class="eyebrow">Locais</p>
+          <div class="multi-filter-head">
+            <label class="multi-filter-check"><input id="relatorio-locais-select-all" type="checkbox" /><span>Selecionar tudo</span></label>
+            <span id="relatorio-locais-count">${salvo.locais.length} local(is) selecionado(s)</span>
+          </div>
+          <div class="multi-filter-options">${listaFiltro(opcoesLocais, salvo.locais, "relatorio-local-check")}</div>
+        </div>
+        <p class="text-xs text-slate-500">Sem seleção em Categorias/Locais = mostra tudo (comportamento padrão).</p>
       </div>
-    </section>`;
-}
+      <div class="form-actions">
+        <button class="btn secondary" id="relatorio-imprimir" type="button">Imprimir (A4)</button>
+        <button class="btn" id="relatorio-excel" type="button">Exportar Excel</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  modal.querySelectorAll(".close-relatorio-modal").forEach((button) => button.addEventListener("click", close));
+  modal.addEventListener("click", (event) => { if (event.target === modal) close(); });
 
-// Busca os dados do relatório na data de corte escolhida
-async function buscarDadosRelatorioDeEstoque() {
-  const corte = document.querySelector("#relatorio-corte")?.value;
-  if (!corte) {
-    toast("Escolha a data de corte do relatório.", "error");
-    return null;
-  }
-  try {
-    return await request(`/api/admin/inventario/relatorio?corte=${encodeURIComponent(corte)}`);
-  } catch (error) {
-    toast(error.message || "Não foi possível gerar o relatório.", "error");
-    return null;
-  }
-}
+  const atualizarContador = (classeCheck, idContador, rotuloSingular) => {
+    const total = modal.querySelectorAll(`.${classeCheck}:checked`).length;
+    const label = modal.querySelector(`#${idContador}`);
+    if (label) label.textContent = `${total} ${rotuloSingular}(s) selecionado(s)`;
+  };
+  modal.querySelectorAll(".relatorio-categoria-check").forEach((checkbox) => checkbox.addEventListener("change", () => atualizarContador("relatorio-categoria-check", "relatorio-categorias-count", "categoria")));
+  modal.querySelectorAll(".relatorio-local-check").forEach((checkbox) => checkbox.addEventListener("change", () => atualizarContador("relatorio-local-check", "relatorio-locais-count", "local")));
+  modal.querySelector("#relatorio-categorias-select-all")?.addEventListener("change", (event) => {
+    modal.querySelectorAll(".relatorio-categoria-check").forEach((checkbox) => { checkbox.checked = event.target.checked; });
+    atualizarContador("relatorio-categoria-check", "relatorio-categorias-count", "categoria");
+  });
+  modal.querySelector("#relatorio-locais-select-all")?.addEventListener("change", (event) => {
+    modal.querySelectorAll(".relatorio-local-check").forEach((checkbox) => { checkbox.checked = event.target.checked; });
+    atualizarContador("relatorio-local-check", "relatorio-locais-count", "local");
+  });
 
-function bindRelatorioDeEstoque() {
-  document.querySelector("#relatorio-imprimir")?.addEventListener("click", async () => {
-    const dados = await buscarDadosRelatorioDeEstoque();
+  const coletarFiltro = () => ({
+    corte: modal.querySelector("#relatorio-corte")?.value || "",
+    categorias: [...modal.querySelectorAll(".relatorio-categoria-check:checked")].map((c) => c.value),
+    locais: [...modal.querySelectorAll(".relatorio-local-check:checked")].map((c) => c.value)
+  });
+
+  modal.querySelector("#relatorio-imprimir")?.addEventListener("click", async () => {
+    const filtro = coletarFiltro();
+    salvarFiltroRelatorioEstoque({ categorias: filtro.categorias, locais: filtro.locais });
+    const dados = await buscarDadosRelatorioDeEstoque(filtro);
     if (dados) printInventoryReport(dados);
   });
-  document.querySelector("#relatorio-excel")?.addEventListener("click", async () => {
-    const dados = await buscarDadosRelatorioDeEstoque();
+  modal.querySelector("#relatorio-excel")?.addEventListener("click", async () => {
+    const filtro = coletarFiltro();
+    salvarFiltroRelatorioEstoque({ categorias: filtro.categorias, locais: filtro.locais });
+    const dados = await buscarDadosRelatorioDeEstoque(filtro);
     if (!dados) return;
     try {
       await exportInventoryReport(dados);
@@ -10783,6 +10900,23 @@ function bindRelatorioDeEstoque() {
       toast(error.message || "Não foi possível exportar a planilha.", "error");
     }
   });
+}
+
+// Busca os dados do relatório na data de corte e nos filtros escolhidos
+async function buscarDadosRelatorioDeEstoque(filtro) {
+  if (!filtro?.corte) {
+    toast("Escolha a data de corte do relatório.", "error");
+    return null;
+  }
+  const params = new URLSearchParams({ corte: filtro.corte });
+  if (filtro.categorias?.length) params.set("categorias", filtro.categorias.join(","));
+  if (filtro.locais?.length) params.set("locais", filtro.locais.join(","));
+  try {
+    return await request(`/api/admin/inventario/relatorio?${params.toString()}`);
+  } catch (error) {
+    toast(error.message || "Não foi possível gerar o relatório.", "error");
+    return null;
+  }
 }
 
 // Há quanto tempo a contagem foi feita. É o dado que sustenta o alerta de contagem velha:
@@ -10996,7 +11130,7 @@ function renderDetalheInventario(overlay, codigo, dados) {
           return `
           <tr class="inventario-item-linha" data-id="${item.id}" data-sku="${esc(item.sku_produto)}">
             <td class="inventario-produto">${esc(item.produto || item.sku_produto)}<span class="inventario-sku">${esc(item.sku_produto)}${item.origem === "ALMOX" ? " · adicionado pelo Almoxarifado" : ""}</span></td>
-            <td><input class="inventario-admin-qtd" type="number" min="0" step="1" inputmode="numeric"
+            <td><input class="inventario-admin-qtd" type="number" min="0" step="0.01" inputmode="decimal"
               value="${temContagem ? esc(contado) : ""}" placeholder="—"
               aria-label="Quantidade contada de ${esc(item.produto || item.sku_produto)}" ${editavel ? "" : "disabled"} /></td>
             <td class="inventario-saldo">${Number(item.saldo_atual || 0)}</td>
@@ -11022,7 +11156,7 @@ function renderDetalheInventario(overlay, codigo, dados) {
             <div class="category-product-suggestions hidden inventario-add-suggestions"></div>
           </div>
           <label class="grid gap-1 text-sm font-bold">Contagem (un)
-            <input class="inventario-add-qty" type="number" min="0" step="1" value="0" inputmode="numeric" />
+            <input class="inventario-add-qty" type="number" min="0" step="0.01" value="0" inputmode="decimal" />
           </label>
           <button class="btn inventario-add-confirm" type="button">Adicionar</button>
         </div>
@@ -11861,7 +11995,7 @@ function renderContagemPropria(overlay, dados) {
                   data-categorias="${esc(categoriasLinha)}">
                 <td class="inventario-produto">${esc(p.nome)}<span class="inventario-sku">${esc(p.sku)}</span></td>
                 <td class="inventario-categoria">${esc(p.categoria || "-")}</td>
-                <td><input class="almox-qtd inventario-qtd" type="number" min="0" step="1" inputmode="numeric"
+                <td><input class="almox-qtd inventario-qtd" type="number" min="0" step="0.01" inputmode="decimal"
                   placeholder="—" value="${preenchido ? esc(valor) : ""}"
                   aria-label="Quantidade contada de ${esc(p.nome)}" /></td>
                 <td class="inventario-saldo">${Number(p.saldo_atual || 0)}</td>
