@@ -188,6 +188,42 @@ SET default_tablespace = '';
 SET default_table_access_method = heap;
 
 --
+-- Name: avisos; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.avisos (
+    id integer NOT NULL,
+    tipo text DEFAULT 'MANUAL'::text NOT NULL,
+    titulo text,
+    mensagem text NOT NULL,
+    ativo boolean DEFAULT true NOT NULL,
+    criado_por text,
+    criado_em timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    expira_em timestamp without time zone
+);
+
+
+--
+-- Name: avisos_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.avisos_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: avisos_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.avisos_id_seq OWNED BY public.avisos.id;
+
+
+--
 -- Name: categorias; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -910,7 +946,8 @@ CREATE TABLE public.integration_stock_launches (
     tentativas integer DEFAULT 0 NOT NULL,
     enviado_em timestamp without time zone,
     created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL
+    updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    historico_erros jsonb
 );
 
 
@@ -1056,6 +1093,127 @@ CREATE SEQUENCE public.integrations_id_seq
 --
 
 ALTER SEQUENCE public.integrations_id_seq OWNED BY public.integrations.id;
+
+
+--
+-- Name: inventario_auditoria; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.inventario_auditoria (
+    id integer NOT NULL,
+    inventario_id integer,
+    codigo_inventario text,
+    item_id integer,
+    sku_produto text,
+    acao text NOT NULL,
+    usuario text,
+    valor_anterior text,
+    valor_novo text,
+    observacao text,
+    dados jsonb DEFAULT '{}'::jsonb,
+    criado_em timestamp without time zone DEFAULT CURRENT_TIMESTAMP
+);
+
+
+--
+-- Name: inventario_auditoria_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.inventario_auditoria_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: inventario_auditoria_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.inventario_auditoria_id_seq OWNED BY public.inventario_auditoria.id;
+
+
+--
+-- Name: inventario_itens; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.inventario_itens (
+    id integer NOT NULL,
+    inventario_id integer,
+    sku_produto text,
+    quantidade_contada numeric,
+    contado_em timestamp without time zone,
+    quantidade_anterior numeric,
+    origem text DEFAULT 'PDV'::text,
+    criado_em timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    atualizado_em timestamp without time zone DEFAULT CURRENT_TIMESTAMP
+);
+
+
+--
+-- Name: inventario_itens_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.inventario_itens_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: inventario_itens_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.inventario_itens_id_seq OWNED BY public.inventario_itens.id;
+
+
+--
+-- Name: inventarios; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.inventarios (
+    id integer NOT NULL,
+    codigo_inventario text NOT NULL,
+    pdv_id integer,
+    status text DEFAULT 'Em contagem'::text NOT NULL,
+    criado_por text,
+    criado_em timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    enviado_por text,
+    enviado_em timestamp without time zone,
+    confirmado_por text,
+    confirmado_em timestamp without time zone,
+    assinatura_imagem text,
+    assinado_por text,
+    assinado_em timestamp without time zone,
+    ajuste_aplicado_em timestamp without time zone,
+    observacao text,
+    atualizado_em timestamp without time zone DEFAULT CURRENT_TIMESTAMP
+);
+
+
+--
+-- Name: inventarios_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.inventarios_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: inventarios_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.inventarios_id_seq OWNED BY public.inventarios.id;
 
 
 --
@@ -1256,7 +1414,8 @@ CREATE TABLE public.pdvs (
     senha text,
     is_cozinha boolean DEFAULT false,
     codigo_orion text,
-    categoria text
+    categoria text,
+    administrativo boolean DEFAULT false NOT NULL
 );
 
 
@@ -1536,7 +1695,7 @@ ALTER SEQUENCE public.produto_categorias_id_seq OWNED BY public.produto_categori
 CREATE TABLE public.produtos (
     sku text NOT NULL,
     nome text NOT NULL,
-    qtd_total integer DEFAULT 0,
+    qtd_total numeric DEFAULT 0,
     estoque_minimo integer DEFAULT 0,
     is_materia_prima boolean DEFAULT false,
     estoque_central integer DEFAULT 0,
@@ -1783,6 +1942,13 @@ ALTER SEQUENCE public.user_order_alert_preferences_id_seq OWNED BY public.user_o
 
 
 --
+-- Name: avisos id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.avisos ALTER COLUMN id SET DEFAULT nextval('public.avisos_id_seq'::regclass);
+
+
+--
 -- Name: categorias id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -1923,6 +2089,27 @@ ALTER TABLE ONLY public.integrations ALTER COLUMN id SET DEFAULT nextval('public
 
 
 --
+-- Name: inventario_auditoria id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.inventario_auditoria ALTER COLUMN id SET DEFAULT nextval('public.inventario_auditoria_id_seq'::regclass);
+
+
+--
+-- Name: inventario_itens id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.inventario_itens ALTER COLUMN id SET DEFAULT nextval('public.inventario_itens_id_seq'::regclass);
+
+
+--
+-- Name: inventarios id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.inventarios ALTER COLUMN id SET DEFAULT nextval('public.inventarios_id_seq'::regclass);
+
+
+--
 -- Name: omie_jobs id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -2039,6 +2226,14 @@ ALTER TABLE ONLY public.stock_snapshots ALTER COLUMN id SET DEFAULT nextval('pub
 --
 
 ALTER TABLE ONLY public.user_order_alert_preferences ALTER COLUMN id SET DEFAULT nextval('public.user_order_alert_preferences_id_seq'::regclass);
+
+
+--
+-- Name: avisos avisos_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.avisos
+    ADD CONSTRAINT avisos_pkey PRIMARY KEY (id);
 
 
 --
@@ -2287,6 +2482,46 @@ ALTER TABLE ONLY public.integration_webhooks
 
 ALTER TABLE ONLY public.integrations
     ADD CONSTRAINT integrations_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: inventario_auditoria inventario_auditoria_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.inventario_auditoria
+    ADD CONSTRAINT inventario_auditoria_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: inventario_itens inventario_itens_inventario_id_sku_produto_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.inventario_itens
+    ADD CONSTRAINT inventario_itens_inventario_id_sku_produto_key UNIQUE (inventario_id, sku_produto);
+
+
+--
+-- Name: inventario_itens inventario_itens_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.inventario_itens
+    ADD CONSTRAINT inventario_itens_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: inventarios inventarios_codigo_inventario_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.inventarios
+    ADD CONSTRAINT inventarios_codigo_inventario_key UNIQUE (codigo_inventario);
+
+
+--
+-- Name: inventarios inventarios_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.inventarios
+    ADD CONSTRAINT inventarios_pkey PRIMARY KEY (id);
 
 
 --
@@ -2562,6 +2797,13 @@ ALTER TABLE ONLY public.user_order_alert_preferences
 
 
 --
+-- Name: idx_avisos_ativo; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_avisos_ativo ON public.avisos USING btree (ativo, criado_em DESC) WHERE ativo;
+
+
+--
 -- Name: idx_devolucao_avaria_fotos_devolucao; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2723,6 +2965,34 @@ CREATE INDEX idx_integrations_provider ON public.integrations USING btree (prove
 
 
 --
+-- Name: idx_inventario_aberto_por_pdv; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_inventario_aberto_por_pdv ON public.inventarios USING btree (COALESCE(pdv_id, '-1'::integer)) WHERE (status = ANY (ARRAY['Em contagem'::text, 'Enviado'::text, 'Aguardando assinatura'::text]));
+
+
+--
+-- Name: idx_inventario_auditoria_inventario; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_inventario_auditoria_inventario ON public.inventario_auditoria USING btree (inventario_id, criado_em DESC);
+
+
+--
+-- Name: idx_inventario_itens_inventario; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_inventario_itens_inventario ON public.inventario_itens USING btree (inventario_id);
+
+
+--
+-- Name: idx_inventarios_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_inventarios_status ON public.inventarios USING btree (status, criado_em DESC);
+
+
+--
 -- Name: idx_mappings_fator_pendente; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2769,6 +3039,13 @@ CREATE INDEX idx_omie_jobs_status ON public.omie_jobs USING btree (status, creat
 --
 
 CREATE INDEX idx_omie_stock_locations_lookup ON public.omie_stock_locations USING btree (integration_id, active, name);
+
+
+--
+-- Name: idx_pdvs_administrativo; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_pdvs_administrativo ON public.pdvs USING btree (administrativo) WHERE administrativo;
 
 
 --
@@ -3057,6 +3334,14 @@ ALTER TABLE ONLY public.integration_sync_state
 
 ALTER TABLE ONLY public.integration_webhooks
     ADD CONSTRAINT integration_webhooks_integration_id_fkey FOREIGN KEY (integration_id) REFERENCES public.integrations(id) ON DELETE SET NULL;
+
+
+--
+-- Name: inventario_itens inventario_itens_inventario_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.inventario_itens
+    ADD CONSTRAINT inventario_itens_inventario_id_fkey FOREIGN KEY (inventario_id) REFERENCES public.inventarios(id) ON DELETE CASCADE;
 
 
 --

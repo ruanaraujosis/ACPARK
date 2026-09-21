@@ -65,7 +65,9 @@ test("a sobra da liberação parcial não vira pendência, só informação", ()
 
 test("saldo central negativo avisa mas não bloqueia a retirada", () => {
   assert.match(routes, /RETURNING sku, nome, qtd_total/);
-  assert.match(routes, /if \(saldo && asInt\(saldo\.qtd_total\) < 0\)/);
+  // Number(), não asInt(): qtd_total é NUMERIC (21/09/2026) e volta do driver como string --
+  // asInt("-0.5") trunca pra "-0" antes de comparar, e "-0 < 0" é falso (bug real, evitado).
+  assert.match(routes, /if \(saldo && Number\(saldo\.qtd_total\) < 0\)/);
   assert.match(app, /Estoque central negativo em/);
   // A baixa continua acontecendo mesmo com saldo negativo
   assert.doesNotMatch(routes, /Estoque central insuficiente/);

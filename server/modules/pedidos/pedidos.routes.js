@@ -1607,10 +1607,13 @@ export async function handlePedidosRoutes(req, res, context) {
           "UPDATE produtos SET qtd_total = qtd_total - $1 WHERE sku = $2 RETURNING sku, nome, qtd_total",
           [qty, row.sku_produto]
         );
-        // Saldo central negativo não bloqueia a retirada, mas volta para a tela como aviso
+        // Saldo central negativo não bloqueia a retirada, mas volta para a tela como aviso.
+        // Number(), não asInt(): qtd_total é NUMERIC e volta do driver como string ("-0.5") --
+        // asInt() truncaria pra "-0" antes de comparar, e "-0 < 0" é falso (bug real, pego
+        // antes de ampliar a coluna: um saldo negativo pequeno deixaria de avisar).
         const saldo = baixa.rows[0];
-        if (saldo && asInt(saldo.qtd_total) < 0) {
-          negativos.push({ sku: saldo.sku, nome: saldo.nome, saldo: asInt(saldo.qtd_total) });
+        if (saldo && Number(saldo.qtd_total) < 0) {
+          negativos.push({ sku: saldo.sku, nome: saldo.nome, saldo: Number(saldo.qtd_total) });
         }
         const pendente = asInt(row.quantidade_solicitada) - qty;
         if (pendente > 0) sobras.push({ sku: row.sku_produto, solicitada: asInt(row.quantidade_solicitada), liberada: qty, nao_atendida: pendente });

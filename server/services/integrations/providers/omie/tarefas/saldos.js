@@ -215,16 +215,19 @@ export async function sincronizarSaldoDeItem(contexto) {
     // Campos reais do listaEstoque: nSaldo / fisico / reservado. A documentacao promete
     // nFisico e nDisponivel, que NAO vem nesta resposta -- ler so por eles gravaria zero
     // no estoque central de todo produto.
+    //
+    // qtd_total e NUMERIC desde 21/09/2026 -- grava o valor exato, sem arredondar (mesma
+    // mudanca de estoque-almoxarifado.js, a sincronizacao em lote).
     const quantidade = saldoDoLocal(noAlmoxarifado);
     const gravou = await client.query(
       `UPDATE produtos
        SET qtd_total = $2,
-           saldo_omie = $3,
-           saldo_disponivel_acpark = $3 - COALESCE(quantidade_reservada_acpark, 0),
+           saldo_omie = $2,
+           saldo_disponivel_acpark = $2 - COALESCE(quantidade_reservada_acpark, 0),
            ultima_sincronizacao = CURRENT_TIMESTAMP,
            sincronizacao_status = 'SINCRONIZADO'
        WHERE sku = $1`,
-      [sku, Math.round(quantidade), quantidade]
+      [sku, quantidade]
     );
     if (gravou.rowCount > 0) {
       resumo.central_atualizado = true;

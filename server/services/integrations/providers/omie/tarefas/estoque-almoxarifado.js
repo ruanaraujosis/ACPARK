@@ -41,22 +41,23 @@ async function mapaDeSkus(client, integrationId, idsExternos) {
 // numero como espelho do que a OMIE respondeu, para a reconciliacao comparar depois.
 // saldo_disponivel_acpark nao e coluna gerada em "produtos" (so em estoque_pdv), entao
 // precisa ser calculada aqui.
+//
+// qtd_total e NUMERIC desde 21/09/2026 (produto de alimento contado em KG/ML nao pode perder
+// precisao) -- gravava arredondado ate essa migracao, com o valor exato preservado a parte em
+// saldo_omie so para a reconciliacao nao acusar diferenca falsa. Agora os dois guardam o
+// mesmo numero exato, entao a reconciliacao nunca diverge por arredondamento.
 async function gravarEstoqueCentral(client, sku, quantidade) {
   const exato = Number(quantidade) || 0;
-  // qtd_total e integer e o almoxarifado tem saldo fracionario de verdade (itens vendidos
-  // a granel). Arredondar aqui deixa explicito o que o Postgres faria por cast implicito;
-  // saldo_omie guarda o valor exato para a reconciliacao nao acusar diferenca falsa.
-  const inteiro = Math.round(exato);
 
   const atualizado = await client.query(
     `UPDATE produtos
      SET qtd_total = $2,
-         saldo_omie = $3,
-         saldo_disponivel_acpark = $3 - COALESCE(quantidade_reservada_acpark, 0),
+         saldo_omie = $2,
+         saldo_disponivel_acpark = $2 - COALESCE(quantidade_reservada_acpark, 0),
          ultima_sincronizacao = CURRENT_TIMESTAMP,
          sincronizacao_status = 'SINCRONIZADO'
      WHERE sku = $1`,
-    [sku, inteiro, exato]
+    [sku, exato]
   );
   return atualizado.rowCount > 0;
 }

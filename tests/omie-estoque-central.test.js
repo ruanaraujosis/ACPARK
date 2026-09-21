@@ -108,8 +108,10 @@ test("o estoque do almoxarifado vira o estoque central do produto", async () => 
   // Substitui o saldo, nunca soma: a OMIE e a fonte da verdade do estoque central
   assert.match(escritas[0].texto, /qtd_total = \$2/);
   assert.doesNotMatch(escritas[0].texto, /qtd_total = qtd_total/);
-  assert.deepEqual(escritas[0].params, ["PRD00001", 270, 270]);
-  assert.deepEqual(escritas[1].params, ["55668", 5, 5]);
+  // qtd_total e saldo_omie recebem o MESMO parametro ($2) desde que qtd_total virou NUMERIC
+  // (21/09/2026) -- um valor so, exato, sem arredondar pra um lado e guardar o outro à parte.
+  assert.deepEqual(escritas[0].params, ["PRD00001", 270]);
+  assert.deepEqual(escritas[1].params, ["55668", 5]);
 });
 
 test("saldo negativo acumulado e corrigido pelo valor da OMIE", async () => {
@@ -133,7 +135,7 @@ test("saldo negativo acumulado e corrigido pelo valor da OMIE", async () => {
   });
 
   const escrita = client.escritasEm("produtos")[0];
-  assert.deepEqual(escrita.params, ["SKU1", 42, 42], "o valor final e o da OMIE, sem depender do saldo anterior");
+  assert.deepEqual(escrita.params, ["SKU1", 42], "o valor final e o da OMIE, sem depender do saldo anterior");
 });
 
 test("a sincronizacao percorre todas as paginas da posicao de estoque", async () => {
@@ -422,10 +424,11 @@ test("sem vinculo de local, o estoque do PDV nao e tocado", async () => {
   assert.equal(client.escritasEm("estoque_pdv").length, 0, "sem vinculo nao se adivinha o PDV");
 });
 
-test("saldo fracionario do almoxarifado nao quebra a coluna inteira do estoque central", async () => {
-  // O ALMOXARIFADO real tem itens com saldo fracionario. Mandar 2,6 para uma coluna integer
-  // depende de cast implicito do Postgres; aqui o arredondamento e explicito e o valor exato
-  // fica preservado em saldo_omie.
+test("saldo fracionario do almoxarifado grava o valor exato em qtd_total, sem arredondar", async () => {
+  // qtd_total virou NUMERIC (21/09/2026): produto de alimento contado em KG/ML nao pode
+  // perder precisao. Ate essa migracao, o saldo fracionario era arredondado ao gravar
+  // (Math.round) com o valor exato preservado a parte em saldo_omie -- essa perda de
+  // precisao deixou de existir, os dois guardam o mesmo numero agora.
   const client = clientFalso([
     {
       contem: "FROM product_integration_mappings",
@@ -443,9 +446,7 @@ test("saldo fracionario do almoxarifado nao quebra a coluna inteira do estoque c
     fetchImpl: fetchFalso([posicaoEstoque([{ nCodProd: 1, cCodigo: "SKU1", nSaldo: "2,6" }])])
   });
 
-  const [, inteiro, exato] = client.escritasEm("produtos")[0].params;
-  assert.equal(inteiro, 3, "qtd_total e integer");
-  assert.equal(exato, 2.6, "saldo_omie guarda o valor exato da OMIE");
+  assert.deepEqual(client.escritasEm("produtos")[0].params, ["SKU1", 2.6], "qtd_total e saldo_omie recebem o mesmo valor exato");
 });
 
 test("saldo por item usa ObterEstoqueProduto, nao a pagina 1 da lista", async () => {
@@ -489,7 +490,7 @@ test("saldo por item usa ObterEstoqueProduto, nao a pagina 1 da lista", async ()
   // O local do almoxarifado vira estoque central
   assert.equal(resumo.central_atualizado, true);
   assert.equal(resumo.saldo_central, 270);
-  assert.deepEqual(client.escritasEm("produtos")[0].params, ["PRD00001", 270, 270]);
+  assert.deepEqual(client.escritasEm("produtos")[0].params, ["PRD00001", 270]);
 });
 
 test("saldo por item nao escreve no estoque do PDV enquanto a politica estiver desligada", async () => {
