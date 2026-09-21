@@ -3373,7 +3373,7 @@ function buildInventoryReportPrintHtml(dados) {
         h1 { margin: 0; color: #005f68; font-size: 13px; line-height: 1.1; }
         .meta { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 4px 0 0; color: #3f5962; font-size: 8px; }
         table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-        th, td { padding: 2px 3px; border: 1px solid #c9dde0; vertical-align: middle; overflow-wrap: break-word; }
+        th, td { padding: 2px 3px; border: 1.5px solid #1a1a1a; vertical-align: middle; overflow-wrap: break-word; }
         th { background: #eaf8fa; color: #005f68; font-size: 6.2px; font-weight: 800; text-transform: uppercase; line-height: 1.15; }
         thead { display: table-header-group; }
         tr { break-inside: avoid; page-break-inside: avoid; }
@@ -3385,7 +3385,7 @@ function buildInventoryReportPrintHtml(dados) {
         .relatorio-sku { display: block; color: #64848c; font-size: 5.8px; }
         .relatorio-total { font-weight: 800; }
         .relatorio-nao-contado { color: #a8bcc0; }
-        .relatorio-categoria td { background: #005f68; color: #fff; font-weight: 900; text-transform: uppercase; font-size: 7.2px; padding: 3px 4px; }
+        .relatorio-categoria td { background: #005f68; color: #fff; font-weight: 900; text-transform: uppercase; font-size: 7.2px; padding: 3px 4px; border-color: #fff; }
         .report-footer { position: fixed; right: 0; bottom: 0; left: 0; padding-top: 3px; border-top: 1px solid #d4e4e6; color: #60727a; font-size: 6.5px; text-align: center; }
         @media print {
           body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
