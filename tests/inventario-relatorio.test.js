@@ -80,7 +80,7 @@ test("o Total soma só o que foi contado -- célula em branco nunca entra como z
 
 test("produtos vêm ordenados por categoria antes do nome, senão o agrupamento visual quebra", () => {
   // Bug já visto nesta implementação: ORDER BY nome sozinho intercala categorias na saída.
-  assert.match(rota, /ORDER BY categoria, nome/);
+  assert.match(rota, /ORDER BY cp\.categoria_exibicao, p\.nome/);
 });
 
 test("o relatório é só leitura -- nenhuma escrita em estoque_pdv, produtos ou inventarios", () => {
@@ -215,8 +215,31 @@ test("Total Fardos é calculado no backend, o front só exibe (mesma responsabil
 // ===== Filtro de categoria =====
 
 test("filtro de categoria compara sem depender de acento/caixa exatos, e ausente = sem filtro", () => {
-  assert.match(rota, /UPPER\(TRIM\(COALESCE\(categoria, ''\)\)\) = ANY\(\$1\)/);
+  // Compara contra as categorias INDIVIDUAIS do produto (array), não a string combinada --
+  // selecionar só "PROTEINAS" tem que achar um produto cujo grupo é "MATERIA PRIMA, PROTEINAS".
+  assert.match(rota, /cp\.categorias_individuais && \$1::text\[\]/);
   assert.match(rota, /const categoriasFiltroChave = categoriasFiltro\.length\s*\n\s*\? new Set\(categoriasFiltro\.map\(\(v\) => v\.toUpperCase\(\)\)\)\s*\n\s*: null;/);
+});
+
+test("categoria de exibição vem de produto_categorias (produto pode ter mais de uma), com produtos.categoria só como reserva", () => {
+  // 62% dos produtos ativos não têm produtos.categoria preenchido -- a categorização real do
+  // resto do sistema (tela de contagem do PDV, permissão por categoria) vive em
+  // produto_categorias. Ignorar essa tabela deixava a maioria do catálogo fora do relatório.
+  const trecho = rota.slice(rota.indexOf("const produtos = await query"), rota.indexOf("const skusContados"));
+  assert.match(trecho, /string_agg\(DISTINCT pc\.categoria, ', ' ORDER BY pc\.categoria\)/);
+  assert.match(trecho, /FROM produto_categorias pc WHERE pc\.sku_produto = p\.sku/);
+  assert.match(trecho, /NULLIF\(TRIM\(p\.categoria\), ''\)/, "produtos.categoria só entra como reserva");
+  assert.match(trecho, /'Sem categoria'/, "nunca fica sem grupo por falta de categorização");
+});
+
+test("produto com mais de uma categoria (produto_categorias) vira UM grupo combinado, não duplica no Total", () => {
+  // Decisão do usuário (21/09/2026): mesmo padrão de SQL_PRODUTOS_DO_PDV -- "MATERIA PRIMA,
+  // PROTEINAS" é um grupo só. Duplicar a linha em cada categoria infla o Total do relatório.
+  const trecho = rota.slice(rota.indexOf("const produtos = await query"), rota.indexOf("const skusContados"));
+  assert.match(trecho, /array_agg\(DISTINCT UPPER\(TRIM\(pc\.categoria\)\)\)/);
+  // Uma linha por SKU (JOIN 1:1 com o CTE, não JOIN direto em produto_categorias que
+  // multiplicaria linhas por categoria)
+  assert.doesNotMatch(trecho, /JOIN produto_categorias[\s\S]{0,80}SELECT p\.sku, p\.nome/);
 });
 
 test("categoria filtrada estreita o catálogo de produtos consultado, não filtra em memória depois", () => {
@@ -254,8 +277,17 @@ test("local escondido pelo filtro estreita Total/Total Fardos E o critério de i
 test("rota /relatorio/filtros exige admin, não tem corte e devolve o universo inteiro (não filtrado)", () => {
   assert.match(rotaFiltros, /requireUser\(req, res, "admin"\)/);
   assert.doesNotMatch(rotaFiltros, /searchParams\.get\("corte"\)/);
-  assert.match(rotaFiltros, /WHERE ativo = TRUE AND categoria IS NOT NULL AND categoria <> ''/);
   assert.match(rotaFiltros, /FROM pdvs WHERE administrativo = FALSE/);
+});
+
+test("filtro de categorias lista nomes individuais de produto_categorias, com produtos.categoria e 'Sem categoria' de reserva", () => {
+  // Mesma correção da rota principal: produtos.categoria sozinha ("Sorveteria"/"Vinhos" nunca
+  // apareciam, por exemplo, porque só existem em produto_categorias). A lista de opções do
+  // filtro precisa enxergar as três fontes, senão o painel nunca oferece uma categoria que só
+  // existe em produto_categorias.
+  assert.match(rotaFiltros, /FROM produto_categorias pc\s*\n\s*JOIN produtos p ON p\.sku = pc\.sku_produto/);
+  assert.match(rotaFiltros, /NOT EXISTS \(SELECT 1 FROM produto_categorias pc2 WHERE pc2\.sku_produto = p\.sku\)/);
+  assert.match(rotaFiltros, /SELECT 'Sem categoria' AS categoria/);
 });
 
 // ===== Modal e botão no cabeçalho (item 4) =====

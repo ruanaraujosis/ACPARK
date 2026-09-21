@@ -3477,7 +3477,9 @@ const RELATORIO_COR_BRANCO = "FFFFFFFF";
 // silenciosamente cell.s ao escrever; ExcelJS grava fonte e preenchimento reais no styles.xml.
 async function exportInventoryReport(dados) {
   const { corte, pdvs = [], linhas = [], incluiAlmoxarifado = true, categoriasFiltro = [], locaisFiltro = [] } = dados;
-  const headers = ["Produto", "SKU", "Categoria", "Unidade de Medida",
+  // Sem coluna Categoria: ela já aparece na linha de grupo (banner) antes de cada bloco de
+  // produtos, igual a impressão -- repetir em toda linha era redundante.
+  const headers = ["Produto", "SKU", "Unidade de Medida",
     ...pdvs.map((pdv) => pdv.nome),
     ...(incluiAlmoxarifado ? ["Almoxarifado"] : []),
     "Total", "Total Fardos", "Preço Unitário", "Preço Total"];
@@ -3489,7 +3491,7 @@ async function exportInventoryReport(dados) {
   if (!window.ExcelJS) {
     // Sem a lib de estilo, cai pro .csv simples -- mesma rede de segurança do downloadWorkbook
     const linhasPlanas = linhas.map((linha) => [
-      linha.nome, linha.sku, linha.categoria, linha.unidade || "UN",
+      linha.nome, linha.sku, linha.unidade || "UN",
       ...pdvs.map((pdv) => linha.pdvs[pdv.id] ?? ""),
       ...(incluiAlmoxarifado ? [linha.almoxarifado ?? ""] : []),
       linha.total, Number(linha.totalFardos).toFixed(2), "", ""
@@ -3532,10 +3534,10 @@ async function exportInventoryReport(dados) {
   // Total Fardos raramente fecha em número inteiro (é uma divisão por fator de embalagem) --
   // formato de duas casas pra não aparecer com a precisão de ponto flutuante inteira do JS
   sheet.getColumn(colunaTotalFardos).numFmt = "0.00";
-  // SKU/Categoria/Unidade são texto curto, não número -- centralizados para não ficarem
-  // "jogados" à esquerda da coluna larga o suficiente pro cabeçalho. Produto fica de fora de
-  // propósito: nome de produto é texto longo e variável, centralizar deixaria ilegível.
-  [2, 3, 4].forEach((indice) => { sheet.getColumn(indice).alignment = { horizontal: "center" }; });
+  // Toda a planilha centralizada, Produto incluso -- pedido explícito do usuário.
+  for (let indice = 1; indice <= totalColunas; indice += 1) {
+    sheet.getColumn(indice).alignment = { horizontal: "center" };
+  }
 
   // Uma linha de categoria (destacada) antes de cada grupo -- mesmo agrupamento visual da
   // impressão, na mesma ordem em que a API já devolveu (categoria, depois nome).
@@ -3554,7 +3556,7 @@ async function exportInventoryReport(dados) {
     // null (não contado por este local no ciclo vencedor) vira célula vazia de verdade --
     // nunca "0", que é uma contagem real e diferente.
     sheet.getRow(rowIndex).values = [
-      linha.nome, linha.sku, linha.categoria, linha.unidade || "UN",
+      linha.nome, linha.sku, linha.unidade || "UN",
       ...pdvs.map((pdv) => linha.pdvs[pdv.id]),
       ...(incluiAlmoxarifado ? [linha.almoxarifado] : []),
       linha.total, linha.totalFardos, null, null
@@ -3562,7 +3564,7 @@ async function exportInventoryReport(dados) {
     rowIndex += 1;
   }
 
-  const larguras = [28, 12, 16, 8, ...pdvs.map(() => 12), ...(incluiAlmoxarifado ? [12] : []), 10, 12, 12, 12];
+  const larguras = [28, 12, 8, ...pdvs.map(() => 12), ...(incluiAlmoxarifado ? [12] : []), 10, 12, 12, 12];
   larguras.forEach((largura, indice) => { sheet.getColumn(indice + 1).width = largura; });
 
   const buffer = await workbook.xlsx.writeBuffer();

@@ -485,9 +485,34 @@ async function rotasDoAlmoxarifado(req, res, context) {
   // do relatório em si, que exige uma data de corte válida para rodar.
   if (url.pathname === "/api/admin/inventario/relatorio/filtros" && method === "GET") {
     if (!requireUser(req, res, "admin")) return true;
-    const categorias = await query(
-      "SELECT DISTINCT categoria FROM produtos WHERE ativo = TRUE AND categoria IS NOT NULL AND categoria <> '' ORDER BY categoria"
-    );
+    // Categoria de verdade vive em produto_categorias (mesma tabela que a tela de contagem do
+    // PDV usa) -- produtos.categoria sozinha deixa de fora 62% do catálogo ativo (campo nunca
+    // preenchido pra a maioria dos produtos, "Sorveteria"/"Vinhos" inclusive, que só existem em
+    // produto_categorias). Une as duas fontes: produto_categorias primeiro, produtos.categoria
+    // só pra quem não tem nenhuma linha lá, e "Sem categoria" pro que sobra sem nenhuma das duas.
+    const categorias = await query(`
+      SELECT DISTINCT categoria FROM (
+        SELECT pc.categoria AS categoria
+        FROM produto_categorias pc
+        JOIN produtos p ON p.sku = pc.sku_produto
+        WHERE p.ativo = TRUE
+        UNION
+        SELECT p.categoria AS categoria
+        FROM produtos p
+        WHERE p.ativo = TRUE
+          AND NOT EXISTS (SELECT 1 FROM produto_categorias pc2 WHERE pc2.sku_produto = p.sku)
+          AND p.categoria IS NOT NULL AND TRIM(p.categoria) <> ''
+        UNION
+        SELECT 'Sem categoria' AS categoria
+        WHERE EXISTS (
+          SELECT 1 FROM produtos p
+          WHERE p.ativo = TRUE
+            AND NOT EXISTS (SELECT 1 FROM produto_categorias pc3 WHERE pc3.sku_produto = p.sku)
+            AND (p.categoria IS NULL OR TRIM(p.categoria) = '')
+        )
+      ) todas_categorias
+      ORDER BY categoria
+    `);
     // Mesma regra da rota do relatório: administrativo não tem saldo de revenda
     const pdvs = await query("SELECT id, nome FROM pdvs WHERE administrativo = FALSE ORDER BY nome");
     send(res, 200, {
@@ -575,13 +600,41 @@ async function rotasDoAlmoxarifado(req, res, context) {
       contadoPorLocal.get(chaveDoLocal(pdvId)).set(item.sku_produto, Number(item.quantidade_contada));
     }
 
+    // Categoria de exibição/agrupamento vem de produto_categorias (produto pode ter mais de
+    // uma -- mesmo padrão já usado em SQL_PRODUTOS_DO_PDV: junta tudo numa string só, "CAT1,
+    // CAT2", e essa string vira o grupo do relatório -- decisão do usuário, 21/09/2026, pra não
+    // duplicar o produto em dois grupos nem inflar o Total). produtos.categoria só entra como
+    // fallback pra quem não tem nenhuma linha em produto_categorias; sem nenhuma das duas, cai
+    // em "Sem categoria" -- nunca fica de fora do relatório por falta de categorização.
+    //
+    // O filtro compara contra as categorias INDIVIDUAIS do produto (categorias_individuais),
+    // não contra a string combinada: selecionar só "PROTEINAS" tem que achar um produto cujo
+    // grupo de exibição é "MATERIA PRIMA, PROTEINAS", não exigir a string inteira batendo.
     const produtos = await query(
-      // Por categoria primeiro, depois nome: o relatório agrupa visualmente por categoria, e
-      // isso só funciona se as linhas da mesma categoria já vierem consecutivas.
-      `SELECT sku, nome, categoria, qtd_total FROM produtos
-       WHERE ativo = TRUE
-         AND ($1::text[] IS NULL OR UPPER(TRIM(COALESCE(categoria, ''))) = ANY($1))
-       ORDER BY categoria, nome`,
+      `WITH categoria_por_produto AS (
+         SELECT p.sku,
+                COALESCE(
+                  (SELECT string_agg(DISTINCT pc.categoria, ', ' ORDER BY pc.categoria)
+                   FROM produto_categorias pc WHERE pc.sku_produto = p.sku),
+                  NULLIF(TRIM(p.categoria), ''),
+                  'Sem categoria'
+                ) AS categoria_exibicao,
+                COALESCE(
+                  (SELECT array_agg(DISTINCT UPPER(TRIM(pc.categoria)))
+                   FROM produto_categorias pc WHERE pc.sku_produto = p.sku),
+                  CASE WHEN NULLIF(TRIM(p.categoria), '') IS NOT NULL
+                       THEN ARRAY[UPPER(TRIM(p.categoria))]
+                       ELSE ARRAY['SEM CATEGORIA'] END
+                ) AS categorias_individuais
+         FROM produtos p
+         WHERE p.ativo = TRUE
+       )
+       SELECT p.sku, p.nome, cp.categoria_exibicao AS categoria, p.qtd_total
+       FROM produtos p
+       JOIN categoria_por_produto cp ON cp.sku = p.sku
+       WHERE p.ativo = TRUE
+         AND ($1::text[] IS NULL OR cp.categorias_individuais && $1::text[])
+       ORDER BY cp.categoria_exibicao, p.nome`,
       [categoriasFiltroChave ? [...categoriasFiltroChave] : null]
     );
 
@@ -612,7 +665,8 @@ async function rotasDoAlmoxarifado(req, res, context) {
       linhas.push({
         sku: produto.sku,
         nome: produto.nome,
-        categoria: produto.categoria || "Sem categoria",
+        // categoria_exibicao já vem sempre preenchida da consulta (COALESCE até "Sem categoria")
+        categoria: produto.categoria,
         pdvs: porPdv,
         almoxarifado,
         total
