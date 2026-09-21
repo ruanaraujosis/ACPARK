@@ -70,6 +70,22 @@ export function montarPayloadFamilia({ nome, codFamilia }) {
   };
 }
 
+// Recorta a lista de categorias a criar conforme o payload do job: `apenas` escolhe pelo
+// nome (comparado sem acento e caixa, como o resto da tarefa) e `limite` corta o tamanho.
+// Nome pedido em `apenas` que nao esta pendente e simplesmente ignorado -- o job nunca cria
+// familia para categoria que ja tem vinculo.
+export function recortarPendentes(pendentes = [], payload = {}) {
+  let lista = pendentes;
+  const apenas = Array.isArray(payload?.apenas) ? payload.apenas : null;
+  if (apenas?.length) {
+    const alvos = new Set(apenas.map((n) => chaveDeCategoria(n)));
+    lista = lista.filter((nome) => alvos.has(chaveDeCategoria(nome)));
+  }
+  const limite = Number(payload?.limite);
+  if (Number.isFinite(limite) && limite > 0) lista = lista.slice(0, limite);
+  return lista;
+}
+
 // Le todas as familias do ERP
 async function lerFamilias(contexto) {
   const { integracao, segredos, fetchImpl } = contexto;
@@ -106,7 +122,8 @@ async function lerFamilias(contexto) {
 //    desativado. Foi o que aconteceu em 21/09/2026 -- a familia MANIPULADOS foi excluida no
 //    ERP e 400 produtos ficaram sem agrupamento, sem aviso nenhum.
 export async function sincronizarCategorias(contexto) {
-  const { client, integracao, segredos, configuracao, fetchImpl } = contexto;
+  const { client, integracao, segredos, configuracao, payload, fetchImpl } =
+    contexto;
   await ensureCategoriaVinculoTable(client);
 
   const resumo = {
@@ -208,8 +225,15 @@ export async function sincronizarCategorias(contexto) {
     );
   }
 
-  // Categoria local que ainda nao existe no ERP: o MyEstoque pode criar
-  const pendentes = await categoriasSemVinculo(client, integracao.id);
+  // Categoria local que ainda nao existe no ERP: o MyEstoque pode criar.
+  //
+  // O job aceita `apenas` (nomes) e `limite` no payload para que a primeira criacao real
+  // seja UMA familia conferida por uma pessoa antes do lote -- o fluxo de escrita deste
+  // projeto. Sem payload, a execucao do relogio trata todas as pendentes.
+  const pendentes = recortarPendentes(
+    await categoriasSemVinculo(client, integracao.id),
+    payload,
+  );
   if (pendentes.length) {
     const simulacao = emSimulacao(configuracao);
     const liberada = criacaoLiberada(configuracao);

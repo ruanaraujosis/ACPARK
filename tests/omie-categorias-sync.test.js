@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   codigoDeIntegracaoDaCategoria,
+  recortarPendentes,
   montarPayloadFamilia,
   proximoCodigoDeFamilia,
   sincronizarCategorias,
@@ -314,6 +315,36 @@ test("com REAL e criacao liberada, cria a familia no ERP e guarda o vinculo", as
     .filter((s) => /INSERT INTO integration_category_links/.test(s.texto))
     .pop();
   assert.equal(vinculo.valores[1], "11301185360");
+});
+
+test("o payload recorta as pendentes, para a primeira criacao real ser uma so", () => {
+  // O fluxo de escrita do projeto e sempre: simulacao -> um registro conferido -> lote.
+  const pendentes = ["MERCEARIA", "PALETAS", "XAROPES"];
+  assert.deepEqual(recortarPendentes(pendentes, { apenas: ["mercearia"] }), ["MERCEARIA"]);
+  assert.deepEqual(recortarPendentes(pendentes, { limite: 2 }), ["MERCEARIA", "PALETAS"]);
+  assert.deepEqual(recortarPendentes(pendentes, {}), pendentes, "sem payload, o relogio trata todas");
+  assert.deepEqual(recortarPendentes(pendentes, { apenas: ["NAO EXISTE"] }), [], "nome fora da lista nunca vira familia");
+});
+
+test("com apenas no payload, so a categoria escolhida e criada no ERP", async () => {
+  const client = clientFalso({
+    categorias: ["MERCEARIA", "PALETAS"],
+    semVinculo: ["MERCEARIA", "PALETAS"],
+  });
+  const impl = fetchFalso([
+    paginaDeFamilias([{ codigo: 14, codFamilia: "101", nomeFamilia: "BEBIDAS" }]),
+    { codigo: 555, codInt: "MYESTOQUE-MERCEARIA" },
+  ]);
+
+  const resumo = await sincronizarCategorias({
+    ...contexto(client, impl, { modo_escrita: "REAL", criar_familia_na_omie: "SIM" }),
+    payload: { apenas: ["MERCEARIA"] },
+  });
+
+  assert.equal(resumo.familiasCriadasNoErp, 1);
+  const envios = impl.chamadas.filter((c) => c.corpo.call === "IncluirFamilia");
+  assert.equal(envios.length, 1);
+  assert.equal(envios[0].corpo.param[0].nomeFamilia, "MERCEARIA");
 });
 
 test("o MyEstoque nunca renomeia nem exclui familia no ERP", async () => {
