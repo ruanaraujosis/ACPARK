@@ -220,6 +220,10 @@ export async function sincronizarCategorias(contexto) {
         nome,
         codFamilia: proximoCodigoDeFamilia(codigosEmUso),
       });
+      // Reserva o codigo mesmo na simulacao: sem isso as 13 categorias pendentes saiam
+      // todas com o MESMO codigo, e a simulacao mostrava um plano que nao poderia ser
+      // executado como estava.
+      codigosEmUso.push({ codFamilia: payload.codFamilia });
 
       if (!liberada || simulacao) {
         resumo.criacoesSimuladas += 1;
@@ -241,7 +245,6 @@ export async function sincronizarCategorias(contexto) {
         const codigo = resposta?.dados?.codigo;
         if (!codigo)
           throw new Error("O ERP nao devolveu o codigo da familia criada.");
-        codigosEmUso.push({ codFamilia: payload.codFamilia });
         await salvarVinculo(client, {
           integrationId: integracao.id,
           externalId: codigo,

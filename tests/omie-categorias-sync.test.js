@@ -260,6 +260,26 @@ test("em modo SIMULACAO nao envia, mesmo com a criacao liberada", async () => {
   );
 });
 
+test("na simulacao cada familia pendente recebe um codigo diferente", async () => {
+  // Defeito visto na primeira execucao real (21/09/2026): as 13 categorias pendentes saiam
+  // todas com codFamilia 103, ou seja, a simulacao mostrava um plano impossivel de executar.
+  const client = clientFalso({
+    categorias: ["MERCEARIA", "PALETAS", "XAROPES"],
+    semVinculo: ["MERCEARIA", "PALETAS", "XAROPES"],
+  });
+  const impl = fetchFalso([
+    paginaDeFamilias([{ codigo: 14, codFamilia: "101", nomeFamilia: "BEBIDAS" }]),
+  ]);
+
+  const resumo = await sincronizarCategorias(contexto(client, impl));
+
+  const codigos = resumo.avisos
+    .map((a) => (a.match(/"codFamilia":"(\d+)"/) || [])[1])
+    .filter(Boolean);
+  assert.deepEqual(codigos, ["102", "103", "104"]);
+  assert.equal(new Set(codigos).size, codigos.length, "codigo repetido tornaria a criacao impossivel");
+});
+
 test("com REAL e criacao liberada, cria a familia no ERP e guarda o vinculo", async () => {
   const client = clientFalso({
     categorias: ["MERCEARIA"],
