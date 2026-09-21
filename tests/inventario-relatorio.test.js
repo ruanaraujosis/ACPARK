@@ -166,7 +166,7 @@ test("a unidade de medida no relatório vem do cadastro OMIE (product_integratio
   // A coluna deixou de ser fixa: cada linha traz sua própria unidade, calculada no backend
   // a partir de obterFatoresEmLote (mesma consulta já usada para o fator/Total Fardos).
   const html = appJs.slice(appJs.indexOf("function buildInventoryReportPrintHtml"), appJs.indexOf("function printInventoryReport"));
-  assert.match(html, /<td class="num">\$\{esc\(linha\.unidade \|\| "UN"\)\}<\/td>/);
+  assert.match(html, /<td class="centro">\$\{esc\(linha\.unidade \|\| "UN"\)\}<\/td>/);
   const exportFn = appJs.slice(appJs.indexOf("async function exportInventoryReport"), appJs.indexOf("// View administrativa de avarias"));
   assert.match(exportFn, /linha\.unidade \|\| "UN"/);
 

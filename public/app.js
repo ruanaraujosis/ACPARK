@@ -3334,7 +3334,7 @@ function buildInventoryReportPrintHtml(dados) {
   const linhaHtml = (linha) => `
     <tr>
       <td>${esc(linha.nome)}<span class="relatorio-sku">${esc(linha.sku)}</span></td>
-      <td class="num">${esc(linha.unidade || "UN")}</td>
+      <td class="centro">${esc(linha.unidade || "UN")}</td>
       ${pdvs.map((pdv) => celula(linha.pdvs[pdv.id])).join("")}
       ${incluiAlmoxarifado ? celula(linha.almoxarifado) : ""}
       <td class="num relatorio-total">${Number(linha.total)}</td>
@@ -3374,10 +3374,11 @@ function buildInventoryReportPrintHtml(dados) {
         .meta { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 4px 0 0; color: #3f5962; font-size: 8px; }
         table { width: 100%; border-collapse: collapse; table-layout: fixed; }
         th, td { padding: 2px 3px; border: 1.5px solid #1a1a1a; vertical-align: middle; overflow-wrap: break-word; }
-        th { background: #eaf8fa; color: #005f68; font-size: 6.2px; font-weight: 800; text-transform: uppercase; line-height: 1.15; }
+        th { background: #eaf8fa; color: #005f68; font-size: 6.2px; font-weight: 800; text-transform: uppercase; line-height: 1.15; text-align: center; }
         thead { display: table-header-group; }
         tr { break-inside: avoid; page-break-inside: avoid; }
         td.num { text-align: right; font-variant-numeric: tabular-nums; }
+        td.centro { text-align: center; }
         col.produto { width: 17%; }
         col.un { width: 3.5%; }
         col.total, col.almox { width: 5.5%; }
@@ -3525,11 +3526,16 @@ async function exportInventoryReport(dados) {
   headerRow.eachCell((cell) => {
     cell.font = { bold: true, color: { argb: RELATORIO_COR_TEAL } };
     cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: RELATORIO_COR_TEAL_CLARO } };
+    cell.alignment = { horizontal: "center", vertical: "middle" };
   });
   sheet.autoFilter = { from: { row: headerRowIndex, column: 1 }, to: { row: headerRowIndex, column: totalColunas } };
   // Total Fardos raramente fecha em número inteiro (é uma divisão por fator de embalagem) --
   // formato de duas casas pra não aparecer com a precisão de ponto flutuante inteira do JS
   sheet.getColumn(colunaTotalFardos).numFmt = "0.00";
+  // SKU/Categoria/Unidade são texto curto, não número -- centralizados para não ficarem
+  // "jogados" à esquerda da coluna larga o suficiente pro cabeçalho. Produto fica de fora de
+  // propósito: nome de produto é texto longo e variável, centralizar deixaria ilegível.
+  [2, 3, 4].forEach((indice) => { sheet.getColumn(indice).alignment = { horizontal: "center" }; });
 
   // Uma linha de categoria (destacada) antes de cada grupo -- mesmo agrupamento visual da
   // impressão, na mesma ordem em que a API já devolveu (categoria, depois nome).
