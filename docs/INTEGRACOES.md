@@ -779,90 +779,28 @@ produz classificação errada, não apenas incompleta.**
 apagada. Retomar no meio soma contagem em cima da existente e infla a força das sugestões — o
 botão da tela sempre começa do 1 por isso.
 
-### A planilha de fardos como terceira fonte
+### A planilha de fardos como terceira fonte — removida em 22/09/2026
 
-`CONTROLE ESTOQUE DE BEBIDAS POR FARDO`, duas abas (abril e junho). Coluna A é o **nome de
-operação**, coluna B são as unidades por fardo. Importada pela tela (`Importar planilha de
-fardos`): o arquivo é lido **no navegador**, com a mesma biblioteca já usada na importação de
-produtos — o servidor recebe linhas, nunca um `.xlsx`, e não ganha dependência de leitor de Excel.
+Existiu uma terceira fonte: planilha manual de controle de fardos, importada pela tela e
+vinculada ao cadastro por semelhança textual de nome (`sugerirVinculos`). Ela não só corroborava:
+em vários casos (só planilha sem nota, notas 1:1 contra planilha > 1, até dois fatores distintos
+com a planilha concordando) ela **decidia o fator sozinha**, chegando a prevalecer sobre a
+leitura das notas — caso real documentado, `FANTA LARANJA`, notas ×1/×6/×12 contra planilha
+dizendo 6. O vínculo textual planilha↔cadastro também errava por natureza: o primeiro candidato
+de `ÁGUA MINERAL GÁSOSA 500ML` era o produto **oposto**, `AGUA MINERAL SEM GAS 500ML`.
 
-Só **inteiro positivo** vira fator. `UND`, `LT`, `FRD`, `cx` são cabeçalho de seção ou item
-controlado por unidade — mesmo critério estrito do resto do sistema.
+Decisão do usuário ao remover: produtos que dependiam da planilha voltam a usar só a leitura
+das notas, com a mesma confirmação humana de sempre — nenhuma decisão automática nasce daqui.
 
-**As duas abas não concordam, ao contrário do que parece.** Medido na planilha real: 103 linhas,
-72 com fator, e **16 divergências** — todas do mesmo tipo, `1` em abril e `N` em junho:
+### Como as fontes se combinam
 
-```
-CERV. AMSTEL / ANTARTICA / HEINEKEN / ORIGINAL (600ml)   1  x  24
-BALY 2L (4 sabores), MONSTER, RED BULL                   1  x   6
-RED BULL ZERO / MAÇÃ / MELÃO / POMELO / TROPICAL         1  x   4
-```
-
-A aba de junho passou a registrar o tamanho do fardo onde a de abril contava por unidade. O
-cabeçalho de seção **não explica** a diferença: `CERVEJA 600 ml → UND` é igual nas duas abas.
-
-Regra de reconciliação, deliberadamente mais fina que "as abas têm de bater":
-
-- **aba sem número não é discordância** — significa que aquela aba não foi preenchida naquele
-  período. Foi o caso de `GUARANÁ LT`, cabeçalho de seção em abril e linha com 12 em junho: o
-  número vale;
-- **dois números diferentes sim** — a planilha se contradiz, e vira conflito. A média (12,5 para
-  o `1 × 24`) seria um número que nenhuma das duas abas afirma.
-
-### O vínculo com o cadastro é textual — e erra
-
-A planilha é chaveada por nome de operação, o cadastro por SKU. `sugerirVinculos` ordena
-candidatos por palavras em comum, e a tela mostra os três melhores com a porcentagem.
-
-**Nenhum vínculo é criado automaticamente, e o motivo é medido:** o primeiro candidato de
-`ÁGUA MINERAL GÁSOSA 500ML` foi `AGUA MINERAL SEM GAS 500ML` — o produto **oposto** — porque
-divide três palavras com ele e só uma com `AGUA COM GAS`, que é o certo. Das 103 linhas, 31 não
-recebem candidato nenhum, o que é preferível a receber um errado.
-
-### Como as três fontes se combinam
-
-| Situação                                     | Resultado                                                 |
-| -------------------------------------------- | --------------------------------------------------------- |
-| notas e planilha no mesmo número             | `CONFIANCA.MAXIMA`                                        |
-| notas e planilha em números diferentes       | **a planilha prevalece** — decisão do usuário             |
-| só planilha, sem nota                        | sugere, como `EVIDENCIA_UNICA`                            |
-| notas 1:1 e planilha > 1                     | a **planilha carrega o número**, e a confiança segue nula |
-| planilha divergente entre abas               | não sugere nada                                           |
-| descrição do produto (`CX C/12`, `DP12X28G`) | confirma, **nunca promove sozinha**                       |
-
-**A planilha prevalece sobre as notas, por decisão do usuário** (23/08/2026): ela é a contagem
-física do almoxarifado, enquanto a nota reflete como o fornecedor faturou e como quem lançou o
-recebimento digitou. Caso real: `FANTA LARANJA` tem notas com ×1, ×6 e ×12 — formatos diferentes
-ao longo do tempo — e a planilha diz 6; sem essa regra o produto ficava travado em conflito
-esperando uma escolha que a planilha já responde.
-
-Duas exceções deliberadas, porque "a planilha está certa" não as alcança:
-
-- **planilha que se contradiz entre as próprias abas** não tem um número para prevalecer (as 16
-  linhas do tipo `1 × 24`);
-- **cadastro genérico** não é resolvido pela planilha: ali o problema é um código servindo
-  produtos diferentes, e carimbar um fator só esconderia isso.
-
-**Atenção a "planilha 1 contra nota > 1".** Linha de seção `UND` costuma significar "contamos
-por unidade", não "a embalagem tem 1". Medido: `TODDYNHO` (planilha 1, nota ×27), `GROWLER CHOPP
-O2` (1 contra ×6) e `XAROPE CERESER GROSELHA` (1 contra ×6) passam a sugerir fator 1. São poucos
-e ficam visíveis na tela com o número da nota ao lado (`divergeDasNotas`).
-
-O caso "notas 1:1 e planilha maior" existe por causa da água com gás: até 2025 quem lançava o
-recebimento não convertia, e 21 notas registraram 1:1 para um produto de fator 15. A planilha
-vem da contagem física do almoxarifado, então ela é que carrega o número — ainda a confirmar.
-
-Validado contra os dados reais, com o vínculo simulado (nada gravado):
-
-```
-7894900531008  AGUA COM GAS      9 notas ×15 + planilha 15  -> MAXIMA
-106.1          COCA COLA 310ML  66 notas ×15 + planilha 15  -> MAXIMA
-0019229        RED BULL          notas ×6/×4, planilha divergente -> CONFLITO
-```
-
-**A planilha é a prova de que inferir por nome é proibido:** `COCA COLA LT` = 15 e
-`COCA COLA ZERO LT` = 6; `CERV. ANTARTICA` = 15, `AMSTEL` = 12, `HEINEKEN` = 8. Mesma marca,
-mesma lata, fator diferente — qualquer heurística de nome erraria metade.
+| Situação                                      | Resultado                                            |
+| ---------------------------------------------- | ----------------------------------------------------- |
+| notas concordando                              | `CONFIANCA` sobe com o número de notas                |
+| só compra avulsa (1:1)                         | sugere fator 1, mas **não afirma** — confiança nula   |
+| mais de um fator, até 2 distintos              | `CONFLITO_EMBALAGEM`, escolha humana                  |
+| mais de 2 fatores distintos                    | `CADASTRO_GENERICO`, não é fator, é cadastro a corrigir |
+| descrição do produto (`CX C/12`, `DP12X28G`)   | confirma, **nunca promove sozinha**                   |
 
 ### Gravação
 

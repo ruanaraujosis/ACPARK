@@ -6577,54 +6577,6 @@ td input[type="number"] {
   color: #4a5a70;
 }
 
-.tag-confianca.conf-MAXIMA {
-  border-color: #9fd3ae;
-  background: #e9f9ee;
-  color: #1f6b33;
-}
-
-/* Planilha divergente entre abas: não vira fator, então precisa saltar aos olhos */
-.assistente-fontes .fonte-planilha.divergente {
-  border-color: #f3c7a6;
-  background: #fff5ec;
-  color: var(--ac-orange);
-}
-
-.planilha-item {
-  border: 1px solid #cfecef;
-  border-radius: 14px;
-  padding: 0.75rem 0.9rem;
-  background: #fbfeff;
-  display: grid;
-  gap: 0.5rem;
-}
-
-.planilha-item.divergente {
-  border-color: #f3c7a6;
-  background: #fff8f2;
-}
-
-.planilha-candidatos {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.4rem;
-}
-
-.planilha-candidatos select {
-  border: 1px solid #cfecef;
-  border-radius: 10px;
-  padding: 0.35rem 0.5rem;
-  font-size: 0.85rem;
-  background: #fff;
-  min-width: 260px;
-  max-width: 100%;
-}
-
-.importar-planilha-label {
-  cursor: pointer;
-}
-
 /* ===== Inventário do PDV (contagem física) ===== */
 
 .inventario-topo {

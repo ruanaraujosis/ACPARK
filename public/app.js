@@ -4394,16 +4394,6 @@ async function viewIntegrations(filters = {}) {
     : { sugestoes: [], resumo: {} };
   const resumoEvidencia = evidenciaData.resumo || {};
 
-  // Planilha de controle de fardos: fonte de corroboracao, com sua propria fila de vinculo
-  const planilhaData = integracaoAtiva
-    ? await request(`/api/admin/integrations/fator-planilha?id=${integracaoAtiva.id}`).catch(() => ({
-        linhas: [],
-        pendencias: []
-      }))
-    : { linhas: [], pendencias: [] };
-  const linhasPlanilha = planilhaData.linhas || [];
-  const pendenciasVinculo = planilhaData.pendencias || [];
-
   // Busca por texto acontece na tela: a lista já vem limitada e filtrar aqui evita ida ao servidor
   const termoBusca = String(filtroEvidencia.busca || "").trim().toUpperCase();
   const sugestoesEvidencia = (evidenciaData.sugestoes || []).filter((item) => {
@@ -4424,7 +4414,6 @@ async function viewIntegrations(filters = {}) {
     SEM_EVIDENCIA: "Sem evidência"
   };
   const rotuloConfianca = {
-    MAXIMA: "Confiança máxima",
     ALTA: "Confiança alta",
     MEDIA: "Confiança média",
     UNICA: "Evidência única"
@@ -4435,13 +4424,6 @@ async function viewIntegrations(filters = {}) {
     if (!fontes) return "";
     const partes = [];
     if (fontes.notas) partes.push(`<span class="fonte-notas">Notas: ×${esc(fontes.notas.fator)} (${esc(fontes.notas.vezes)})</span>`);
-    if (fontes.planilha) {
-      partes.push(
-        fontes.planilha.divergente
-          ? `<span class="fonte-planilha divergente">Planilha "${esc(fontes.planilha.nome_operacao)}": abas discordam</span>`
-          : `<span class="fonte-planilha">Planilha "${esc(fontes.planilha.nome_operacao)}": ×${esc(fontes.planilha.fator)}</span>`
-      );
-    }
     if (fontes.descricao) partes.push(`<span class="fonte-descricao">Descrição: ×${esc(fontes.descricao.fator)} ("${esc(fontes.descricao.trecho)}")</span>`);
     return partes.length ? `<div class="assistente-fontes">${partes.join("")}</div>` : "";
   };
@@ -4727,9 +4709,6 @@ async function viewIntegrations(filters = {}) {
           ${integrations.length
             ? `<button class="btn secondary varrer-evidencia" type="button" data-id="${integrations[0].id}">Varrer histórico</button>
                <button class="btn secondary exportar-evidencia" type="button">Exportar planilha</button>
-               <label class="btn secondary importar-planilha-label">Importar planilha de fardos
-                 <input type="file" class="importar-planilha" accept=".xlsx,.xls" hidden />
-               </label>
                <button class="btn secondary escrever-fatores" type="button" data-id="${integrations[0].id}">Gravar aprovados no ERP</button>`
             : ""}
         </div>
@@ -4742,7 +4721,6 @@ async function viewIntegrations(filters = {}) {
 
       <div class="integration-secret-list">
         <span>Aguardando conferência: ${esc(resumoEvidencia.aguardando_revisao || 0)}</span>
-        <span>Confiança máxima: ${esc(resumoEvidencia.confianca_maxima || 0)}</span>
         <span>Confiança alta: ${esc(resumoEvidencia.confianca_alta || 0)}</span>
         <span>Confiança média: ${esc(resumoEvidencia.confianca_media || 0)}</span>
         <span>Evidência única: ${esc(resumoEvidencia.evidencia_unica || 0)}</span>
@@ -4791,50 +4769,6 @@ async function viewIntegrations(filters = {}) {
             resumoEvidencia.total
               ? "Nenhum produto nesta fila com os filtros atuais."
               : "Nenhuma evidência ainda. Use “Varrer histórico” para ler as notas de compra do ERP."
-          }</div>`}
-    </section>
-
-    <section class="card mt-4" id="planilha-fardos">
-      <h3 class="section-title text-xl font-black">Planilha de fardos — vínculo com o cadastro</h3>
-      <p class="text-sm text-slate-500">
-        A planilha é chaveada por <strong>nome de operação</strong>, não por SKU. O casamento é
-        textual e <strong>erra</strong> — medido: o primeiro candidato de “ÁGUA MINERAL GÁSOSA
-        500ML” foi “AGUA MINERAL SEM GAS 500ML”, o produto oposto. Por isso nenhum vínculo é
-        criado sozinho.
-      </p>
-      <div class="integration-secret-list">
-        <span>Linhas: ${esc(linhasPlanilha.length)}</span>
-        <span>Vinculadas: ${esc(linhasPlanilha.filter((l) => l.external_product_id).length)}</span>
-        <span class="${pendenciasVinculo.length ? "pendente" : ""}">Aguardando vínculo: ${esc(pendenciasVinculo.length)}</span>
-        <span class="${linhasPlanilha.some((l) => l.divergente) ? "pendente" : ""}">Abas discordam: ${esc(linhasPlanilha.filter((l) => l.divergente).length)}</span>
-      </div>
-      ${pendenciasVinculo.length
-        ? `<div class="assistente-lista">${pendenciasVinculo.slice(0, 60).map((linha) => `
-            <article class="planilha-item ${linha.divergente ? "divergente" : ""}">
-              <header>
-                <div>
-                  <strong>${esc(linha.nome_operacao)}</strong>
-                  <span class="assistente-sku">${linha.secao ? `seção ${esc(linha.secao)} · ` : ""}${
-                    linha.divergente
-                      ? `abas discordam: ${esc(Object.values(linha.valores_por_aba || {}).filter((v) => v !== null).join(" x "))}`
-                      : `fator ${esc(linha.fator ?? "—")}`
-                  }</span>
-                </div>
-              </header>
-              <div class="planilha-candidatos">
-                ${linha.candidatos?.length
-                  ? `<select class="vinculo-produto" data-linha="${esc(linha.nome_operacao)}">
-                       <option value="">Escolha o produto…</option>
-                       ${linha.candidatos.map((c) => `<option value="${esc(c.external_product_id)}">${esc(c.nome || c.sku)} [${esc(c.sku)}] — ${esc(Math.round(c.semelhanca * 100))}%</option>`).join("")}
-                     </select>
-                     <button class="btn vincular-linha" type="button" data-linha="${esc(linha.nome_operacao)}">Vincular</button>`
-                  : `<em class="text-sm text-slate-500">Nenhum candidato parecido — vincule pelo cadastro do produto.</em>`}
-              </div>
-            </article>`).join("")}</div>`
-        : `<div class="empty-state">${
-            linhasPlanilha.length
-              ? "Todas as linhas da planilha estão vinculadas."
-              : "Nenhuma planilha importada ainda. Use “Importar planilha de fardos”."
           }</div>`}
     </section>
 
@@ -5305,79 +5239,6 @@ async function viewIntegrations(filters = {}) {
     })
   );
 
-
-  // Importa a planilha de fardos. O arquivo é lido AQUI, no navegador, com a mesma biblioteca
-  // já usada na importação de produtos — o servidor recebe linhas, não um .xlsx.
-  document.querySelectorAll(".importar-planilha").forEach((input) =>
-    input.addEventListener("change", async () => {
-      const arquivo = input.files?.[0];
-      if (!arquivo) return;
-      if (!integracaoAtiva) {
-        toast("Cadastre uma integração antes de importar a planilha.", "error");
-        return;
-      }
-      if (!window.XLSX) {
-        toast("Leitor de Excel indisponível. Recarregue a página e tente novamente.", "error");
-        return;
-      }
-      try {
-        const workbook = window.XLSX.read(await arquivo.arrayBuffer(), { type: "array", raw: true });
-        // Colunas A (nome de operação) e B (unidades por fardo) de cada aba
-        const abas = {};
-        for (const nomeAba of workbook.SheetNames) {
-          abas[nomeAba] = window.XLSX.utils
-            .sheet_to_json(workbook.Sheets[nomeAba], { header: 1, raw: true, defval: "" })
-            .map((linha) => ({ nome: linha[0], valor: linha[1] }))
-            .filter((linha) => String(linha.nome || "").trim());
-        }
-        const resposta = await request("/api/admin/integrations/fator-planilha/importar", {
-          method: "POST",
-          body: JSON.stringify({ id: integracaoAtiva.id, abas }),
-          loadingMessage: "Importando planilha de fardos..."
-        });
-        const r = resposta.resumo || {};
-        toast(
-          `${r.linhas_lidas} linha(s): ${r.com_fator} com fator, ${r.divergentes} com abas discordando.`,
-          r.divergentes ? "error" : "success"
-        );
-        await recarregar();
-      } catch (error) {
-        toast(error.message || "Não foi possível importar a planilha.", "error");
-      } finally {
-        input.value = "";
-      }
-    })
-  );
-
-  // Vincula uma linha da planilha ao produto escolhido. Sempre escolha explícita: o candidato
-  // sugerido é só uma ordenação por semelhança de nome, e ela erra.
-  document.querySelectorAll(".vincular-linha").forEach((button) =>
-    button.addEventListener("click", async () => {
-      const cartao = button.closest(".planilha-item");
-      const select = cartao?.querySelector(".vinculo-produto");
-      const produto = select?.value;
-      if (!produto) {
-        toast("Escolha o produto antes de vincular.", "error");
-        select?.focus();
-        return;
-      }
-      try {
-        await request("/api/admin/integrations/fator-planilha/vincular", {
-          method: "POST",
-          body: JSON.stringify({
-            id: integracaoAtiva.id,
-            nome_operacao: button.dataset.linha,
-            external_product_id: produto
-          }),
-          loadingMessage: "Vinculando linha da planilha..."
-        });
-        toast("Vínculo registrado. A planilha passa a corroborar o fator deste produto.");
-        await recarregar();
-      } catch (error) {
-        toast(error.message || "Não foi possível vincular.", "error");
-      }
-    })
-  );
 
   // Dispara a releitura de fatores depois de configurar as características no ERP
   document.querySelectorAll(".reler-fatores").forEach((button) =>

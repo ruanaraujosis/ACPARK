@@ -1,4 +1,4 @@
-import { interpretarFator } from "./fator-conversao.js";
+import { interpretarFator, STATUS_FATOR } from "./fator-conversao.js";
 
 // Regras de derivacao do fator de conversao a partir de evidencia documental de compra.
 //
@@ -34,8 +34,6 @@ export const SITUACAO = {
 };
 
 export const CONFIANCA = {
-  // Notas de compra e planilha de fardos concordando: duas fontes independentes
-  MAXIMA: "MAXIMA",
   ALTA: "ALTA",
   MEDIA: "MEDIA",
   UNICA: "UNICA"
@@ -143,32 +141,12 @@ export function derivarDoGemeo(gemeo) {
   };
 }
 
-// Reune as tres fontes num objeto so, para a tela mostrar de onde veio cada numero
-function montarFontes(fatorDasNotas, planilha, descricao) {
+// Reune as fontes num objeto so, para a tela mostrar de onde veio cada numero
+function montarFontes(fatorDasNotas, descricao) {
   return {
     notas: fatorDasNotas ? { fator: fatorDasNotas.fator, vezes: fatorDasNotas.vezes } : null,
-    planilha: planilha
-      ? {
-          nome_operacao: planilha.nome_operacao,
-          fator: planilha.fator,
-          divergente: Boolean(planilha.divergente),
-          valores_por_aba: planilha.valores_por_aba || null
-        }
-      : null,
     descricao: descricao ? { fator: descricao.fator, trecho: descricao.trecho } : null
   };
-}
-
-// Sobe a confianca para MAXIMA quando notas e planilha dizem o mesmo numero.
-//
-// Duas fontes independentes concordando e o padrao mais forte que este sistema alcanca: uma
-// vem do documento fiscal, a outra da contagem fisica do almoxarifado. A descricao do produto
-// e a terceira fonte, mas NAO promove sozinha -- e texto livre digitado no cadastro.
-function combinarConfianca(confiancaDasNotas, fator, planilha) {
-  if (planilha && planilha.fator && !planilha.divergente && planilha.fator === fator) {
-    return CONFIANCA.MAXIMA;
-  }
-  return confiancaDasNotas;
 }
 
 // Transforma toda a evidencia de um produto numa situacao e, quando cabivel, numa sugestao.
@@ -206,26 +184,12 @@ export function derivarSugestao(evidencias, corroboracao = {}) {
 }
 
 function derivarBruto(evidencias, corroboracao = {}) {
-  const { planilha = null, descricao = null } = corroboracao;
+  const { descricao = null } = corroboracao;
   const linhas = (Array.isArray(evidencias) ? evidencias : [])
     .map((e) => ({ fator: Number(e.fator), vezes: Number(e.vezes) || 0, documento: e.documento }))
     .filter((e) => Number.isInteger(e.fator) && e.fator >= 1);
 
   if (!linhas.length) {
-    // Sem nota, mas com a planilha vinculada: ela sozinha sugere, como evidencia unica.
-    // Continua exigindo confirmacao -- uma fonte so nunca fecha questao.
-    if (planilha && planilha.fator && !planilha.divergente) {
-      return {
-        situacao: SITUACAO.SUGERIDO,
-        fator: planilha.fator,
-        vezes: 0,
-        confianca: CONFIANCA.UNICA,
-        exigeConfirmacao: true,
-        opcoes: [],
-        fontes: montarFontes(null, planilha, descricao),
-        motivo: `Sem nota de compra no periodo. A planilha de fardos diz ${planilha.fator} para "${planilha.nome_operacao}".`
-      };
-    }
     return {
       situacao: SITUACAO.SEM_EVIDENCIA,
       fator: null,
@@ -233,11 +197,8 @@ function derivarBruto(evidencias, corroboracao = {}) {
       confianca: null,
       exigeConfirmacao: true,
       opcoes: [],
-      fontes: montarFontes(null, planilha, descricao),
-      motivo:
-        planilha && planilha.divergente
-          ? "Sem nota de compra, e a planilha se contradiz entre as abas. Confira a embalagem real."
-          : "Nenhuma nota de compra encontrada para este produto no periodo varrido."
+      fontes: montarFontes(null, descricao),
+      motivo: "Nenhuma nota de compra encontrada para este produto no periodo varrido."
     };
   }
 
@@ -261,18 +222,8 @@ function derivarBruto(evidencias, corroboracao = {}) {
       confianca: null,
       exigeConfirmacao: true,
       opcoes: [],
-      fontes: montarFontes({ fator: 1, vezes: notas }, planilha, descricao),
-      // A planilha vence a leitura de "avulso": ela vem da contagem fisica, e a nota 1:1 pode
-      // significar apenas que ninguem converteu no lancamento -- foi exatamente o que
-      // aconteceu com a agua com gas ate 2025.
-      ...(planilha && planilha.fator > 1 && !planilha.divergente
-        ? {
-            fator: planilha.fator,
-            motivo: `As ${notas} nota(s) registram 1:1, mas a planilha de fardos diz ${planilha.fator} para "${planilha.nome_operacao}". Nota 1:1 costuma significar que quem lancou nao converteu, e a planilha vem da contagem fisica. Confira antes de confirmar.`
-          }
-        : {
-            motivo: `${notas} nota(s) mostram compra avulsa, mas isso NAO prova fator 1: quando quem lanca o recebimento nao converte, a nota registra a mesma quantidade dos dois lados. Confira a embalagem real antes de confirmar.`
-          })
+      fontes: montarFontes({ fator: 1, vezes: notas }, descricao),
+      motivo: `${notas} nota(s) mostram compra avulsa, mas isso NAO prova fator 1: quando quem lanca o recebimento nao converte, a nota registra a mesma quantidade dos dois lados. Confira a embalagem real antes de confirmar.`
     };
   }
 
@@ -284,43 +235,6 @@ function derivarBruto(evidencias, corroboracao = {}) {
   }));
 
   const nomesDivergem = descricoesDivergem(linhas);
-
-  // A planilha prevalece sobre as notas -- inclusive quando as notas se contradizem.
-  //
-  // Decisao do usuario: a planilha e a contagem fisica do almoxarifado e esta correta. Caso
-  // real: FANTA LARANJA tem notas com x1, x6 e x12 (formatos diferentes ao longo do tempo), e
-  // a planilha diz 6. Sem esta regra o produto ficava travado em CONFLITO_EMBALAGEM esperando
-  // uma escolha que a planilha ja responde.
-  //
-  // Duas excecoes deliberadas:
-  //   - cadastro generico (dispersao alta) NAO e resolvido pela planilha: ali o problema e um
-  //     codigo servindo produtos diferentes, e carimbar um fator so esconderia isso;
-  //   - planilha que se contradiz entre as proprias abas nao tem numero para prevalecer.
-  const planilhaDecide =
-    planilha && planilha.fator && !planilha.divergente && acimaDeUm.length <= FATORES_DISTINTOS_ATE_CONFLITO;
-
-  // Nome divergente entre notas NAO bloqueia a planilha: ja foi medido que cada fornecedor
-  // escreve o mesmo produto de um jeito, e isso derrubaria justamente casos como a FANTA.
-  if (planilhaDecide) {
-    const fatorDasNotas = acimaDeUm[0];
-    const concordam = planilha.fator === fatorDasNotas.fator;
-    return {
-      situacao: SITUACAO.SUGERIDO,
-      fator: planilha.fator,
-      vezes: concordam ? fatorDasNotas.vezes : 0,
-      confianca: concordam ? CONFIANCA.MAXIMA : CONFIANCA.ALTA,
-      exigeConfirmacao: true,
-      opcoes: concordam
-        ? opcoes
-        : [{ fator: planilha.fator, vezes: 0, confianca: null, origem: "PLANILHA", documento: null }, ...opcoes],
-      fontes: montarFontes(fatorDasNotas, planilha, descricao),
-      ...(concordam ? {} : { divergeDasNotas: fatorDasNotas.fator }),
-      tambemAvulso: avulso ? avulso.vezes : 0,
-      motivo: concordam
-        ? `${fatorDasNotas.vezes} nota(s) e a planilha de fardos concordam que a embalagem tem ${planilha.fator}.`
-        : `A planilha de fardos diz ${planilha.fator} para "${planilha.nome_operacao}" e prevalece. As notas registram ${acimaDeUm.map((o) => `${o.fator} (${o.vezes}x)`).join(" e ")} -- outros formatos de embalagem, ou conversao nao feita no lancamento.`
-    };
-  }
 
   if (acimaDeUm.length > FATORES_DISTINTOS_ATE_CONFLITO) {
     return {
@@ -351,50 +265,20 @@ function derivarBruto(evidencias, corroboracao = {}) {
   }
 
   const fatorDasNotas = acimaDeUm[0];
-  const fontes = montarFontes(fatorDasNotas, planilha, descricao);
-
-  // Planilha com numero diferente do das notas: A PLANILHA PREVALECE.
-  //
-  // Decisao do usuario, que conhece a operacao: a planilha e a contagem fisica do
-  // almoxarifado, e a nota reflete como o fornecedor faturou e como quem lancou o
-  // recebimento digitou -- os dois podem estar certos sobre coisas diferentes, e o numero
-  // que interessa ao PDV e o da contagem. Caso real: FANTA LARANJA, 43 notas dizendo 12
-  // (caixa) contra a planilha dizendo 6 (fardo).
-  //
-  // Isso NAO vale quando a planilha se contradiz entre as proprias abas: ali ela nao tem um
-  // numero para prevalecer, e a decisao volta a ser humana.
-  if (planilha && planilha.fator && !planilha.divergente && planilha.fator !== fatorDasNotas.fator) {
-    return {
-      situacao: SITUACAO.SUGERIDO,
-      fator: planilha.fator,
-      vezes: 0,
-      confianca: CONFIANCA.ALTA,
-      exigeConfirmacao: true,
-      opcoes: [
-        { fator: planilha.fator, vezes: 0, confianca: null, origem: "PLANILHA", documento: null },
-        ...opcoes
-      ],
-      fontes,
-      divergeDasNotas: fatorDasNotas.fator,
-      motivo: `A planilha de fardos diz ${planilha.fator} para "${planilha.nome_operacao}" e prevalece. As ${fatorDasNotas.vezes} nota(s) registram ${fatorDasNotas.fator} -- provavelmente outro formato de embalagem, ou conversao nao feita no lancamento.`
-    };
-  }
+  const fontes = montarFontes(fatorDasNotas, descricao);
 
   return {
     situacao: SITUACAO.SUGERIDO,
     fator: fatorDasNotas.fator,
     vezes: fatorDasNotas.vezes,
-    confianca: combinarConfianca(classificarConfianca(fatorDasNotas.vezes), fatorDasNotas.fator, planilha),
+    confianca: classificarConfianca(fatorDasNotas.vezes),
     exigeConfirmacao: true,
     fontes,
     // Produto tambem comprado avulso nao invalida a sugestao: a leitura certa e "quando vem
     // em embalagem, a embalagem tem N". A tela mostra as duas linhas para quem for conferir.
     tambemAvulso: avulso ? avulso.vezes : 0,
     opcoes,
-    motivo:
-      planilha && planilha.fator === fatorDasNotas.fator
-        ? `${fatorDasNotas.vezes} nota(s) e a planilha de fardos concordam que a embalagem tem ${fatorDasNotas.fator}.`
-        : `${fatorDasNotas.vezes} nota(s) concordam que a embalagem tem ${fatorDasNotas.fator}.`
+    motivo: `${fatorDasNotas.vezes} nota(s) concordam que a embalagem tem ${fatorDasNotas.fator}.`
   };
 }
 
@@ -410,4 +294,34 @@ export function descreverEvidencia(documento) {
   const doc = `${quantidade_documento} ${unidade_documento || ""}`.trim();
   const estoque = `${quantidade_estoque} ${unidade_estoque || ""}`.trim();
   return `${doc} → ${estoque}`;
+}
+
+// Le um fator escrito na propria descricao do produto ("CX C/12", "FD 15", "PCT C/ 6").
+//
+// Terceira fonte, a mais fraca das duas restantes: e texto livre digitado no cadastro. Nunca
+// vale sozinha contra a evidencia de nota -- entra so como confirmacao adicional na tela.
+const PADROES_DESCRICAO = [
+  // "CX C/12", "PCT C/ 6", "FD C/24"
+  /\b(?:CX|CAIXA|FD|FARDO|PCT|PACOTE|DP|DISPLAY)\s*C\/?\s*(\d{1,4})\b/i,
+  // "FD 15", "CX 12"
+  /\b(?:CX|CAIXA|FD|FARDO|PCT|PACOTE|DP|DISPLAY)\s+(\d{1,4})\b/i,
+  // "DP12X28G", "CX6X1250" -- sigla colada no numero, sem espaco nenhum
+  /\b(?:CX|CAIXA|FD|FARDO|PCT|PACOTE|DP|DISPLAY)\s*(\d{1,4})\s*X\s*\d+/i,
+  // "6X290ML", "12X28G" -- o primeiro numero e a contagem da embalagem
+  /\b(\d{1,4})\s*X\s*\d+\s*(?:ML|G|L|KG)\b/i,
+  // "C/12"
+  /\bC\/\s*(\d{1,4})\b/i
+];
+
+export function lerFatorDaDescricao(descricao) {
+  const texto = String(descricao || "");
+  for (const padrao of PADROES_DESCRICAO) {
+    const achado = texto.match(padrao);
+    if (!achado) continue;
+    const leitura = interpretarFator(achado[1]);
+    if (leitura.status === STATUS_FATOR.DEFINIDO && leitura.fator > 1) {
+      return { fator: leitura.fator, trecho: achado[0].trim() };
+    }
+  }
+  return null;
 }

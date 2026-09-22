@@ -4,9 +4,11 @@ import assert from "node:assert/strict";
 import {
   classificarConfianca,
   CONFIANCA,
+  derivarDoGemeo,
   derivarSugestao,
   ehPendenciaDeCadastro,
   interpretarRazao,
+  lerFatorDaDescricao,
   SITUACAO,
   unidadeSuspeita
 } from "../server/services/integrations/core/fator-evidencia.js";
@@ -317,4 +319,52 @@ test("fator 1 sai da fila de conferencia, venha de onde vier", () => {
       assert.equal(r.nadaAConfigurar, true);
     }
   }
+});
+
+test("fator escrito na descricao e lido, mas so como terceira fonte", () => {
+  assert.deepEqual(lerFatorDaDescricao("REFRIGERANTE CX C/12"), { fator: 12, trecho: "CX C/12" });
+  assert.equal(lerFatorDaDescricao("DEL VAL PESS LT 6X290ML").fator, 6);
+  assert.equal(lerFatorDaDescricao("CHOC LACTA DP12X28G LAKA").fator, 12);
+  assert.equal(lerFatorDaDescricao("PAPEL HIG SMART CX 6X1250").fator, 6);
+
+  // Descricao sem padrao nenhum nao inventa numero
+  assert.equal(lerFatorDaDescricao("AGUA COM GAS"), null);
+  assert.equal(lerFatorDaDescricao("COCA COLA 310ML"), null, "310ML e volume, nao contagem");
+  assert.equal(lerFatorDaDescricao(""), null);
+});
+
+test("a descricao sozinha nao promove a confianca", () => {
+  // Terceira fonte e texto livre digitado no cadastro: confirma, nunca decide. Removida a
+  // planilha (21/09/2026), MAXIMA deixou de existir -- o teto agora e ALTA.
+  const resultado = derivarSugestao([{ fator: 6, vezes: 5, documento: {} }], {
+    descricao: { fator: 6, trecho: "6X290ML" }
+  });
+  assert.equal(resultado.confianca, CONFIANCA.ALTA);
+  assert.equal(resultado.fontes.descricao.fator, 6);
+});
+
+test("cadastro duplicado herda o fator do gemeo, e so ele", () => {
+  // A OMIE guarda o mesmo item fisico duas vezes -- um cadastro pelo codigo interno e outro
+  // pelo EAN -- e duplicado nao pode ser excluido, so inativado. Um fardo tem a mesma
+  // quantidade nos dois registros, entao o fator vale para os dois.
+  const gemeo = { fator: 45, sku: "7854", nome: "PICOLE BATON 45G" };
+  const herdado = derivarDoGemeo(gemeo);
+  assert.equal(herdado.situacao, SITUACAO.SUGERIDO);
+  assert.equal(herdado.fator, 45);
+  assert.equal(herdado.exigeConfirmacao, true);
+  // Sem rotulo de confianca: a evidencia e do gemeo, nao deste cadastro
+  assert.equal(herdado.confianca, null);
+  assert.equal(herdado.herdadoDe.sku, "7854");
+  assert.match(herdado.motivo, /mesmo item fisico/i);
+});
+
+test("gemeo sem fator, ou com fator 1, nao propaga nada", () => {
+  // Herdar "1" seria transformar ausencia de evidencia em afirmacao
+  assert.equal(derivarDoGemeo({ fator: 1, sku: "x", nome: "y" }), null);
+  assert.equal(derivarDoGemeo({ fator: null, sku: "x", nome: "y" }), null);
+  assert.equal(derivarDoGemeo(null), null);
+});
+
+test("CONFIANCA nao tem mais o nivel MAXIMA -- removido junto com a planilha de fardos", () => {
+  assert.equal(CONFIANCA.MAXIMA, undefined);
 });

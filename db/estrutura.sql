@@ -816,45 +816,6 @@ ALTER SEQUENCE public.integration_factor_evidence_id_seq OWNED BY public.integra
 
 
 --
--- Name: integration_factor_sheet; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.integration_factor_sheet (
-    id bigint NOT NULL,
-    integration_id bigint NOT NULL,
-    nome_operacao text NOT NULL,
-    fator integer,
-    divergente boolean DEFAULT false NOT NULL,
-    valores_por_aba jsonb,
-    secao text,
-    external_product_id text,
-    vinculado_por text,
-    vinculado_em timestamp without time zone,
-    importado_em timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
-    atualizado_em timestamp without time zone DEFAULT CURRENT_TIMESTAMP
-);
-
-
---
--- Name: integration_factor_sheet_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-CREATE SEQUENCE public.integration_factor_sheet_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
---
--- Name: integration_factor_sheet_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
---
-
-ALTER SEQUENCE public.integration_factor_sheet_id_seq OWNED BY public.integration_factor_sheet.id;
-
-
---
 -- Name: integration_jobs; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2085,13 +2046,6 @@ ALTER TABLE ONLY public.integration_factor_evidence ALTER COLUMN id SET DEFAULT 
 
 
 --
--- Name: integration_factor_sheet id; Type: DEFAULT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.integration_factor_sheet ALTER COLUMN id SET DEFAULT nextval('public.integration_factor_sheet_id_seq'::regclass);
-
-
---
 -- Name: integration_jobs id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -2463,14 +2417,6 @@ ALTER TABLE ONLY public.integration_factor_decisions
 
 ALTER TABLE ONLY public.integration_factor_evidence
     ADD CONSTRAINT integration_factor_evidence_pkey PRIMARY KEY (id);
-
-
---
--- Name: integration_factor_sheet integration_factor_sheet_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.integration_factor_sheet
-    ADD CONSTRAINT integration_factor_sheet_pkey PRIMARY KEY (id);
 
 
 --
@@ -2984,13 +2930,6 @@ CREATE INDEX idx_factor_evidence_produto ON public.integration_factor_evidence U
 
 
 --
--- Name: idx_factor_sheet_produto; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_factor_sheet_produto ON public.integration_factor_sheet USING btree (integration_id, external_product_id);
-
-
---
 -- Name: idx_integration_jobs_priority; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3212,13 +3151,6 @@ CREATE UNIQUE INDEX uq_factor_decisions ON public.integration_factor_decisions U
 --
 
 CREATE UNIQUE INDEX uq_factor_evidence ON public.integration_factor_evidence USING btree (integration_id, external_product_id, fator);
-
-
---
--- Name: uq_factor_sheet_nome; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX uq_factor_sheet_nome ON public.integration_factor_sheet USING btree (integration_id, nome_operacao);
 
 
 --

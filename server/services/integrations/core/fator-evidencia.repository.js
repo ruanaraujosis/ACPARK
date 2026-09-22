@@ -1,6 +1,4 @@
-import { derivarDoGemeo, derivarSugestao, ehPendenciaDeCadastro, SITUACAO } from "./fator-evidencia.js";
-import { lerFatorDaDescricao } from "./fator-planilha.js";
-import { mapaPorProduto } from "./fator-planilha.repository.js";
+import { derivarDoGemeo, derivarSugestao, ehPendenciaDeCadastro, lerFatorDaDescricao, SITUACAO } from "./fator-evidencia.js";
 
 // Acesso as tabelas do assistente de fator: a evidencia colhida dos documentos de compra e
 // a decisao humana tomada em cima dela.
@@ -144,9 +142,6 @@ export async function listarSugestoes(client, integrationId, filtros = {}) {
     [integrationId]
   );
 
-  // Uma consulta so para toda a planilha: buscar linha a linha faria uma ida ao banco por
-  // produto, e a tela lista milhares deles.
-  const planilhaPorProduto = await mapaPorProduto(client, integrationId);
   const gemeos = await mapaDeGemeos(client, integrationId);
 
   // Agrupa por produto para derivar a situacao com TODA a evidencia dele em maos
@@ -189,7 +184,6 @@ export async function listarSugestoes(client, integrationId, filtros = {}) {
     derivados.set(
       String(produto.external_product_id),
       derivarSugestao(produto.evidencias, {
-        planilha: planilhaPorProduto.get(String(produto.external_product_id)) || null,
         descricao: lerFatorDaDescricao(produto.nome)
       })
     );
@@ -297,7 +291,6 @@ export async function resumirSugestoes(client, integrationId) {
     conflito_embalagem: 0,
     cadastro_generico: 0,
     so_avulso: 0,
-    confianca_maxima: 0,
     confianca_alta: 0,
     confianca_media: 0,
     evidencia_unica: 0,
@@ -313,8 +306,7 @@ export async function resumirSugestoes(client, integrationId) {
     else if (item.situacao === SITUACAO.CADASTRO_GENERICO) resumo.cadastro_generico += 1;
     else if (item.situacao === SITUACAO.SO_AVULSO) resumo.so_avulso += 1;
 
-    if (item.confianca === "MAXIMA") resumo.confianca_maxima += 1;
-    else if (item.confianca === "ALTA") resumo.confianca_alta += 1;
+    if (item.confianca === "ALTA") resumo.confianca_alta += 1;
     else if (item.confianca === "MEDIA") resumo.confianca_media += 1;
     else if (item.confianca === "UNICA") resumo.evidencia_unica += 1;
 
