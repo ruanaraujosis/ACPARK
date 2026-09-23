@@ -25,6 +25,15 @@ import { auditarInventario, CHAVE_AGENDAMENTO, CHAVE_BLOQUEIO, ensureInventarioT
 // critério faria o inventário enxergar um catálogo diferente do que o PDV pede.
 // Sem fator de conversão de propósito: a contagem é em unidade, e exibir "fardo c/ 15"
 // ao lado do campo só convidaria a digitar fardos.
+//
+// Recorte de contagem (inventario_categorias_liberadas): se o Almoxarifado marcou categorias
+// para o PDV, só elas entram; sem nenhuma marcada, vale o catálogo inteiro (comportamento antigo).
+const FILTRO_CATEGORIAS_LIBERADAS_PARA_CONTAGEM = `
+  AND (
+    NOT EXISTS (SELECT 1 FROM inventario_categorias_liberadas lc WHERE lc.pdv_id = e.pdv_id)
+    OR EXISTS (SELECT 1 FROM inventario_categorias_liberadas lc WHERE lc.pdv_id = e.pdv_id AND lc.categoria = prc.categoria)
+  )`;
+
 const SQL_PRODUTOS_DO_PDV = `
   SELECT p.sku, p.nome,
          COALESCE(string_agg(DISTINCT prc.categoria, ', ' ORDER BY prc.categoria), '') AS categoria,
@@ -34,6 +43,7 @@ const SQL_PRODUTOS_DO_PDV = `
   JOIN produto_categorias prc ON prc.sku_produto = p.sku
   JOIN pdv_categorias pc ON pc.pdv_id = e.pdv_id AND pc.categoria = prc.categoria
   WHERE e.pdv_id = $1 AND e.permitido = TRUE AND p.ativo = TRUE
+  ${FILTRO_CATEGORIAS_LIBERADAS_PARA_CONTAGEM}
   GROUP BY p.sku, p.nome, e.quantidade
   ORDER BY p.nome`;
 
@@ -181,6 +191,7 @@ export async function handleInventariosRoutes(req, res, context) {
       const resultado = await tx(async (client) => {
         const inventario = await travarInventarioDoPdv(client, corpo?.codigo_inventario, user.pdvId);
         exigirEmContagem(inventario);
+        await exigirSkusDentroDoRecorte(client, user.pdvId, itens);
 
         let gravados = 0;
         for (const item of itens) {
@@ -298,6 +309,23 @@ function exigirEmContagem(inventario) {
   }
 }
 
+// Trava do servidor: com categorias liberadas para contagem, um SKU fora do recorte é recusado
+// mesmo numa chamada direta à API. Sem recorte marcado, nada muda (não valida SKU, como antes).
+async function exigirSkusDentroDoRecorte(client, pdvId, itens) {
+  const { rows } = await client.query(
+    "SELECT 1 FROM inventario_categorias_liberadas WHERE pdv_id = $1 LIMIT 1",
+    [pdvId]
+  );
+  if (!rows.length) return;
+  const permitidos = new Set((await client.query(SQL_PRODUTOS_DO_PDV, [pdvId])).rows.map((p) => p.sku));
+  const fora = itens.map((i) => String(i?.sku || "").trim()).filter((sku) => sku && !permitidos.has(sku));
+  if (fora.length) {
+    const erro = new Error(`Produto fora das categorias liberadas para contagem neste PDV: ${fora.slice(0, 3).join(", ")}.`);
+    erro.statusCode = 400;
+    throw erro;
+  }
+}
+
 // Quantos produtos foram contados e quantos ficaram sem contagem.
 // "Sem contagem" é o que o PDV podia contar e não contou — por isso conta o catálogo
 // liberado, e não só as linhas já gravadas em inventario_itens.
@@ -308,7 +336,8 @@ async function resumoDaContagem(client, inventarioId, pdvId) {
      JOIN produtos p ON p.sku = e.sku_produto
      JOIN produto_categorias prc ON prc.sku_produto = p.sku
      JOIN pdv_categorias pc ON pc.pdv_id = e.pdv_id AND pc.categoria = prc.categoria
-     WHERE e.pdv_id = $1 AND e.permitido = TRUE AND p.ativo = TRUE`,
+     WHERE e.pdv_id = $1 AND e.permitido = TRUE AND p.ativo = TRUE
+     ${FILTRO_CATEGORIAS_LIBERADAS_PARA_CONTAGEM}`,
     [pdvId]
   );
   const contados = await client.query(
@@ -483,6 +512,83 @@ async function rotasDoAlmoxarifado(req, res, context) {
   // universo inteiro (não filtrado) -- é o que povoa os checkboxes do painel ao abrir, antes
   // de qualquer corte ou filtro ser escolhido. Rota própria e sem corte de propósito: separada
   // do relatório em si, que exige uma data de corte válida para rodar.
+  // Categorias liberadas para o PDV contar (independente de pdv_categorias, que é pedido)
+  if (url.pathname === "/api/admin/inventario/categorias-liberadas" && method === "GET") {
+    if (!requireUser(req, res, "admin")) return true;
+    const pdvs = await query("SELECT id, nome FROM pdvs WHERE administrativo = FALSE ORDER BY nome");
+    const liberadas = await query("SELECT pdv_id, categoria FROM inventario_categorias_liberadas ORDER BY categoria");
+    const categorias = await query("SELECT DISTINCT categoria FROM produto_categorias WHERE categoria IS NOT NULL ORDER BY categoria");
+    const abertos = await query("SELECT DISTINCT pdv_id FROM inventarios WHERE pdv_id IS NOT NULL AND status = ANY($1)", [STATUS_ABERTOS]);
+    const pdvsAbertos = new Set(abertos.map((a) => a.pdv_id));
+    send(res, 200, {
+      categorias: categorias.map((c) => c.categoria),
+      pdvs: pdvs.map((p) => ({
+        id: p.id,
+        nome: p.nome,
+        categorias: liberadas.filter((l) => l.pdv_id === p.id).map((l) => l.categoria),
+        contagem_aberta: pdvsAbertos.has(p.id)
+      }))
+    });
+    return true;
+  }
+
+  // Grava a lista completa de um PDV (substituição atômica). Lista vazia = volta ao catálogo
+  // inteiro. Recusada com contagem aberta: mudar o recorte no meio deixaria itens já digitados
+  // fora do catálogo e o auto-save do PDV passaria a ser recusado.
+  if (url.pathname === "/api/admin/inventario/categorias-liberadas" && method === "POST") {
+    if (!requireUser(req, res, "admin")) return true;
+    const corpo = await readBody(req);
+    const pdvId = asInt(corpo?.pdv_id);
+    const categorias = [...new Set((Array.isArray(corpo?.categorias) ? corpo.categorias : []).map((c) => String(c).trim()).filter(Boolean))];
+    try {
+      const resultado = await tx(async (client) => {
+        const pdv = await client.query("SELECT id FROM pdvs WHERE id = $1 AND administrativo = FALSE", [pdvId]);
+        if (!pdv.rows.length) {
+          const erro = new Error("PDV não encontrado.");
+          erro.statusCode = 404;
+          throw erro;
+        }
+        if (await inventarioAbertoDoPdv(comClient(client), pdvId)) {
+          const erro = new Error("Este PDV tem uma contagem aberta. Conclua ou exclua a contagem antes de mudar as categorias.");
+          erro.statusCode = 409;
+          throw erro;
+        }
+        if (categorias.length) {
+          const conhecidas = await client.query("SELECT DISTINCT categoria FROM produto_categorias WHERE categoria = ANY($1)", [categorias]);
+          const nomes = new Set(conhecidas.rows.map((c) => c.categoria));
+          const desconhecida = categorias.find((c) => !nomes.has(c));
+          if (desconhecida) {
+            const erro = new Error(`Categoria desconhecida: ${desconhecida}.`);
+            erro.statusCode = 400;
+            throw erro;
+          }
+        }
+        await client.query("DELETE FROM inventario_categorias_liberadas WHERE pdv_id = $1", [pdvId]);
+        for (const categoria of categorias) {
+          await client.query(
+            "INSERT INTO inventario_categorias_liberadas (pdv_id, categoria, liberado_por) VALUES ($1, $2, $3)",
+            [pdvId, categoria, usuario]
+          );
+        }
+        await auditarInventario(client, {
+          acao: "categorias_contagem_alteradas",
+          usuario,
+          valorNovo: categorias.join(", ") || "(todas)",
+          dados: { origem: "admin", pdv_id: pdvId, categorias }
+        });
+        return { pdv_id: pdvId, categorias };
+      });
+      send(res, 200, resultado);
+    } catch (error) {
+      if (error.statusCode) {
+        send(res, error.statusCode, { error: error.message });
+        return true;
+      }
+      throw error;
+    }
+    return true;
+  }
+
   if (url.pathname === "/api/admin/inventario/relatorio/filtros" && method === "GET") {
     if (!requireUser(req, res, "admin")) return true;
     // Categoria de verdade vive em produto_categorias (mesma tabela que a tela de contagem do

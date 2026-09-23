@@ -10775,12 +10775,73 @@ async function viewInventarios(options = {}) {
     ${blocoEmissaoDeAviso(avisosAtivos)}`,
   // Botão próprio no cabeçalho, em vez do card "Consolidado" que ficava sempre visível no
   // corpo da página -- o relatório agora abre num painel à parte (openRelatorioEstoqueModal)
-  `<button class="btn secondary" id="abrir-relatorio-estoque" type="button">RELATORIO</button>`);
+  `<button class="btn secondary" id="abrir-categorias-contagem" type="button">CATEGORIAS</button>
+   <button class="btn secondary" id="abrir-relatorio-estoque" type="button">RELATORIO</button>`);
 
   bindInventariosAdmin(janela);
   bindEmissaoDeAviso();
   bindResumoContagemPropria();
   document.querySelector("#abrir-relatorio-estoque")?.addEventListener("click", openRelatorioEstoqueModal);
+  document.querySelector("#abrir-categorias-contagem")?.addEventListener("click", openCategoriasContagemModal);
+}
+
+// Painel onde o Almoxarifado escolhe, por PDV, quais categorias ele pode CONTAR no inventário.
+// Independente das categorias de pedido. PDV sem nenhuma marcada conta o catálogo inteiro.
+async function openCategoriasContagemModal() {
+  let dados;
+  try {
+    dados = await request("/api/admin/inventario/categorias-liberadas", { silentLoading: true });
+  } catch (error) {
+    toast(error.message || "Não foi possível carregar as categorias.", "error");
+    return;
+  }
+
+  const modal = document.createElement("div");
+  modal.className = "photo-viewer";
+  const close = () => modal.remove();
+  modal.innerHTML = `
+    <div class="photo-viewer-dialog relatorio-estoque-dialog" role="dialog" aria-modal="true" aria-label="Categorias liberadas para contagem">
+      <div class="photo-viewer-head">
+        <div><p class="eyebrow">Contagem de estoque</p><h3>Categorias liberadas para contagem</h3></div>
+        <button class="icon-action close-categorias-modal" type="button" aria-label="Fechar">&times;</button>
+      </div>
+      <div class="photo-viewer-body relatorio-estoque-body">
+        <p class="text-sm text-slate-600">Marque as categorias que cada PDV pode contar. PDV sem nenhuma
+        marcada conta o catálogo inteiro. Não altera o que o PDV pode pedir.</p>
+        ${dados.pdvs.map((pdv) => `
+          <div class="relatorio-filtro-bloco" data-pdv-categorias="${pdv.id}">
+            <p class="eyebrow">${esc(pdv.nome)}</p>
+            ${pdv.contagem_aberta ? `<p class="text-xs text-slate-500">Contagem aberta: conclua antes de mudar as categorias.</p>` : ""}
+            <div class="multi-filter-options">
+              ${dados.categorias.map((categoria) => `
+                <label class="multi-filter-option">
+                  <input class="categoria-contagem-check" type="checkbox" value="${esc(categoria)}" ${pdv.categorias.includes(categoria) ? "checked" : ""} ${pdv.contagem_aberta ? "disabled" : ""} />
+                  <span>${esc(categoria)}</span>
+                </label>`).join("")}
+            </div>
+            <button class="btn secondary salvar-categorias-contagem" type="button" data-pdv="${pdv.id}" ${pdv.contagem_aberta ? "disabled" : ""}>Salvar ${esc(pdv.nome)}</button>
+          </div>`).join("")}
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  modal.querySelectorAll(".close-categorias-modal").forEach((button) => button.addEventListener("click", close));
+  modal.addEventListener("click", (event) => { if (event.target === modal) close(); });
+
+  modal.querySelectorAll(".salvar-categorias-contagem").forEach((botao) => {
+    botao.addEventListener("click", async () => {
+      const bloco = modal.querySelector(`[data-pdv-categorias="${botao.dataset.pdv}"]`);
+      const categorias = [...bloco.querySelectorAll(".categoria-contagem-check:checked")].map((c) => c.value);
+      try {
+        await request("/api/admin/inventario/categorias-liberadas", {
+          method: "POST",
+          body: JSON.stringify({ pdv_id: Number(botao.dataset.pdv), categorias })
+        });
+        toast(categorias.length ? `${categorias.length} categoria(s) liberada(s) para contagem.` : "Sem recorte: o PDV conta o catálogo inteiro.");
+      } catch (error) {
+        toast(error.message || "Não foi possível salvar.", "error");
+      }
+    });
+  });
 }
 
 // Chave do localStorage onde o filtro de categoria/local do relatório fica salvo entre

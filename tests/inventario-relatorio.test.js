@@ -296,7 +296,7 @@ test("filtro de categorias lista nomes individuais de produto_categorias, com pr
 
 test('viewInventarios passa o botão RELATORIO como actions pro shell(), que antes só recebia um argumento', () => {
   const view = appJs.slice(appJs.indexOf("async function viewInventarios"), appJs.indexOf("async function openRelatorioEstoqueModal"));
-  assert.match(view, /shell\(`[\s\S]*`,\s*\n(\s*\/\/[^\n]*\n)*\s*`<button class="btn secondary" id="abrir-relatorio-estoque" type="button">RELATORIO<\/button>`\);/);
+  assert.match(view, /shell\(`[\s\S]*`,\s*\n(\s*\/\/[^\n]*\n)*\s*`(<button[^`]*<\/button>\s*)?<button class="btn secondary" id="abrir-relatorio-estoque" type="button">RELATORIO<\/button>`\);/);
   assert.doesNotMatch(view, /\$\{blocoRelatorioDeEstoque\(\)\}/, "o card antigo saiu do corpo da página");
 });
 

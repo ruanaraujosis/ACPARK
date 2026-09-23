@@ -1135,6 +1135,18 @@ ALTER SEQUENCE public.inventario_auditoria_id_seq OWNED BY public.inventario_aud
 
 
 --
+-- Name: inventario_categorias_liberadas; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.inventario_categorias_liberadas (
+    pdv_id integer NOT NULL,
+    categoria text NOT NULL,
+    liberado_por text,
+    liberado_em timestamp without time zone DEFAULT CURRENT_TIMESTAMP
+);
+
+
+--
 -- Name: inventario_itens; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2497,6 +2509,14 @@ ALTER TABLE ONLY public.integrations
 
 ALTER TABLE ONLY public.inventario_auditoria
     ADD CONSTRAINT inventario_auditoria_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: inventario_categorias_liberadas inventario_categorias_liberadas_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.inventario_categorias_liberadas
+    ADD CONSTRAINT inventario_categorias_liberadas_pkey PRIMARY KEY (pdv_id, categoria);
 
 
 --

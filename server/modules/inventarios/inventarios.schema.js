@@ -113,6 +113,17 @@ export function ensureInventarioTables() {
         ON inventarios (COALESCE(pdv_id, -1))
         WHERE status IN ('${STATUS_ABERTOS.join("', '")}')`);
 
+    // Categorias que o PDV pode CONTAR. Permissão independente de pdv_categorias (que só
+    // controla o que o PDV pode PEDIR). PDV sem nenhuma linha aqui conta o catálogo inteiro.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS inventario_categorias_liberadas (
+        pdv_id INTEGER NOT NULL,
+        categoria TEXT NOT NULL,
+        liberado_por TEXT,
+        liberado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (pdv_id, categoria)
+      )`);
+
     await client.query("CREATE INDEX IF NOT EXISTS idx_inventario_itens_inventario ON inventario_itens(inventario_id)");
     await client.query("CREATE INDEX IF NOT EXISTS idx_inventario_auditoria_inventario ON inventario_auditoria(inventario_id, criado_em DESC)");
     await client.query("CREATE INDEX IF NOT EXISTS idx_inventarios_status ON inventarios(status, criado_em DESC)");
