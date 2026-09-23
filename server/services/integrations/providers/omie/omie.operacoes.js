@@ -57,6 +57,20 @@ export function normalizarQuantidade(valor) {
   return String(quantidade).replace(".", ",");
 }
 
+// Quantidade do AJUSTE POR INVENTARIO, onde zero e valor legitimo.
+//
+// Deliberadamente separada de normalizarQuantidade(): la o zero e recusado porque um
+// movimento (TRF/SAI) de zero nao move nada e mascara erro de calculo. No inventario zero e o
+// resultado esperado de "ninguem contou este produto" -- e e justamente ele que zera o saldo.
+// Afrouxar a funcao compartilhada tiraria a protecao da transferencia junto.
+export function normalizarQuantidadeInventario(valor) {
+  const quantidade = Number(String(valor ?? 0).replace(",", "."));
+  if (!Number.isFinite(quantidade) || quantidade < 0) {
+    throw new Error("Quantidade invalida para ajuste de inventario na OMIE.");
+  }
+  return String(quantidade).replace(".", ",");
+}
+
 // Monta o payload de IncluirAjusteEstoque
 export function montarAjusteEstoque({
   chaveOperacao,
@@ -169,4 +183,130 @@ export function montarCompensacaoTransferencia(dados) {
     codigoLocalDestino: dados.codigoLocalOrigem,
     observacao: dados.observacao || "Estorno de transferencia por reabertura de pedido no MyEstoque."
   });
+}
+
+// Monta o payload do AJUSTE POR INVENTARIO (IncluirAjusteEstoque com tipo "SLD").
+//
+// EXCECAO DELIBERADA a regra "movimento, nunca saldo absoluto".
+//
+// O resto do sistema so envia TRF (transferencia), e o tipo SLD esta travado por teste no
+// caminho da transferencia justamente porque escrever saldo apagaria os lancamentos do
+// sistema de vendas. O inventario e o unico caso em que escrever saldo e o comportamento
+// desejado: a contagem fisica passa a ser a verdade, por decisao do usuario (28/08/2026).
+//
+// Codigos confirmados pelo usuario a partir da tela e do suporte da OMIE:
+//   tipo   "SLD" -> "Ajustar o saldo de estoque do dia"
+//   motivo "INV" -> "Ajuste por Inventario"
+//
+// O risco que essa escolha carrega esta documentado em docs/INTEGRACOES.md: entre a contagem
+// e o envio o PDV continua vendendo, e o saldo gravado nao reflete essas vendas. Por isso a
+// tela avisa a idade da contagem antes de o Almoxarifado confirmar.
+export function montarAjusteInventario({
+  chaveOperacao,
+  idExternoProduto,
+  sku,
+  codigoLocal,
+  quantidade,
+  valorUnitario,
+  data = new Date(),
+  observacao
+}) {
+  if (!codigoLocal) {
+    throw new Error("Ajuste de inventario exige o local de estoque do PDV que contou.");
+  }
+
+  const payload = {
+    cod_int_ajuste: String(chaveOperacao || "").slice(0, 60),
+    data: formatarData(data),
+    // Zero e valor legitimo aqui: e o que zera o produto que ninguem contou
+    quan: normalizarQuantidadeInventario(quantidade),
+    obs: String(observacao || "Ajuste por inventario registrado pelo MyEstoque.").slice(0, 500),
+    origem: "AJU",
+    tipo: "SLD",
+    motivo: "INV",
+    codigo_local_estoque: Number(codigoLocal)
+  };
+
+  // A transferencia so descobriu no primeiro envio real que a OMIE recusa valor zero
+  // («O "Valor" informado deve ser diferente de zero»). Nao sabemos ainda se o SLD exige o
+  // mesmo, entao o valor vai quando existir e fica de fora quando nao houver -- a conferencia
+  // do primeiro lancamento real dira se precisa ser obrigatorio aqui tambem.
+  const valor = Number(valorUnitario);
+  if (Number.isFinite(valor) && valor > 0) payload.valor = valor;
+
+  if (idExternoProduto) payload.id_prod = Number(idExternoProduto);
+  else if (sku) payload.cod_int = String(sku).slice(0, 20);
+  else throw new Error("Ajuste de inventario exige o produto (id externo ou SKU).");
+
+  return payload;
+}
+
+// ===== Saida por consumo administrativo =====
+
+// Motivo da saida por consumo interno (PDV Administrativo). CONFIRMADO PELO USUARIO em
+// 01/09/2026.
+//
+// O dominio de `motivo` para tipo "SAI" na OMIE tem exatamente quatro valores, conferidos na
+// documentacao da propria conta (app.omie.com.br/api/v1/estoque/ajuste/?WSDL=&readable=):
+//   INV - Ajuste por Inventario     (descartado: ja usado pelo inventario, usar aqui poluiria
+//                                    a contagem)
+//   PER - Baixa por Perda ou Quebra (descartado: perda e consumo legitimo sao coisas distintas
+//                                    para relatorio fiscal e gerencial)
+//   OPS - Integracao com Ordem de Producao - Saida  (descartado: nao ha ordem de producao)
+//   PDV - Integracao com PDV        (ESCOLHIDO -- nominalmente marcaria o movimento como vindo
+//                                    de um PDV de venda, o que nao e literalmente o caso aqui,
+//                                    mas a categorizacao fiscal/contabil e decisao do usuario,
+//                                    nao tecnica, e ele optou por este mesmo assim)
+//
+// Nao existe um motivo "consumo interno" dedicado no dominio da API -- PDV foi o escolhido
+// entre as quatro opcoes existentes. A observacao de cada lancamento (ver tarefas/
+// consumo-administrativo.js) deixa explicito no proprio registro da OMIE que a saida e de
+// consumo administrativo, nao de venda, compensando o motivo nao ser literal.
+export const MOTIVO_CONSUMO_ADMINISTRATIVO = "PDV";
+
+// Monta o payload de SAIDA por consumo administrativo (IncluirAjusteEstoque, tipo "SAI").
+//
+// NUNCA "TRF": transferencia diria que a mercadoria continua na empresa, so que em outro
+// local. O PDV Administrativo consome -- a mercadoria sai do estoque e nao volta.
+export function montarSaidaConsumoAdministrativo({
+  chaveOperacao,
+  idExternoProduto,
+  sku,
+  codigoLocalOrigem,
+  quantidade,
+  valorUnitario,
+  data = new Date(),
+  observacao,
+  motivo = MOTIVO_CONSUMO_ADMINISTRATIVO
+}) {
+  if (!codigoLocalOrigem) {
+    throw new Error("Saida por consumo administrativo exige o local de origem (almoxarifado).");
+  }
+
+  // Mesma exigencia da transferencia: a OMIE recusa ajuste com valor zero. Descobrir isso
+  // aqui e melhor do que produto a produto na fila.
+  const valor = Number(valorUnitario);
+  if (!Number.isFinite(valor) || valor <= 0) {
+    throw new Error(
+      `Saida de ${sku || idExternoProduto} sem valor unitario conhecido. A OMIE exige valor diferente de zero no ajuste.`
+    );
+  }
+
+  const payload = {
+    cod_int_ajuste: String(chaveOperacao || "").slice(0, 60),
+    data: formatarData(data),
+    quan: normalizarQuantidade(quantidade),
+    obs: String(observacao || "Consumo interno registrado pelo MyEstoque.").slice(0, 500),
+    origem: "AJU",
+    tipo: "SAI",
+    motivo,
+    valor,
+    codigo_local_estoque: Number(codigoLocalOrigem)
+  };
+
+  if (idExternoProduto) payload.id_prod = Number(idExternoProduto);
+  else if (sku) payload.cod_int = String(sku).slice(0, 20);
+  else throw new Error("Saida por consumo administrativo exige o produto (id externo ou SKU).");
+
+  return payload;
 }

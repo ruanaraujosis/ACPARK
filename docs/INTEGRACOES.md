@@ -273,6 +273,7 @@ que vem do ERP. Desligando a integração, o fator sai junto em vez de deixar um
 | Capacidade             | O que faz                                                                       | Intervalo padrão |
 | ---------------------- | ------------------------------------------------------------------------------- | ---------------- |
 | `PRODUTOS`             | Importa o cadastro e mantém o vínculo SKU ↔ produto OMIE. **Não escreve saldo** | 1 h              |
+| `CATEGORIAS`           | Casa categoria local ↔ família OMIE pelo código. **Escrita**: só cria família    | 6 h              |
 | `FATORES`              | Lê o fator de conversão (unidades por embalagem) do cadastro                    | 30 min           |
 | `LOCAIS`               | Importa os locais de estoque                                                    | 6 h              |
 | `ESTOQUE_ALMOXARIFADO` | Saldo do local do almoxarifado → estoque central                                | 15 min           |
@@ -347,13 +348,122 @@ aparecer no destino, e ninguém saberia sem conferir os dois locais.
 | Local        | Movimento                                 | Quem lança na OMIE |
 | ------------ | ----------------------------------------- | ------------------ |
 | Almoxarifado | Saída por transferência para o PDV        | **MyEstoque**      |
-| Almoxarifado | Compras, notas, inventário, ajustes       | Fora do MyEstoque  |
+| Almoxarifado | Compras, notas, ajustes avulsos           | Fora do MyEstoque  |
+| Almoxarifado | Ajuste por inventário                     | **MyEstoque**      |
 | PDV          | Entrada por transferência do Almoxarifado | **MyEstoque**      |
+| PDV          | Ajuste por inventário                     | **MyEstoque**      |
 | PDV          | Baixa por venda                           | Sistema de vendas  |
 | PDV          | Entrada por devolução de venda            | Sistema de vendas  |
+| PDV Administrativo | Saída por consumo interno           | **MyEstoque**      |
 
-O MyEstoque envia **movimento, nunca saldo absoluto** — escrever saldo apagaria os lançamentos
-do sistema de vendas. O tipo `SLD` (ajuste de saldo) está travado por teste.
+Como regra, o MyEstoque envia **movimento, nunca saldo absoluto** — escrever saldo apagaria os
+lançamentos do sistema de vendas. O tipo `SLD` continua travado por teste no caminho da
+transferência (`tarefas/transferencias.js`).
+
+#### Exceção: PDV Administrativo — saída, não transferência (30/08/2026)
+
+"PDV Administrativo" **não é ponto de venda**: é um perfil para setores internos que consomem
+estoque sem vender — escritório, limpeza, marketing, manutenção. Ele pede ao Almoxarifado como
+qualquer PDV, mas o que retira **sai da empresa como consumo** e não vira saldo de revenda.
+
+Por isso a retirada dele **não** gera transferência: transferência diria que a mercadoria
+continua na empresa, só que em outro local.
+
+| Campo    | Valor  | Significado                                            |
+| -------- | ------ | ------------------------------------------------------- |
+| `tipo`   | `SAI`  | Saída do estoque                                         |
+| `motivo` | `PDV`  | **Confirmado pelo usuário em 01/09/2026** (ver abaixo)   |
+| `origem` | `AJU`  | Ajuste manual                                            |
+
+O domínio de `motivo` para `tipo = SAI` na OMIE tem exatamente quatro valores, conferidos na
+documentação da própria conta (`app.omie.com.br/api/v1/estoque/ajuste/?WSDL=&readable=`), e
+**nenhum significa literalmente "consumo interno"**:
+
+| Código | Descrição                                | Serve para consumo interno? |
+| ------ | ----------------------------------------- | --------------------------- |
+| `INV`  | Ajuste por Inventário                     | Não — poluiria a contagem   |
+| `PER`  | Baixa por Perda ou Quebra                 | Não — perda ≠ consumo       |
+| `OPS`  | Integração com Ordem de Produção – Saída  | Não — não há ordem          |
+| `PDV`  | Integração com PDV                        | **Escolhido** — não vem literalmente de um PDV de venda, mas foi o código que o usuário escolheu entre os quatro existentes |
+
+Categorização fiscal/contábil é decisão do usuário, não técnica — por isso a escolha não foi
+presumida. Como `PDV` sozinho não deixa claro que a saída é de consumo administrativo (e não de
+venda), cada lançamento leva uma observação fixa no próprio registro da OMIE (definida pelo
+usuário): *"SAIDA PARA USO DE SETORES COMO ESCRITORIO, ACPASS e LIMPEZA."*, concatenada com o
+código do pedido de origem. A partir desta confirmação, esta tarefa segue a **mesma trava
+genérica** das outras (`core/escrita.js`, exige `modo_escrita: REAL`) — não existe mais trava
+própria de motivo.
+
+O evento é `CONSUMO_ADMIN`, e não `RETIRADA`, para a tarefa de transferências nunca ler estas
+linhas e montar `TRF` em cima delas.
+
+Outros pontos do perfil:
+
+- `estoque_pdv` continua existindo para ele, mas **só como permissão** (`permitido = TRUE`):
+  libera o pedido, nunca acumula saldo;
+- nenhuma tela de saldo mostra número para ele — ausência é tratada como ausência, não como
+  zero (o menu dele nem tem "Meu estoque"; tem o **Painel do setor**, com histórico de pedidos,
+  filtro de datas e ranking do que mais saiu, sem nenhuma seção de estoque);
+- o ranking do painel usa a quantidade **liberada**, não a solicitada: pedir não é consumir;
+- a reposição automática o exclui explicitamente (`pdv.administrativo = FALSE` no `JOIN`);
+- alternar um PDV **com saldo** para administrativo é recusado com `409` até a regra de baixa do
+  saldo residual ser aprovada.
+
+#### Exceção: ajuste por inventário (29/08/2026)
+
+O inventário é o **único** caso em que o MyEstoque escreve saldo absoluto, e a exceção é
+deliberada: a contagem física passa a ser a verdade, que é justamente o que o `SLD` faz.
+
+| Campo    | Valor   | Significado na tela da OMIE          |
+| -------- | ------- | ------------------------------------ |
+| `tipo`   | `SLD`   | Ajustar o saldo de estoque do dia    |
+| `motivo` | `INV`   | Ajuste por Inventário                |
+| `origem` | `AJU`   | Ajuste manual                        |
+
+Detalhes que sustentam a exceção:
+
+- o lançamento vai no **local do PDV que contou** (`pdv_stock_location_mappings`); o local do
+  Almoxarifado continua vindo de `configuracao.local_almoxarifado`, nunca adivinhado;
+- **produto sem contagem NÃO é tocado** — mantém o valor atual, aqui e na OMIE. Só entra no
+  ajuste quem tem quantidade digitada. Para zerar é preciso digitar `0`: **em branco é "não
+  conferi", zero é "conferi e não há nenhum"**. Por isso a quantidade zero é válida aqui e
+  recusada no movimento: `normalizarQuantidadeInventario()` existe separada de
+  `normalizarQuantidade()` para não afrouxar a proteção da transferência.
+
+  Esta regra foi o inverso entre 29/08 e 30/08/2026, e a troca custou dado real: sob
+  "sem contagem = zerado", o inventário `INV-20260829184051-862E` (PDV PARK) teve 4 de 338
+  produtos contados e foi concluído — 334 foram a zero, dos quais **9 tinham saldo real** e
+  **8 chegaram à OMIE**. Esquecer de contar não pode significar "não tem nenhum". Os produtos
+  preservados ficam registrados na auditoria (`preservados_sem_contagem`), para a trilha
+  distinguir "pulado de propósito" de "esquecido";
+- idempotência por inventário + produto (`INVENTARIO-{código}-SKU-{sku}-AJUSTE`), sem versão:
+  inventário confirmado nunca é reaberto — corrigir é abrir outro (ver abaixo);
+- nasce em `SIMULACAO` como qualquer capacidade de escrita.
+
+**Risco conhecido e aceito:** entre a contagem e o envio o PDV continua vendendo, e o sistema
+de vendas dá baixa no mesmo local. O saldo gravado não reflete essas vendas. O sistema não
+bloqueia — mostra a idade da contagem na lista, destaca contagens com 2+ dias e avisa o
+Almoxarifado na confirmação. Quem decide é o Almoxarifado.
+
+**Inventário confirmado é imutável — corrigir é contar de novo.** Não existe reabertura nem
+lançamento compensatório. A partir da confirmação nada altera aquele inventário; se a contagem
+precisar de correção, o Almoxarifado abre um inventário **novo**, mesmo PDV, ciclo de vida do
+zero, e a conclusão dele substitui o saldo outra vez — local e na OMIE.
+
+O motivo de não haver compensação é o próprio `SLD`: **saldo absoluto não compensa como
+movimento**. Dois `SLD` em sequência não se anulam — o segundo sobrescreve o primeiro, o que é
+indistinguível de uma recontagem. A recontagem entrega o mesmo resultado com trilha mais clara.
+Decidido com o usuário em 29/08/2026 e travado por teste: todas as rotas de escrita recusam um
+inventário confirmado, e a tela do Almoxarifado o mostra como somente leitura.
+
+**Enquanto o modo for `SIMULACAO`, o inventário do Almoxarifado se desfaz sozinho.**
+`produtos.qtd_total` é espelho do saldo da OMIE: a capacidade `ESTOQUE_ALMOXARIFADO` o
+reescreve a cada sincronização. Como em simulação o ajuste não chega ao ERP, a sincronização
+seguinte devolve o valor antigo. Isso não é erro de contagem, e some quando o modo virar
+`REAL`. Para não depender de quem lê este documento, o sistema registra `ajuste_em_simulacao`
+na auditoria do inventário e mostra o aviso em dois lugares: ao concluir e, para sempre, no
+detalhe daquele inventário. O aviso vem do histórico, não do modo atual — ligar `REAL` depois
+não desfaz a sobrescrita que já aconteceu.
 
 ### Modo simulação
 
@@ -669,90 +779,28 @@ produz classificação errada, não apenas incompleta.**
 apagada. Retomar no meio soma contagem em cima da existente e infla a força das sugestões — o
 botão da tela sempre começa do 1 por isso.
 
-### A planilha de fardos como terceira fonte
+### A planilha de fardos como terceira fonte — removida em 22/09/2026
 
-`CONTROLE ESTOQUE DE BEBIDAS POR FARDO`, duas abas (abril e junho). Coluna A é o **nome de
-operação**, coluna B são as unidades por fardo. Importada pela tela (`Importar planilha de
-fardos`): o arquivo é lido **no navegador**, com a mesma biblioteca já usada na importação de
-produtos — o servidor recebe linhas, nunca um `.xlsx`, e não ganha dependência de leitor de Excel.
+Existiu uma terceira fonte: planilha manual de controle de fardos, importada pela tela e
+vinculada ao cadastro por semelhança textual de nome (`sugerirVinculos`). Ela não só corroborava:
+em vários casos (só planilha sem nota, notas 1:1 contra planilha > 1, até dois fatores distintos
+com a planilha concordando) ela **decidia o fator sozinha**, chegando a prevalecer sobre a
+leitura das notas — caso real documentado, `FANTA LARANJA`, notas ×1/×6/×12 contra planilha
+dizendo 6. O vínculo textual planilha↔cadastro também errava por natureza: o primeiro candidato
+de `ÁGUA MINERAL GÁSOSA 500ML` era o produto **oposto**, `AGUA MINERAL SEM GAS 500ML`.
 
-Só **inteiro positivo** vira fator. `UND`, `LT`, `FRD`, `cx` são cabeçalho de seção ou item
-controlado por unidade — mesmo critério estrito do resto do sistema.
+Decisão do usuário ao remover: produtos que dependiam da planilha voltam a usar só a leitura
+das notas, com a mesma confirmação humana de sempre — nenhuma decisão automática nasce daqui.
 
-**As duas abas não concordam, ao contrário do que parece.** Medido na planilha real: 103 linhas,
-72 com fator, e **16 divergências** — todas do mesmo tipo, `1` em abril e `N` em junho:
+### Como as fontes se combinam
 
-```
-CERV. AMSTEL / ANTARTICA / HEINEKEN / ORIGINAL (600ml)   1  x  24
-BALY 2L (4 sabores), MONSTER, RED BULL                   1  x   6
-RED BULL ZERO / MAÇÃ / MELÃO / POMELO / TROPICAL         1  x   4
-```
-
-A aba de junho passou a registrar o tamanho do fardo onde a de abril contava por unidade. O
-cabeçalho de seção **não explica** a diferença: `CERVEJA 600 ml → UND` é igual nas duas abas.
-
-Regra de reconciliação, deliberadamente mais fina que "as abas têm de bater":
-
-- **aba sem número não é discordância** — significa que aquela aba não foi preenchida naquele
-  período. Foi o caso de `GUARANÁ LT`, cabeçalho de seção em abril e linha com 12 em junho: o
-  número vale;
-- **dois números diferentes sim** — a planilha se contradiz, e vira conflito. A média (12,5 para
-  o `1 × 24`) seria um número que nenhuma das duas abas afirma.
-
-### O vínculo com o cadastro é textual — e erra
-
-A planilha é chaveada por nome de operação, o cadastro por SKU. `sugerirVinculos` ordena
-candidatos por palavras em comum, e a tela mostra os três melhores com a porcentagem.
-
-**Nenhum vínculo é criado automaticamente, e o motivo é medido:** o primeiro candidato de
-`ÁGUA MINERAL GÁSOSA 500ML` foi `AGUA MINERAL SEM GAS 500ML` — o produto **oposto** — porque
-divide três palavras com ele e só uma com `AGUA COM GAS`, que é o certo. Das 103 linhas, 31 não
-recebem candidato nenhum, o que é preferível a receber um errado.
-
-### Como as três fontes se combinam
-
-| Situação                                     | Resultado                                                 |
-| -------------------------------------------- | --------------------------------------------------------- |
-| notas e planilha no mesmo número             | `CONFIANCA.MAXIMA`                                        |
-| notas e planilha em números diferentes       | **a planilha prevalece** — decisão do usuário             |
-| só planilha, sem nota                        | sugere, como `EVIDENCIA_UNICA`                            |
-| notas 1:1 e planilha > 1                     | a **planilha carrega o número**, e a confiança segue nula |
-| planilha divergente entre abas               | não sugere nada                                           |
-| descrição do produto (`CX C/12`, `DP12X28G`) | confirma, **nunca promove sozinha**                       |
-
-**A planilha prevalece sobre as notas, por decisão do usuário** (23/08/2026): ela é a contagem
-física do almoxarifado, enquanto a nota reflete como o fornecedor faturou e como quem lançou o
-recebimento digitou. Caso real: `FANTA LARANJA` tem notas com ×1, ×6 e ×12 — formatos diferentes
-ao longo do tempo — e a planilha diz 6; sem essa regra o produto ficava travado em conflito
-esperando uma escolha que a planilha já responde.
-
-Duas exceções deliberadas, porque "a planilha está certa" não as alcança:
-
-- **planilha que se contradiz entre as próprias abas** não tem um número para prevalecer (as 16
-  linhas do tipo `1 × 24`);
-- **cadastro genérico** não é resolvido pela planilha: ali o problema é um código servindo
-  produtos diferentes, e carimbar um fator só esconderia isso.
-
-**Atenção a "planilha 1 contra nota > 1".** Linha de seção `UND` costuma significar "contamos
-por unidade", não "a embalagem tem 1". Medido: `TODDYNHO` (planilha 1, nota ×27), `GROWLER CHOPP
-O2` (1 contra ×6) e `XAROPE CERESER GROSELHA` (1 contra ×6) passam a sugerir fator 1. São poucos
-e ficam visíveis na tela com o número da nota ao lado (`divergeDasNotas`).
-
-O caso "notas 1:1 e planilha maior" existe por causa da água com gás: até 2025 quem lançava o
-recebimento não convertia, e 21 notas registraram 1:1 para um produto de fator 15. A planilha
-vem da contagem física do almoxarifado, então ela é que carrega o número — ainda a confirmar.
-
-Validado contra os dados reais, com o vínculo simulado (nada gravado):
-
-```
-7894900531008  AGUA COM GAS      9 notas ×15 + planilha 15  -> MAXIMA
-106.1          COCA COLA 310ML  66 notas ×15 + planilha 15  -> MAXIMA
-0019229        RED BULL          notas ×6/×4, planilha divergente -> CONFLITO
-```
-
-**A planilha é a prova de que inferir por nome é proibido:** `COCA COLA LT` = 15 e
-`COCA COLA ZERO LT` = 6; `CERV. ANTARTICA` = 15, `AMSTEL` = 12, `HEINEKEN` = 8. Mesma marca,
-mesma lata, fator diferente — qualquer heurística de nome erraria metade.
+| Situação                                      | Resultado                                            |
+| ---------------------------------------------- | ----------------------------------------------------- |
+| notas concordando                              | `CONFIANCA` sobe com o número de notas                |
+| só compra avulsa (1:1)                         | sugere fator 1, mas **não afirma** — confiança nula   |
+| mais de um fator, até 2 distintos              | `CONFLITO_EMBALAGEM`, escolha humana                  |
+| mais de 2 fatores distintos                    | `CADASTRO_GENERICO`, não é fator, é cadastro a corrigir |
+| descrição do produto (`CX C/12`, `DP12X28G`)   | confirma, **nunca promove sozinha**                   |
 
 ### Gravação
 
@@ -812,6 +860,197 @@ quanto saiu com valor simbólico, filtre por `payload->>'fonte_valor' = 'SIMBOLI
 
 O resumo da tarefa traz `com_valor_simbolico`, então dá para acompanhar se a cobertura de preço
 está melhorando sem consultar o banco.
+
+## Estrutura de produto (ficha técnica): levantamento medido em 27/08/2026
+
+Tudo abaixo foi medido contra a conta real, por chamadas de **leitura**. O que não foi
+verificado está marcado como tal — nada aqui vem da documentação sem confirmação.
+
+### O recurso existe: `geral/malha/`
+
+| Operação | Tipo do request | Estado |
+| --- | --- | --- |
+| `ListarEstruturas` | `malhaPesquisarRequest` | **Executada com sucesso** |
+| `ConsultarEstrutura` | `malhaConsultarRequest` | Existe; aceita `intProduto` e `codProduto` |
+| `IncluirEstrutura` | `malhaIncluirRequest` | **Executada com sucesso em 09/09/2026** |
+| `AlterarEstrutura` | `malhaAlterarRequest` | Existe (nome confirmado, **não executada**) |
+| `ExcluirEstrutura` | `malhaExcluirRequest` | Existe (nome confirmado, **não executada**) |
+
+`IncluirProduto` e `UpsertProduto` existem em `geral/produtos/`, ambos sobre o tipo
+`produto_servico_cadastro` — o mesmo do `ListarProdutos`.
+
+**Não existem** (a API responde `Method "X" not exists`): `ListarMalhas`, `ListarMalha`,
+`ListarCadastroMalha`, `ConsultarMalha`, `ListarEstrutura` (singular), `PesquisarMalha`,
+`PesquisarEstrutura`, `ListarCadastroEstrutura`, `IncluirItemEstrutura`. Os endpoints
+`produtos/malha`, `produtos/estrutura`, `produtos/malhaproducao` e `producao/ordemproducao`
+respondem **404** — não existem. Já `geral/malha` responde 500 com mensagem de método ou de
+schema, que é como se distingue "endpoint inexistente" de "nome de chamada errado".
+
+### Paginação
+
+`ListarEstruturas` usa **`nPagina` e `nRegPorPagina`** — não `pagina`/`registros_por_pagina`,
+que o resto da API usa. Tag errada devolve
+`Tag [PAGINA] não faz parte da estrutura do tipo complexo [malhaPesquisarRequest]`.
+
+### Formato da estrutura
+
+Resposta de `ListarEstruturas`, por produto:
+
+```
+ident: { idProduto, codProduto, descrProduto, tipoProduto, unidProduto,
+         idFamilia, codFamilia, descrFamilia, pesoLiqProduto, pesoBrutoProduto }
+itens: [ { idProdMalha, codProdMalha, descrProdMalha, quantProdMalha, unidProdMalha,
+           percPerdaProdMalha, tipoProdMalha, idMalha,
+           dIncProdMalha, hIncProdMalha, uIncProdMalha, dAltProdMalha, ... } ]
+custoProducao: { vGGF, vMOD }
+observacoes: {}
+```
+
+O componente carrega **`percPerdaProdMalha`** — é onde o fator de correção da ficha técnica
+cabe. **Não há campo de rendimento no `ident`**: pelo que a listagem mostra, a estrutura é
+declarada para uma unidade do produto-pai. Isso **não foi confirmado** contra `ConsultarEstrutura`.
+
+### Hierarquia é suportada — confirmado por dado real
+
+`KIT TRANSFERÊNCIA DECK` tem 112 componentes, e um deles é **`M.N - CARNE DE SOL`**, que por sua
+vez é um produto com registro de estrutura próprio. Ou seja, **componente pode ser produto
+composto** — que é exatamente o que as fichas hierárquicas exigem.
+
+Os produtos-pai têm `tipoProduto` **04** (13 casos) ou **03** (4 casos), e os componentes
+aparecem com `tipoProdMalha` 00, 01, 04, 07 e 99. Não há um único tipo obrigatório para ser pai
+nem para ser componente. **Não foi testado** se a OMIE recusa um produto de outro tipo como pai.
+
+### Quanto já existe hoje: 17 produtos
+
+Dos 17 com registro de estrutura, **apenas 2 têm componentes** (`PETISCO NUGGETS`, com 1, e
+`KIT TRANSFERÊNCIA DECK`, com 112). Os outros 15 são casca — registro criado, lista vazia.
+Praticamente todo o trabalho de ficha técnica está por fazer.
+
+### A convenção de nomes do cadastro
+
+O prefixo indica a natureza do item, e a família acompanha:
+
+| Prefixo | Família | Exemplo |
+| --- | --- | --- |
+| `M.P - ` | MATERIA PRIMA | `M.P - SAL REFINADO` |
+| `M.N - ` | MANIPULADOS | `M.N - CARNE DE SOL`, `M.N - PAÇOCA`, `M.N - DOCE DE LEITE` |
+| `U.C - ` | uso e consumo | `U.C - ALCOOL LIQ 70%` |
+| `EMB - ` | embalagem | `EMB - GARFO DESCARTAVEL` |
+
+**`M.N - ` é o prefixo do produto manipulado** — a camada intermediária entre matéria-prima e
+produto acabado. É onde os preparos das fichas devem entrar.
+
+### Bloqueio por consumo indevido
+
+Rodar a mesma varredura duas vezes seguidas derrubou a API com
+`ERROR: API bloqueada por consumo indevido. Tente novamente em 1780 segundos` e
+`faultcode: MISUSE_API_PROCESS` — **cerca de 30 minutos de bloqueio**, mais severo que o
+"Consumo redundante detectado" de 60s. Sondagem exploratória tem de ser feita **uma vez**, com o
+resultado gravado em arquivo para reler à vontade.
+
+
+### Gravação de estrutura: medido em 09/09/2026
+
+A primeira ficha técnica foi gravada de verdade — `PORCOES ARROZ COM BROCOLIS` (11294558945),
+com 5 componentes, um deles outro produto composto (`BROCOLIS COZIDO`).
+
+```
+IncluirEstrutura {
+  idProduto: 11294558945,
+  itemMalhaIncluir: [
+    { intMalha: "AB-11027569611", idProdMalha: 11027569611,
+      quantProdMalha: 0.17, percPerdaProdMalha: 0, obsProdMalha: "..." }
+  ]
+}
+```
+
+- **O pai é identificado por `idProduto`, o código interno.** Não é preciso mexer no
+  `codigo_produto_integracao` de nenhum cadastro existente. Uma sondagem anterior por
+  tentativa e erro tinha concluído o contrário — estava errada; a documentação oficial do
+  serviço e a gravação real confirmam `idProduto`.
+- **`intMalha` é obrigatório em cada item** e é o código de integração *da linha* da
+  estrutura, não do produto. Sem ele: `O preenchimento da tag [intMalha] é obrigatório!`.
+  Derivá-lo do par (pai, componente) dá idempotência de graça. Limite de 20 caracteres.
+- A resposta traz `itemMalhaStatus[]` com `codStatus: "ADD"` e o `idMalha` gerado por linha.
+- **A estrutura não carrega unidade.** A OMIE usa a unidade de estoque de cada componente:
+  um item cadastrado em `Litros` recebe a quantidade em litros, mesmo que a ficha diga kg.
+  Divergência de unidade entre ficha e cadastro tem de ser resolvida antes, não no payload.
+- **Idempotência confirmada:** `ConsultarEstrutura` antes de incluir; reexecutar com a
+  estrutura já preenchida não duplica nada.
+
+### O bloqueio por consumo indevido é recuperável
+
+`ERROR: API bloqueada por consumo indevido. Tente novamente em N segundos` (faultcode
+`MISUSE_API_PROCESS`) chega a ~30 minutos, mas **a requisição bloqueada não é processada** —
+esperar os N segundos que a própria mensagem informa e repetir é seguro, não duplica. Foi o
+que destravou a gravação desta ficha. O gatilho é volume de chamadas exploratórias em janela
+curta: sondagem de schema por tentativa e erro é o caminho errado — a documentação do serviço
+em `developer.omie.com.br` dá os campos exatos em uma consulta.
+
+### O que ficou em aberto
+
+- `ConsultarEstrutura` aceita `idProduto`, `intProduto` ou `codProduto`. Produto sem
+  estrutura responde `ERROR: Produto não encontrado!`; produto com registro vazio responde
+  normalmente com `itens: []`. É essa a diferença entre "não tem malha" e "malha vazia".
+- Campos obrigatórios de `IncluirProduto`: `codigo_produto_integracao` é exigido. Os demais
+  não foram levantados — o produto desta rodada foi criado à mão pelo usuário na tela.
+- Simultaneidade em gravação de estrutura: não testada. **Assumir serial**, como já vale para
+  característica.
+
+## Categorias ↔ famílias: levantamento e regras (21/09/2026)
+
+A capacidade `CATEGORIAS` nasceu de um incidente. Entre 11/09 e 21/09/2026 as famílias
+`MANIPULADOS` (11211329102) e `MATERIA PRIMA` (11195192740) foram **excluídas** na OMIE — a
+segunda recriada com outro código (11300560694). Como o casamento dos dois lados era pelo
+**nome**, ninguém percebeu: os produtos simplesmente passaram a responder `codigo_familia: 0`
+e `descricao_familia: ""`. Foram ~50 produtos manipulados e ~357 matérias-primas, sem um
+aviso sequer. A família excluída também impede alteração: `AlterarProduto` recusa qualquer
+payload que cite o código morto, com `Familia de Produto não cadastrado para o Código [...]`.
+
+### O que a API oferece — medido contra a conta
+
+| Operação                    | Endpoint         | Estado                                                     |
+| --------------------------- | ---------------- | ---------------------------------------------------------- |
+| `PesquisarFamilias`         | `geral/familias` | **Executada.** Pagina com `pagina`/`registros_por_pagina`   |
+| `ConsultarFamilia`          | `geral/familias` | Existe; aceita `codigo`                                     |
+| `IncluirFamilia`            | `geral/familias` | **Executada em 21/09/2026.** Exige `codigo`/`codInt`        |
+| `ListarFamilias`            | `geral/familias` | **Não existe** (`Method "ListarFamilias" not exists`)       |
+
+`IncluirFamilia` recebe `{ codInt, codFamilia, nomeFamilia }` e devolve `{ codigo, codInt }`.
+O `codigo` é o identificador interno (o mesmo que aparece em `produto.codigo_familia`);
+`codFamilia` é o código curto que o operador vê na tela — nesta conta, numérico sequencial.
+
+**`AlterarProduto` faz merge parcial, não substituição.** Medido campo a campo em 49 produtos:
+enviando só `{codigo_produto, codigo_familia}`, a releitura mostrou a família como o único
+campo alterado — preço, NCM, unidade e tipo intactos. O mesmo vale para `{codigo_produto, ncm}`
+e `{codigo_produto, unidade}`. Não é preciso remontar o cadastro inteiro para mudar um campo.
+
+**Produto inativo não pode ser alterado**: `AlterarProduto` e `UpsertProduto` recusam com
+`O produto com ID X está inativo e não pode ser alterado`, e não existe `AtivarProduto` nem
+`AlterarSituacaoProduto`. Reativar exige a tela da OMIE.
+
+### Regras da sincronização
+
+1. **O vínculo é pelo código da família, nunca pelo nome** (`integration_category_links`).
+   Foi a falta disso que tornou a exclusão invisível.
+2. **A OMIE manda no nome.** Família renomeada lá renomeia a categoria aqui — e a renomeação
+   atualiza junto `produtos.categoria`, `produto_categorias`, `pdv_categorias` e os próprios
+   vínculos, porque **nenhuma dessas tabelas tem chave estrangeira para `categorias.nome`**.
+   Parar na tabela `categorias` deixaria produto e permissão de PDV apontando para um nome
+   que não existe mais.
+3. **O MyEstoque só cria família** — nunca renomeia nem exclui no ERP.
+4. **Exclusão nunca propaga, nos dois sentidos.** Família que some vira alerta e vínculo
+   inativo; a categoria local fica de pé, porque `pdv_categorias` amarra permissão pelo nome
+   e apagá-la tiraria produtos da tela de quem podia pedi-los.
+5. **Acento e caixa não criam categoria nova** — mesma normalização da tarefa de produtos
+   (`CONVENIENCIA` ↔ `CONVENIÊNCIA`).
+
+### Duas chaves antes de enviar qualquer coisa
+
+A criação depende de `modo_escrita = REAL` **e** da configuração `criar_familia_na_omie = SIM`
+(padrão `NAO`). A segunda chave existe porque esta integração já está em `REAL` desde 13/08/2026
+por causa da transferência de estoque: sem ela, a capacidade nova nasceria enviando sem nunca
+ter passado por simulação. Em simulação a tarefa registra nos avisos o payload que enviaria.
 
 ## Armadilhas conhecidas
 

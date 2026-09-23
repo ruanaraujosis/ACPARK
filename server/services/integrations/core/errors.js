@@ -7,6 +7,10 @@ export const CODIGOS_ERRO = Object.freeze({
   CONFIGURACAO: "CONFIGURACAO",
   AUTENTICACAO: "AUTENTICACAO",
   TEMPORARIO: "TEMPORARIO",
+  // O sistema externo pediu para esperar antes de tentar de novo, e disse por quanto tempo.
+  // Diferente de TEMPORARIO: aqui existe um prazo informado que precisa ser respeitado, e
+  // insistir antes dele piora a situacao em vez de so falhar.
+  LIMITE_TAXA: "LIMITE_TAXA",
   DADOS: "DADOS",
   FALHA: "FALHA"
 });
@@ -16,6 +20,7 @@ export const STATUS_POR_CODIGO = Object.freeze({
   CONFIGURACAO: "ERRO_CONFIGURACAO",
   AUTENTICACAO: "ERRO_AUTENTICACAO",
   TEMPORARIO: "ERRO_TEMPORARIO",
+  LIMITE_TAXA: "ERRO_TEMPORARIO",
   DADOS: "ERRO_DADOS",
   FALHA: "ERRO_TEMPORARIO"
 });

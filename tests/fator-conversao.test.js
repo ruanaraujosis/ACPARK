@@ -331,8 +331,10 @@ test("a tela do PDV mostra a embalagem e o total em unidades, sem inventar", () 
   assert.match(app, /const temEmbalagem = fator > 1 && !invalido;/);
   // Produto com cadastro torto não oferece pedido por embalagem
   assert.match(app, /Cadastro sem fator válido — peça em unidades/);
-  // O total em unidades acompanha a escolha na hora
-  assert.match(app, /= <strong>\$\{item\.quantidade \* fator\} un<\/strong>/);
+  // O total em unidades acompanha a escolha na hora (calculado, nunca inventado).
+  // A renderização da linha virou compartilhada entre "Novo pedido" e a Edição do pedido
+  // pendente (totalDoItemPedidoPdv), por isso a variável se chama `qtd` e não `item.quantidade`.
+  assert.match(app, /= <strong>\$\{qtd \* fator\} un<\/strong>/);
   // Sem o nome da embalagem, fala genericamente em vez de chutar "fardo"
   assert.match(app, /embalagem\(ns\)/);
   // A escolha viaja para o backend e sobrevive ao rascunho

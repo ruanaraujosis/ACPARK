@@ -87,8 +87,9 @@ export async function obterFatoresEmLote(client, skus) {
   const mapa = new Map();
   if (!unicos.length) return mapa;
 
+  // unit tambem vem daqui: mesma tabela, mesmo padrao de busca em lote ja medido
   const resultado = await client.query(
-    `SELECT sku_produto, fator_conversao, fator_status, embalagem, fator_lido_em
+    `SELECT sku_produto, fator_conversao, fator_status, embalagem, fator_lido_em, unit
      FROM product_integration_mappings
      WHERE active = TRUE AND sku_produto = ANY($1::text[])`,
     [unicos]
@@ -103,10 +104,11 @@ export async function obterFatoresEmLote(client, skus) {
 
   return new Map(unicos.map((sku) => {
     const linha = mapa.get(sku);
+    // unit sem linha, ou vazio, cai no mesmo default "UN" usado no mapper da OMIE e no schema
     if (!linha || !linha.fator_status) {
-      return [sku, { fator: FATOR_UNITARIO, status: STATUS_FATOR.UNITARIO, embalagem: null }];
+      return [sku, { fator: FATOR_UNITARIO, status: STATUS_FATOR.UNITARIO, embalagem: null, unit: linha?.unit || "UN" }];
     }
-    return [sku, { fator: linha.fator_conversao ?? null, status: linha.fator_status, embalagem: linha.embalagem || null }];
+    return [sku, { fator: linha.fator_conversao ?? null, status: linha.fator_status, embalagem: linha.embalagem || null, unit: linha.unit || "UN" }];
   }));
 }
 

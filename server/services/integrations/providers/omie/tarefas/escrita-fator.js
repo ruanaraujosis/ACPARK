@@ -4,7 +4,7 @@ import {
   marcarEscrita,
   marcarEscritaSimulada
 } from "../../../core/fator-evidencia.repository.js";
-import { chamarOmie, ehSemRegistros, ENDPOINTS } from "../omie.api.js";
+import { chamarOmie, ehProdutoInexistente, ehSemRegistros, ENDPOINTS } from "../omie.api.js";
 import { PADRAO_CARACTERISTICA_FATOR } from "./fatores.js";
 
 const LISTAR = "ListarCaractProduto";
@@ -54,8 +54,9 @@ async function caracteristicaAtual(contexto, externalProductId, nome) {
     const lista = resposta.dados?.listaCaracteristicas || [];
     return lista.find((item) => mesmaCaracteristica(item?.cNomeCaract, nome)) || null;
   } catch (erro) {
-    // Produto sem caracteristica nenhuma responde "nao existem registros"
-    if (ehSemRegistros(erro)) return null;
+    // Produto sem caracteristica nenhuma responde "nao existem registros"; produto que sumiu
+    // do ERP responde "produto nao cadastrado". Nos dois casos nao ha o que ler.
+    if (ehSemRegistros(erro) || ehProdutoInexistente(erro)) return null;
     throw erro;
   }
 }

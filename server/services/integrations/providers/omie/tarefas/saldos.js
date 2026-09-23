@@ -45,12 +45,11 @@ async function mapaDeSkus(client, integrationId, idsExternos) {
 // nunca soma. A liberacao de pedido tambem credita estoque_pdv.quantidade, mas a mesma saida
 // e lancada na OMIE — entao a proxima sincronizacao reconcilia os dois lados sozinha.
 //
-// quantidade e coluna integer, entao o saldo e arredondado; saldo_omie guarda o valor exato
-// que a OMIE respondeu, para a reconciliacao comparar sem perder a fracao.
+// quantidade e NUMERIC: o saldo entra exato (produto em KG/ML nao pode ser arredondado) e
+// saldo_omie guarda o mesmo valor que a OMIE respondeu, para a reconciliacao comparar.
 // quantidade_reservada_acpark nao e tocada, e saldo_disponivel_acpark e coluna gerada.
 async function gravarSaldo(client, { pdvId, sku, quantidade }) {
   const exato = Number(quantidade) || 0;
-  const inteiro = Math.round(exato);
 
   // Produto com saldo na OMIE que ainda nao tinha linha neste PDV entra como permitido = FALSE:
   // o saldo fica visivel, mas o que o PDV pode pedir continua sendo decisao do almoxarifado.
@@ -66,7 +65,7 @@ async function gravarSaldo(client, { pdvId, sku, quantidade }) {
          ultima_sincronizacao = CURRENT_TIMESTAMP,
          sincronizacao_status = 'SINCRONIZADO'
      RETURNING (xmax = 0) AS inserido`,
-    [pdvId, sku, inteiro, exato]
+    [pdvId, sku, exato, exato]
   );
 
   const linha = gravado.rows[0];
@@ -215,16 +214,19 @@ export async function sincronizarSaldoDeItem(contexto) {
     // Campos reais do listaEstoque: nSaldo / fisico / reservado. A documentacao promete
     // nFisico e nDisponivel, que NAO vem nesta resposta -- ler so por eles gravaria zero
     // no estoque central de todo produto.
+    //
+    // qtd_total e NUMERIC desde 21/09/2026 -- grava o valor exato, sem arredondar (mesma
+    // mudanca de estoque-almoxarifado.js, a sincronizacao em lote).
     const quantidade = saldoDoLocal(noAlmoxarifado);
     const gravou = await client.query(
       `UPDATE produtos
        SET qtd_total = $2,
-           saldo_omie = $3,
-           saldo_disponivel_acpark = $3 - COALESCE(quantidade_reservada_acpark, 0),
+           saldo_omie = $2,
+           saldo_disponivel_acpark = $2 - COALESCE(quantidade_reservada_acpark, 0),
            ultima_sincronizacao = CURRENT_TIMESTAMP,
            sincronizacao_status = 'SINCRONIZADO'
        WHERE sku = $1`,
-      [sku, Math.round(quantidade), quantidade]
+      [sku, quantidade]
     );
     if (gravou.rowCount > 0) {
       resumo.central_atualizado = true;

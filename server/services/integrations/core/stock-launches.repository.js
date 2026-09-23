@@ -4,9 +4,32 @@
 // de pedido". Nenhum provider especifico aparece aqui -- quem traduz isso para o formato de
 // uma API e o provider.
 
+// A coluna que guarda as causas distintas nasce em runtime, no padrao ensureXxx do projeto.
+// Memoizada: a fila chama registrarResultado em laco, e um ALTER por lancamento seria caro.
+let historicoPronto = null;
+export function ensureHistoricoDeErros(client) {
+  historicoPronto ||= client
+    .query("ALTER TABLE integration_stock_launches ADD COLUMN IF NOT EXISTS historico_erros JSONB")
+    .then(() => true)
+    .catch((erro) => {
+      historicoPronto = null; // deixa tentar de novo
+      throw erro;
+    });
+  return historicoPronto;
+}
+
 export const EVENTOS = Object.freeze({
   RETIRADA: "RETIRADA",
-  COMPENSACAO: "COMPENSACAO"
+  COMPENSACAO: "COMPENSACAO",
+  // Ajuste gerado pela assinatura de um inventario. Mora aqui, e nao no dominio de
+  // inventario, para o provider que drena a fila nao precisar importar aquele modulo.
+  AJUSTE_INVENTARIO: "INVENTARIO_AJUSTE",
+  // Saida por consumo interno de um PDV Administrativo (setor que consome sem vender).
+  // E evento proprio, e nao uma RETIRADA, porque o movimento na OMIE e outro: RETIRADA vira
+  // transferencia entre locais (a mercadoria continua na empresa), esta vira SAIDA (a
+  // mercadoria deixa o estoque). Misturar os dois faria a tarefa de transferencias montar
+  // TRF para consumo, que e exatamente o erro que este perfil precisa evitar.
+  CONSUMO_ADMINISTRATIVO: "CONSUMO_ADMIN"
 });
 
 export const STATUS = Object.freeze({
@@ -105,21 +128,58 @@ export async function registrarLancamento(client, dados) {
 // primeiras vagas de toda leitura. Como o agendador le 25 por vez, ele nunca alcancava um
 // lancamento novo -- a fila inteira ficava refem de pendencias que nao tinham como sair.
 // Elas continuam sendo retentadas, so que depois de quem ainda nao teve a primeira chance.
-export async function listarAbertos(client, { integrationId = null, limite = 50, apenas = null } = {}) {
+//
+// `eventos` restringe aos tipos que a tarefa chamadora sabe montar. Existe desde que a fila
+// passou a carregar mais de um tipo de escrita: sem o filtro, a tarefa de transferencia lia
+// um ajuste de inventario, tentava montar payload de transferencia com ele (que exige local
+// de destino, nulo no inventario), falhava e marcava o lancamento como ERRO -- deixando-o
+// preso numa fila que a tarefa certa nunca leria de volta a tempo.
+// Depois deste numero de tentativas, o lancamento sai da fila e espera uma pessoa.
+//
+// Medido em 21/09/2026: oito retiradas de produto INATIVO na OMIE estavam sendo retentadas
+// desde 3 de setembro, com 814 a 923 tentativas cada. Nenhuma delas tinha como dar certo
+// sozinha -- a causa exige acao humana no ERP --, e cada tentativa gastava uma chamada da
+// API, com 25 respostas HTTP 429 e cinco bloqueios por consumo indevido no mesmo periodo.
+// Retentar e util enquanto a causa pode passar (internet, indisponibilidade); depois disso
+// e so ruido caro. `apenas` ignora o limite: reprocessar um item pela tela e ato humano.
+export const LIMITE_TENTATIVAS = 20;
+
+export async function listarAbertos(client, { integrationId = null, limite = 50, apenas = null, eventos = null } = {}) {
+  const listaDeEventos = Array.isArray(eventos) && eventos.length ? eventos : null;
   const resultado = await client.query(
     `SELECT * FROM integration_stock_launches
      WHERE status = ANY($1::text[])
        AND ($2::bigint IS NULL OR integration_id = $2 OR integration_id IS NULL)
        AND ($4::bigint IS NULL OR id = $4)
+       AND ($5::text[] IS NULL OR evento = ANY($5::text[]))
+       AND ($4::bigint IS NOT NULL OR status <> 'ERRO' OR COALESCE(tentativas, 0) < $6)
      ORDER BY (status = 'ERRO'), created_at
      LIMIT $3`,
-    [STATUS_ABERTOS, integrationId, Math.min(Number(limite) || 50, 200), apenas]
+    [STATUS_ABERTOS, integrationId, Math.min(Number(limite) || 50, 200), apenas, listaDeEventos, LIMITE_TENTATIVAS]
   );
   return resultado.rows;
 }
 
+// Lancamentos que a fila parou de retentar: esgotaram as tentativas e dependem de alguem.
+export async function contarEsgotados(client, integrationId = null) {
+  const resultado = await client.query(
+    `SELECT COUNT(*)::int AS total FROM integration_stock_launches
+     WHERE status = 'ERRO' AND COALESCE(tentativas, 0) >= $2
+       AND ($1::bigint IS NULL OR integration_id = $1)`,
+    [integrationId, LIMITE_TENTATIVAS]
+  );
+  return resultado.rows[0]?.total || 0;
+}
+
 // Marca o resultado do lancamento. Em simulacao o payload e gravado e nada e enviado.
+//
+// `erro` NAO sobrescreve cegamente a causa anterior. Ate 29/08/2026 cada retentativa apagava
+// a mensagem da tentativa passada: 10 dos 12 lancamentos recusados por saldo negativo tiveram
+// a causa real substituida por "API bloqueada por consumo", e o diagnostico so foi recuperado
+// olhando o que sobrou. Agora cada causa distinta fica em historico_erros, que sobrevive as
+// retentativas seguintes; `erro` continua sendo a mais recente, para a tela nao mudar.
 export async function registrarResultado(client, id, { status, payload, resposta, externalId, erro }) {
+  await ensureHistoricoDeErros(client);
   const resultado = await client.query(
     `UPDATE integration_stock_launches
      SET status = $2,
@@ -127,6 +187,19 @@ export async function registrarResultado(client, id, { status, payload, resposta
          resposta = COALESCE($4::jsonb, resposta),
          external_id = COALESCE($5, external_id),
          erro = $6,
+         -- Guarda cada causa DISTINTA, sem apagar as anteriores
+         historico_erros = CASE
+           WHEN $6::text IS NULL THEN historico_erros
+           WHEN historico_erros IS NULL THEN jsonb_build_array(
+             jsonb_build_object('erro', $6::text, 'em', to_char(CURRENT_TIMESTAMP, 'YYYY-MM-DD HH24:MI:SS'))
+           )
+           WHEN historico_erros @> jsonb_build_array(jsonb_build_object('erro', $6::text)) THEN historico_erros
+           -- Teto de 5 causas distintas: o suficiente para diagnosticar sem a coluna crescer
+           WHEN jsonb_array_length(historico_erros) >= 5 THEN historico_erros
+           ELSE historico_erros || jsonb_build_array(
+             jsonb_build_object('erro', $6::text, 'em', to_char(CURRENT_TIMESTAMP, 'YYYY-MM-DD HH24:MI:SS'))
+           )
+         END,
          tentativas = tentativas + 1,
          enviado_em = CASE WHEN $2 = 'ENVIADO' THEN CURRENT_TIMESTAMP ELSE enviado_em END,
          updated_at = CURRENT_TIMESTAMP

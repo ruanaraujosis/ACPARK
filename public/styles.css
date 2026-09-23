@@ -734,12 +734,23 @@
   display: grid;
   gap: 0.9rem;
   width: min(480px, 94vw);
+  max-height: calc(100dvh - 2rem);
   padding: 1rem;
   border: 1px solid rgba(0, 123, 135, 0.16);
   border-radius: 22px;
+  /* .signature-actions (usada pelo painel de assinatura) sangra até a borda com margem
+     negativa -- sem overflow aqui, aquele retângulo branco ignorava o arredondamento e
+     cortava o canto de baixo do diálogo com uma quina reta. */
+  overflow-y: auto;
   background: rgba(255, 255, 255, 0.98);
   color: var(--ac-teal-dark);
   box-shadow: 0 22px 70px rgba(0, 31, 36, 0.24);
+}
+
+/* O painel de assinar e confirmar tem um quadro de desenho dentro -- os 480px do diálogo
+   padrão deixavam pouco espaço de sobra para assinar com conforto. */
+.assinatura-contagem-dialog {
+  width: min(560px, 94vw);
 }
 
 .system-confirm-head {
@@ -2462,6 +2473,15 @@ body.sheet-manager-open {
   border-radius: 18px;
 }
 
+/* Tela de "Gerenciar categorias": lista de produtos vinculados maior, pedido do usuário --
+   categorias reais chegam a 40+ produtos e 430px (herdado da lista de produtos do pedido,
+   outra tela) mostrava só 5 linhas por vez. Escopado à tela de categorias de propósito: a
+   classe é compartilhada com a lista de produtos disponíveis do pedido do PDV, que não deve
+   crescer junto. */
+.category-detail-screen .category-product-table {
+  max-height: 700px;
+}
+
 .category-product-table table {
   min-width: 680px;
 }
@@ -2520,69 +2540,64 @@ body.sheet-manager-open {
   overflow-x: visible;
 }
 
-.order-cart-list table {
+/* ===== Colunas da tabela de produtos do pedido do PDV =====
+   Produto · Qtd · Unidade · Total · Ação.
+   Vale para as duas telas que mostram esses produtos ("Novo pedido" e Edição do pedido
+   pendente): elas usam a mesma função de renderização, então usam também a mesma tabela.
+   Antes cada uma tinha o próprio bloco e as duas divergiram — a coluna 3, por exemplo, chegou
+   a ficar com 58px (largura de botão de ícone) e espremia o seletor de unidade numa letra só. */
+
+.pedido-pdv-table table {
   table-layout: fixed;
   /* Soma das colunas fixas (39rem) mais uma faixa mínima legível para o nome do produto.
-     Abaixo disso o #cart acima rola horizontalmente em vez de espremer as colunas. */
+     Abaixo disso o contêiner rola horizontalmente em vez de espremer as colunas. */
   min-width: 800px;
 }
 
-.order-cart-list th,
-.order-cart-list td {
+.pedido-pdv-table th,
+.pedido-pdv-table td {
   padding: 0.75rem 0.8rem;
   /* A linha mistura texto com campos mais altos: centralizar evita o degrau visual */
   vertical-align: middle;
 }
 
-/* Colunas do carrinho: Produto · Quantidade · Unidade · Total · Ação.
-   Estas regras eram do carrinho antigo de 3 colunas (Produto/Qtd/Ação) e não acompanharam a
-   entrada de "Unidade" e "Total" — a coluna 3 tinha 58px, largura de botão de ícone, que passou
-   a espremer o seletor de unidade a ponto de mostrar só uma letra. */
-
-/* Produto: sem largura fixa de propósito, absorve toda a sobra */
-.order-cart-list th:nth-child(1),
-.order-cart-list td:nth-child(1) {
-  /* Nome longo quebra em vez de empurrar as outras colunas */
+/* Produto: sem largura fixa de propósito, absorve toda a sobra e quebra em nome longo */
+.pedido-pdv-table th:nth-child(1),
+.pedido-pdv-table td:nth-child(1) {
   word-break: break-word;
 }
 
 /* Quantidade: cabe 3 dígitos mais as setinhas do campo numérico */
-.order-cart-list th:nth-child(2),
-.order-cart-list td:nth-child(2) {
+.pedido-pdv-table th:nth-child(2),
+.pedido-pdv-table td:nth-child(2) {
   width: 7rem;
   text-align: center;
 }
 
 /* Unidade: precisa caber a opção inteira ("Embalagem (15 un)"), nunca truncada */
-.order-cart-list th:nth-child(3),
-.order-cart-list td:nth-child(3) {
+.pedido-pdv-table th:nth-child(3),
+.pedido-pdv-table td:nth-child(3) {
   width: 11.5rem;
   text-align: center;
 }
 
 /* Total: o texto calculado não pode quebrar no meio. Largura medida no pior caso realista —
    "999 embalagem(ns) = 14985 un" pede 222px, mais o padding de 0.8rem de cada lado. */
-.order-cart-list th:nth-child(4),
-.order-cart-list td:nth-child(4) {
+.pedido-pdv-table th:nth-child(4),
+.pedido-pdv-table td:nth-child(4) {
   width: 15.5rem;
   white-space: nowrap;
 }
 
 /* Ação: botão de remover alinhado à direita */
-.order-cart-list th:nth-child(5),
-.order-cart-list td:nth-child(5) {
+.pedido-pdv-table th:nth-child(5),
+.pedido-pdv-table td:nth-child(5) {
   width: 5rem;
   text-align: right;
 }
 
 .order-available-card {
   margin-top: 0;
-}
-
-.order-cart-qty {
-  width: 100%;
-  max-width: 82px;
-  padding-inline: 0.65rem;
 }
 
 .order-draft-actions {
@@ -2653,7 +2668,7 @@ body.sheet-manager-open {
 
 .category-add-list {
   display: grid;
-  max-height: 430px;
+  max-height: 700px;
   overflow-y: auto;
   border: 1px solid rgba(0, 123, 135, 0.12);
   border-radius: 18px;
@@ -2694,6 +2709,14 @@ body.sheet-manager-open {
   gap: 0.75rem;
   align-items: center;
   justify-content: space-between;
+}
+
+/* "Selecionar tudo" da exclusão em massa de produtos vinculados -- mesma linha do contador
+   e do botão de excluir selecionados, mas alinhado à esquerda, ao contrário deles */
+.category-select-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
 }
 
 @media (max-width: 760px) {
@@ -3623,10 +3646,6 @@ th {
   font-weight: 900;
 }
 
-.release-summary-pill {
-  cursor: default;
-}
-
 /* Quadro Kanban de liberação */
 .release-kanban-board {
   display: grid;
@@ -3872,6 +3891,9 @@ body.has-order-panel {
   overflow: hidden;
 }
 
+/* .detail-panel-overlay é a classe genérica (painel de inventário e afins); .release-detail-
+   overlay é mantida no seletor para o painel de pedido continuar exatamente como estava. */
+.detail-panel-overlay,
 .release-detail-overlay {
   position: fixed;
   inset: 0;
@@ -3894,6 +3916,55 @@ body.has-order-panel {
   box-shadow: 0 28px 70px rgba(0, 20, 24, 0.35);
 }
 
+/* Os painéis de inventário ocupam a página inteira: a lista de um deles chega a ter 4.500+
+   produtos, e o box centralizado do painel de pedido deixaria pouco espaço para ela. */
+.inventario-detail-overlay,
+.contagem-propria-overlay {
+  padding: 0;
+}
+
+.inventario-detail-overlay .order-panel,
+.contagem-propria-overlay .order-panel {
+  width: 100vw;
+  height: 100dvh;
+  border-radius: 0;
+}
+
+/* Minimizar esconde o overlay (os inputs continuam vivos no DOM, nada se perde) e destrava o
+   scroll de fundo -- ver minimizeDetailOverlay(). */
+.order-panel-overlay.is-minimized {
+  display: none;
+}
+
+/* Aba flutuante para retomar um painel minimizado */
+.minimized-panel-chip {
+  position: fixed;
+  right: 1.2rem;
+  bottom: 1.2rem;
+  z-index: 150;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.7rem 1.1rem;
+  border: none;
+  border-radius: 999px;
+  background: var(--ac-teal-dark);
+  color: white;
+  font-weight: 800;
+  font-size: 0.85rem;
+  box-shadow: 0 10px 30px rgba(0, 20, 24, 0.35);
+  cursor: pointer;
+}
+
+.minimized-panel-chip:hover,
+.minimized-panel-chip:focus-visible {
+  background: var(--ac-teal);
+}
+
+.minimized-panel-chip-icon {
+  font-size: 0.7rem;
+}
+
 /* Cabeçalho: identidade do pedido, trilha de etapas e o único botão de fechar */
 .order-panel-head {
   display: flex;
@@ -3909,6 +3980,16 @@ body.has-order-panel {
   display: grid;
   gap: 0.15rem;
   min-width: 0;
+}
+
+/* Agrupa o(s) ícone(s) extra (histórico, resumo), o minimizar e o fechar num só bloco à
+   direita -- sem isto, o space-between do cabeçalho espalhava cada botão numa posição
+   diferente ao longo da largura inteira, em vez de ficarem lado a lado. */
+.order-panel-head-actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 0.6rem;
+  align-items: center;
 }
 
 .order-panel-head-main h2 {
@@ -3979,7 +4060,8 @@ body.has-order-panel {
 }
 
 .order-panel-close,
-.order-panel-timeline-open {
+.order-panel-timeline-open,
+.order-panel-minimize {
   display: grid;
   place-items: center;
   flex-shrink: 0;
@@ -3994,8 +4076,15 @@ body.has-order-panel {
   cursor: pointer;
 }
 
-.order-panel-timeline-open {
+.order-panel-timeline-open,
+.order-panel-minimize {
   font-size: 1.15rem;
+}
+
+.order-panel-minimize:hover,
+.order-panel-minimize:focus-visible {
+  background: rgba(0, 123, 135, 0.12);
+  border-color: var(--ac-teal);
 }
 
 .order-panel-close:hover,
@@ -4025,6 +4114,19 @@ body.has-order-panel {
   flex: 1 1 auto;
   min-height: 0;
   overscroll-behavior: contain;
+}
+
+/* A tabela do inventário pode ter milhares de linhas (o Almoxarifado sozinho tem 4.500+
+   produtos): mesmo com alertas e filtros acima disputando espaço, ela nunca pode encolher a
+   ponto de sumir -- uma altura mínima garante que sempre sobra algo para rolar. */
+.order-panel-content > .table-wrap.inventario-tabela {
+  /* Pelo menos ~10 produtos visíveis na lista (linha de ~4rem + cabeçalho); se o painel for
+     menor que isso, o corpo do painel rola em vez de espremer a tabela */
+  min-height: 48rem;
+}
+
+.inventario-detail-overlay .order-panel-content {
+  overflow-y: auto;
 }
 
 .order-panel-context {
@@ -4161,6 +4263,13 @@ body.has-order-panel {
   gap: 0.5rem;
   flex-wrap: wrap;
   align-items: center;
+}
+
+/* O bloco de ações não pode passar da largura do rodapé: sem isso o texto de ajuda e os três
+   botões ficavam numa linha só e o último era cortado em telas médias */
+.order-panel-foot .order-card-actions {
+  max-width: 100%;
+  min-width: 0;
 }
 
 .order-panel-foot .btn {
@@ -4321,7 +4430,8 @@ body.has-order-panel {
 /* Responsivo: painel do pedido em telas pequenas */
 @media (max-width: 720px) {
   /* Em telas pequenas o espaço é escasso: o painel volta a ocupar a tela inteira */
-  .release-detail-overlay {
+  .release-detail-overlay,
+  .detail-panel-overlay {
     padding: 0;
   }
 
@@ -4408,6 +4518,9 @@ body.has-order-panel {
   margin-bottom: 1rem;
   border-color: rgba(0, 123, 135, 0.24);
   background: linear-gradient(135deg, rgba(0, 123, 135, 0.09), rgba(255, 255, 255, 0.96));
+  /* Direto dentro de .order-panel-content (painel de inventário): não pode ceder espaço para
+     a tabela -- quem tem que encolher e rolar é a tabela, nunca o aviso */
+  flex-shrink: 0;
 }
 
 .order-head-status {
@@ -4550,6 +4663,68 @@ body.has-order-panel {
   text-decoration: line-through;
   text-decoration-thickness: 2px;
   text-decoration-color: rgba(127, 29, 29, 0.62);
+}
+
+/* Item que o PDV marcou para sair do pedido pendente: a remoção só acontece ao salvar, então
+   precisa ficar claro na tela o que vai embora — e dá para desfazer clicando de novo. */
+tr[data-item-id].is-marked-remove {
+  background: rgba(239, 68, 68, 0.075);
+}
+
+tr[data-item-id].is-marked-remove td:first-child {
+  text-decoration: line-through;
+  text-decoration-thickness: 2px;
+  text-decoration-color: rgba(127, 29, 29, 0.62);
+}
+
+tr[data-item-id].is-marked-remove .pdv-item-qty {
+  opacity: 0.45;
+}
+
+/* Ação de salvar do pedido pendente no PDV: dica à esquerda, botão à direita */
+.order-card-actions .pdv-edit-hint {
+  flex: 1 1 14rem;
+}
+
+/* Adicionar produto a um pedido pendente, na tela do PDV */
+.pdv-add-panel {
+  margin-top: 0.85rem;
+  /* Dentro do painel de tela cheia do detalhe de inventário: não cede espaço à tabela */
+  flex-shrink: 0;
+}
+
+.pdv-add-form {
+  display: grid;
+  /* Produto ocupa a sobra; quantidade fica com largura própria. Em tela estreita tudo empilha,
+     porque o PDV costuma operar em monitor pequeno. */
+  grid-template-columns: minmax(12rem, 1fr) 9rem auto;
+  gap: 0.65rem;
+  align-items: start;
+  margin-top: 0.65rem;
+  padding: 0.85rem;
+  border: 1px solid rgba(0, 123, 135, 0.16);
+  border-radius: 16px;
+  background: rgba(16, 182, 199, 0.05);
+}
+
+/* O botão alinha com os campos, não com o rótulo de apoio abaixo deles */
+.pdv-add-form .pdv-add-confirm {
+  margin-top: 1.55rem;
+}
+
+/* Diz o que o número significa naquele produto (ex: "fardo com 15 un cada") */
+.pdv-add-unidade-info {
+  display: block;
+  margin-top: 0.2rem;
+  color: #63728a;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+@media (max-width: 720px) {
+  .pdv-add-form {
+    grid-template-columns: 1fr;
+  }
 }
 
 .order-source-badge {
@@ -4963,6 +5138,9 @@ td input[type="number"] {
   flex-wrap: wrap;
   gap: 0.65rem;
   align-items: center;
+  /* Quando usada dentro de um .order-panel-content (painel de inventário em tela cheia), a
+     barra de ações não pode ceder espaço à tabela */
+  flex-shrink: 0;
 }
 
 .print-history-area .print-logo-header {
@@ -6022,9 +6200,17 @@ td input[type="number"] {
   }
 
   body.printing-receipt:not(.printing-withdrawal-receipt) .order-request-print-target .receipt-row {
-    grid-template-columns: minmax(0, 1fr) 13mm !important;
+    /* Produto | EMB | QTD -- duas colunas fixas, uma para cada quantidade (02/09/2026) */
+    grid-template-columns: minmax(0, 1fr) 10mm 13mm !important;
     border-bottom: 0 !important;
     padding: 3px 0 !important;
+  }
+
+  /* EMB (2ª coluna) precisa do mesmo alinhamento à direita que QTD (última) já tinha --
+     a regra genérica de .receipt-row span:last-child não alcança a coluna do meio */
+  body.printing-receipt:not(.printing-withdrawal-receipt) .order-request-print-target .receipt-row span:nth-child(2) {
+    text-align: right !important;
+    white-space: nowrap !important;
   }
 
   body.printing-receipt:not(.printing-withdrawal-receipt) .order-request-print-target .receipt-item-dash {
@@ -6126,21 +6312,39 @@ td input[type="number"] {
   font-weight: 700;
 }
 
-.order-cart-unidade {
+/* ===== Tabela de produtos do pedido do PDV =====
+   Usada pela tela "Novo pedido" e pela Edição do pedido pendente, que compartilham a mesma
+   função de renderização (linhaProdutoPedidoPdv). Uma regra só para as duas não divergirem. */
+
+.pedido-pdv-unidade {
   min-height: 38px;
+  width: 100%;
   font-size: 0.86rem;
 }
 
-/* Os campos do carrinho ocupam a largura útil da própria célula. Escopado ao carrinho do PDV
-   porque .order-cart-qty tem max-width menor por padrão e as regras de `td input` são
-   compartilhadas com a tela de liberação do Almoxarifado e com o painel do pedido. */
-.order-cart-list .order-cart-qty {
+.pedido-pdv-qty {
   width: 100%;
   max-width: none;
 }
 
-.order-cart-list .order-cart-unidade {
-  width: 100%;
+/* Produto absorve a sobra; as demais colunas têm largura própria */
+.pedido-pdv-row .pedido-pdv-produto {
+  min-width: 11rem;
+  word-break: break-word;
+}
+
+.pedido-pdv-row .pedido-pdv-total {
+  white-space: nowrap;
+}
+
+.pedido-pdv-acao {
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* Produto adicionado e ainda não salvo na edição */
+.pedido-pdv-row.pedido-pdv-novo {
+  background: rgba(100, 169, 68, 0.1);
 }
 
 /* ===== Assistente de fator de conversão (histórico de compra) ===== */
@@ -6382,50 +6586,730 @@ td input[type="number"] {
   color: #4a5a70;
 }
 
-.tag-confianca.conf-MAXIMA {
-  border-color: #9fd3ae;
-  background: #e9f9ee;
-  color: #1f6b33;
+/* ===== Inventário do PDV (contagem física) ===== */
+
+.inventario-topo {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 0.75rem;
 }
 
-/* Planilha divergente entre abas: não vira fator, então precisa saltar aos olhos */
-.assistente-fontes .fonte-planilha.divergente {
-  border-color: #f3c7a6;
-  background: #fff5ec;
-  color: var(--ac-orange);
-}
-
-.planilha-item {
-  border: 1px solid #cfecef;
+/* Contador "X de Y contados": o PDV precisa saber o quanto falta sem rolar a lista */
+.inventario-resumo {
+  padding: 0.5rem 0.9rem;
+  border: 1px solid rgba(0, 123, 135, 0.16);
   border-radius: 14px;
-  padding: 0.75rem 0.9rem;
-  background: #fbfeff;
+  background: rgba(16, 182, 199, 0.07);
+  color: var(--ac-teal-dark);
+  font-size: 0.9rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.inventario-pendente {
+  color: #b45309;
+  font-weight: 900;
+}
+
+.inventario-ajuda {
+  margin-bottom: 0.75rem;
+}
+
+/* Filtro de estado na lista de inventários: fica sozinho na linha de baixo, à esquerda,
+   embaixo do título -- o bloqueio/agendamento saiu dessa linha (virou o botão "Agendar") e o
+   filtro não precisa mais dividir espaço nem esticar para preencher vão nenhum. */
+.inventario-status-filtro {
+  display: block;
+  width: 100%;
+  max-width: 20rem;
+  margin-bottom: 0.75rem;
+}
+
+/* Rótulo (Liberada/Bloqueada) + botão de agendar, lado a lado à direita do título */
+.inventario-agendar-area {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.inventario-janela-status {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.3rem 0.75rem;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 900;
+}
+
+.inventario-janela-status.is-liberada {
+  background: rgba(16, 182, 106, 0.12);
+  color: #0f7a45;
+}
+
+.inventario-janela-status.is-bloqueada {
+  background: rgba(251, 191, 36, 0.16);
+  color: #92400e;
+}
+
+.inventario-filtros {
+  display: grid;
+  grid-template-columns: minmax(10rem, 1fr) minmax(9rem, 14rem) auto;
+  gap: 0.6rem;
+  align-items: center;
+  margin-bottom: 0.75rem;
+  /* Dentro do painel de tela cheia (order-panel-content), quem rola é a tabela -- os filtros
+     mantêm o tamanho natural */
+  flex-shrink: 0;
+}
+
+.inventario-so-pendentes {
+  display: inline-flex;
+  gap: 0.5rem;
+  align-items: center;
+  min-height: 44px;
+  cursor: pointer;
+  color: var(--ac-teal-dark);
+  font-size: 0.86rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+/* O checkbox herdava width 100% e min-height 44px da regra global de input e virava um
+   quadrado grande, longe do texto. O prefixo html empata a especificidade com a regra da linha
+   dos checkboxes (o Tailwind injetado em runtime empata com regras simples). */
+html .inventario-so-pendentes input[type="checkbox"] {
+  width: 1.15rem;
+  height: 1.15rem;
+  min-height: 0;
+  flex: 0 0 auto;
+  margin: 0;
+  accent-color: var(--ac-teal-dark);
+}
+
+/* Painel modal do relatório de estoque consolidado (data de corte + filtros + ações) --
+   mesmo padrão do .integration-modal: extende .photo-viewer-dialog em vez de recriar do zero */
+.relatorio-estoque-dialog {
+  width: min(560px, calc(100vw - 32px));
+  max-height: min(90vh, 760px);
+  /* Sem isso, .photo-viewer-dialog deixa cabeçalho e corpo cada um do tamanho do próprio
+     conteúdo -- o corpo cresce além da altura máxima do diálogo em vez de rolar por dentro
+     (mesmo padrão já usado em .order-timeline-modal .photo-viewer-dialog). */
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.relatorio-estoque-body {
+  /* .photo-viewer-body de onde herda define grid-template-columns/align-items/min-height
+     para o layout de 3 colunas do visualizador de fotos (seta, imagem, seta) -- sem
+     sobrescrever aqui, os blocos deste formulário ficavam lado a lado e se sobrepunham. */
+  display: grid;
+  grid-template-columns: 1fr;
+  align-items: stretch;
+  gap: 0.9rem;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.relatorio-estoque-body input[type="date"] {
+  min-width: 10rem;
+}
+
+.relatorio-filtro-bloco {
   display: grid;
   gap: 0.5rem;
 }
 
-.planilha-item.divergente {
-  border-color: #f3c7a6;
-  background: #fff8f2;
+/* A lista costuma ser longa; rolar dentro do cartão mantém o resumo e as ações à vista */
+.inventario-tabela {
+  max-height: 60vh;
+  overflow-y: auto;
 }
 
-.planilha-candidatos {
+.inventario-tabela table {
+  min-width: 640px;
+}
+
+/* Cabeçalho fixo para não perder a referência da coluna ao rolar centenas de produtos */
+.inventario-tabela thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+.inventario-produto {
+  display: grid;
+  gap: 0.1rem;
+  font-weight: 700;
+}
+
+.inventario-sku,
+.inventario-categoria {
+  color: #64748b;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.inventario-tabela th:nth-child(3),
+.inventario-tabela td:nth-child(3) {
+  width: 8.5rem;
+}
+
+.inventario-tabela th:nth-child(4),
+.inventario-tabela td:nth-child(4) {
+  width: 11rem;
+  white-space: nowrap;
+}
+
+.inventario-qtd {
+  width: 100%;
+  text-align: right;
+}
+
+/* Linha já contada ganha marca discreta: ajuda a achar o que falta numa lista longa */
+.inventario-linha.is-contado {
+  background: rgba(16, 182, 199, 0.06);
+}
+
+.inventario-linha.is-contado .inventario-qtd {
+  border-color: rgba(0, 123, 135, 0.42);
+  font-weight: 800;
+}
+
+.inventario-nao-contado {
+  color: #94a3b8;
+  font-style: italic;
+}
+
+@media (max-width: 720px) {
+  .inventario-filtros {
+    grid-template-columns: 1fr;
+  }
+
+  /* Ocupa a linha inteira, à esquerda, e o texto pode quebrar em telas bem estreitas */
+  .inventario-so-pendentes {
+    justify-self: start;
+    white-space: normal;
+  }
+
+  /* Rodapé do painel: texto de ajuda em linha própria e botões que dividem a largura, sem
+     ficarem cortados na lateral */
+  .order-panel-content .order-card-actions,
+  .order-panel-foot .order-card-actions {
+    width: 100%;
+  }
+
+  .order-panel-foot .order-card-actions > .text-sm {
+    flex: 1 1 100%;
+  }
+
+  .order-panel-foot .order-card-actions .btn {
+    flex: 1 1 auto;
+    width: auto;
+    white-space: normal;
+  }
+
+  /* No celular o nome do produto quebra em 2-3 linhas: cada linha é mais alta, então a lista
+     precisa de mais altura para mostrar 10 produtos */
+  .order-panel-content > .table-wrap.inventario-tabela {
+    min-height: 58rem;
+  }
+
+  .inventario-resumo {
+    width: 100%;
+  }
+}
+
+/* ===== Aba INVENTÁRIOS do Almoxarifado ===== */
+
+/* Painel da janela de contagem: alternador + agendamento, no canto do cabeçalho */
+.inventario-janela {
+  display: grid;
+  gap: 0.5rem;
+  min-width: 17rem;
+  padding: 0.75rem 0.9rem;
+  border: 1px solid rgba(0, 123, 135, 0.16);
+  border-radius: 16px;
+  background: rgba(16, 182, 199, 0.05);
+}
+
+.inventario-janela.is-bloqueada {
+  border-color: rgba(180, 83, 9, 0.28);
+  background: rgba(251, 191, 36, 0.09);
+}
+
+.inventario-janela-linha {
   display: flex;
-  flex-wrap: wrap;
+  gap: 0.6rem;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.inventario-agenda-rotulo {
+  color: var(--ac-teal-dark);
+  font-size: 0.84rem;
+  font-weight: 800;
+}
+
+.inventario-janela-nota {
+  color: #63728a;
+  font-size: 0.76rem;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+/* Alternador liga/desliga da contagem */
+.inventario-switch {
+  display: inline-flex;
+  gap: 0.55rem;
+  align-items: center;
+  cursor: pointer;
+  user-select: none;
+}
+
+/* O checkbox real fica escondido, mas continua sendo ele que recebe foco e teclado */
+.inventario-switch input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
+.inventario-switch-trilho {
+  position: relative;
+  flex: none;
+  width: 2.6rem;
+  height: 1.45rem;
+  border-radius: 999px;
+  background: #cbd5e1;
+  transition: background 0.16s ease;
+}
+
+.inventario-switch-bolinha {
+  position: absolute;
+  top: 0.17rem;
+  left: 0.19rem;
+  width: 1.11rem;
+  height: 1.11rem;
+  border-radius: 50%;
+  background: white;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.3);
+  transition: transform 0.16s ease;
+}
+
+.inventario-switch input:checked + .inventario-switch-trilho {
+  background: var(--ac-teal, #007b87);
+}
+
+.inventario-switch input:checked + .inventario-switch-trilho .inventario-switch-bolinha {
+  transform: translateX(1.15rem);
+}
+
+.inventario-switch input:focus-visible + .inventario-switch-trilho {
+  outline: 2px solid var(--ac-teal-dark);
+  outline-offset: 2px;
+}
+
+.inventario-switch-texto {
+  color: var(--ac-teal-dark);
+  font-size: 0.86rem;
+  font-weight: 800;
+}
+
+/* Contagem velha: entre contar e lançar, o PDV seguiu vendendo */
+.inventario-alerta-idade {
+  color: #b45309;
+  font-weight: 900;
+}
+
+.inventario-antigo td {
+  background: rgba(251, 191, 36, 0.07);
+}
+
+.inventario-aviso-antiga {
+  border-color: rgba(180, 83, 9, 0.3);
+  background: rgba(251, 191, 36, 0.1);
+}
+
+/* Diferença entre o contado e o saldo atual */
+.inventario-diferenca {
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.inventario-dif-zero {
+  color: #64748b;
+}
+
+.inventario-dif-mais {
+  color: #047857;
+}
+
+.inventario-dif-menos {
+  color: #b91c1c;
+}
+
+.inventario-saldo {
+  color: #475569;
+  font-weight: 700;
+}
+
+.inventario-admin-qtd {
+  width: 100%;
+  text-align: right;
+}
+
+/* Linha marcada para remoção: some só ao salvar, para dar chance de desistir */
+.inventario-item-linha.is-marked-remove td {
+  opacity: 0.45;
+  text-decoration: line-through;
+}
+
+@media (max-width: 720px) {
+  .inventario-janela {
+    width: 100%;
+    min-width: 0;
+  }
+}
+
+/* ===== Assinatura do inventário pelo PDV ===== */
+
+.inventario-assinatura-card {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.inventario-assinatura-area {
+  display: grid;
+  gap: 0.6rem;
+  padding: 0.9rem;
+  border: 1px solid rgba(0, 123, 135, 0.16);
+  border-radius: 16px;
+  background: rgba(16, 182, 199, 0.05);
+  /* Dentro do painel de tela cheia da contagem do Almoxarifado: o quadro de assinatura tem
+     altura fixa (a área de desenho) e não pode ser espremido -- quem cede espaço é a tabela */
+  flex-shrink: 0;
+}
+
+/* Marca no menu que há assinatura esperando, para quem está em outra tela */
+.nav-btn.tem-pendencia::after {
+  content: "";
+  display: inline-block;
+  width: 0.55rem;
+  height: 0.55rem;
+  margin-left: 0.45rem;
+  border-radius: 50%;
+  background: #f4760f;
+}
+
+/* "mantém o valor" ao lado do produto sem contagem: informa, nao alarma -- o produto nao
+   sofre alteracao nenhuma */
+.inventario-preservado {
+  display: block;
+  color: #64748b;
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+/* Avisos de que a contagem em branco zera o estoque */
+.inventario-aviso-zera {
+  border-color: rgba(180, 83, 9, 0.3);
+  background: rgba(251, 191, 36, 0.1);
+}
+
+
+/* ===== Avisos: sino na barra e banner no canto ===== */
+
+/* O sino fica ao lado do ☰, no mesmo agrupamento */
+.menu-wrap {
+  display: flex;
   align-items: center;
   gap: 0.4rem;
 }
 
-.planilha-candidatos select {
-  border: 1px solid #cfecef;
-  border-radius: 10px;
-  padding: 0.35rem 0.5rem;
-  font-size: 0.85rem;
-  background: #fff;
-  min-width: 260px;
-  max-width: 100%;
+.aviso-sino {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  padding: 0;
+  border: 1px solid rgba(0, 123, 135, 0.2);
+  border-radius: 12px;
+  background: white;
+  color: var(--ac-teal-dark);
+  cursor: pointer;
+  transition: background 0.15s ease;
 }
 
-.importar-planilha-label {
+.aviso-sino:hover {
+  background: rgba(16, 182, 199, 0.09);
+}
+
+/* Traço vazado, no mesmo peso dos demais ícones da barra */
+.aviso-sino svg {
+  width: 1.3rem;
+  height: 1.3rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.aviso-sino.tem-aviso {
+  border-color: rgba(244, 118, 15, 0.45);
+  color: #c2410c;
+}
+
+.aviso-sino-contador {
+  position: absolute;
+  top: -0.3rem;
+  right: -0.3rem;
+  min-width: 1.15rem;
+  height: 1.15rem;
+  padding: 0 0.25rem;
+  border-radius: 999px;
+  background: #f4760f;
+  color: white;
+  font-size: 0.68rem;
+  font-weight: 900;
+  line-height: 1.15rem;
+  text-align: center;
+}
+
+/* Banner fixado no canto superior direito, empilhando um cartão por aviso */
+.aviso-banners {
+  position: fixed;
+  top: 4.2rem;
+  right: 1rem;
+  z-index: 40;
+  display: grid;
+  gap: 0.5rem;
+  width: min(22rem, calc(100vw - 2rem));
+  max-height: calc(100vh - 6rem);
+  overflow-y: auto;
+}
+
+.aviso-banner {
+  display: flex;
+  gap: 0.6rem;
+  align-items: flex-start;
+  padding: 0.75rem 0.85rem;
+  border: 1px solid rgba(0, 123, 135, 0.18);
+  border-left: 4px solid var(--ac-teal, #007b87);
+  border-radius: 14px;
+  background: white;
+  box-shadow: 0 14px 34px rgba(0, 63, 72, 0.16);
+}
+
+.aviso-banner.is-inventario {
+  border-left-color: #f4760f;
+  background: rgba(251, 191, 36, 0.07);
+}
+
+.aviso-banner-texto {
+  flex: 1;
+  min-width: 0;
+}
+
+.aviso-banner-texto strong {
+  display: block;
+  margin-bottom: 0.15rem;
+  color: var(--ac-teal-dark);
+  font-size: 0.9rem;
+  font-weight: 900;
+}
+
+.aviso-banner-texto p {
+  color: #475569;
+  font-size: 0.82rem;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.aviso-banner-fechar {
+  flex: none;
+  width: 1.6rem;
+  height: 1.6rem;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: #64748b;
+  font-size: 1.2rem;
+  line-height: 1;
   cursor: pointer;
+}
+
+.aviso-banner-fechar:hover {
+  background: rgba(15, 23, 42, 0.07);
+  color: #0f172a;
+}
+
+@media (max-width: 640px) {
+  .aviso-banners {
+    top: auto;
+    right: 0.75rem;
+    bottom: 0.75rem;
+    left: 0.75rem;
+    width: auto;
+  }
+}
+
+/* Emissao de aviso pelo Almoxarifado */
+.aviso-emissao-card { margin-top: 1rem; }
+
+.aviso-emissao-form {
+  display: grid;
+  grid-template-columns: minmax(14rem, 1fr) 11rem auto;
+  gap: 0.65rem;
+  align-items: end;
+  margin-bottom: 0.85rem;
+}
+
+.aviso-ativos-lista { display: grid; gap: 0.5rem; margin-top: 0.5rem; }
+
+.aviso-ativo {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid rgba(0, 123, 135, 0.16);
+  border-left: 4px solid var(--ac-teal, #007b87);
+  border-radius: 12px;
+  background: rgba(16, 182, 199, 0.04);
+}
+
+.aviso-ativo.is-agendamento { border-left-color: #f4760f; background: rgba(251, 191, 36, 0.07); }
+.aviso-ativo strong { display: block; color: var(--ac-teal-dark); font-size: 0.88rem; font-weight: 900; }
+.aviso-ativo span { display: block; color: #475569; font-size: 0.8rem; font-weight: 600; }
+.aviso-ativo-nota { color: #64748b !important; font-size: 0.74rem !important; font-style: italic; }
+
+/* Ajuste que ficou so no MyEstoque por causa do modo simulacao */
+.inventario-aviso-simulacao {
+  border-color: rgba(2, 132, 199, 0.3);
+  background: rgba(56, 189, 248, 0.1);
+}
+
+@media (max-width: 720px) {
+  .aviso-emissao-form { grid-template-columns: 1fr; }
+  .aviso-ativo { flex-direction: column; align-items: stretch; }
+}
+
+/* Perfil do PDV: a tag administrativa no cadastro e o rotulo na lista */
+.pdv-admin-toggle {
+  display: flex;
+  gap: 0.75rem;
+  align-items: flex-start;
+  padding: 0.85rem 1rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 0.75rem;
+  background: #f8fafc;
+  cursor: pointer;
+}
+.pdv-admin-toggle input {
+  margin-top: 0.2rem;
+  width: 1.05rem;
+  height: 1.05rem;
+  flex: 0 0 auto;
+}
+.pdv-admin-toggle strong {
+  display: block;
+  font-weight: 800;
+}
+.pdv-admin-toggle small {
+  display: block;
+  margin-top: 0.2rem;
+  color: #64748b;
+  line-height: 1.35;
+}
+.pdv-admin-toggle:has(input:checked) {
+  border-color: #6366f1;
+  background: #eef2ff;
+}
+.pdv-perfil-chip {
+  display: inline-block;
+  padding: 0.15rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  background: #f1f5f9;
+  color: #475569;
+}
+.pdv-perfil-chip.is-admin {
+  background: #eef2ff;
+  color: #4338ca;
+}
+
+/* Painel do PDV Administrativo: consumo do setor, sem nenhuma seção de saldo */
+.painel-adm-cabecalho {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  justify-content: space-between;
+  align-items: flex-end;
+}
+.painel-adm-filtro {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  align-items: flex-end;
+}
+.painel-adm-numeros {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 1rem;
+  margin-top: 1rem;
+}
+.painel-adm-ranking {
+  display: grid;
+  gap: 0.5rem;
+}
+.painel-adm-ranking-linha {
+  display: grid;
+  grid-template-columns: 2.5rem minmax(120px, 1fr) minmax(80px, 2fr) 5rem;
+  gap: 0.75rem;
+  align-items: center;
+}
+.painel-adm-pos {
+  font-weight: 800;
+  color: #94a3b8;
+}
+.painel-adm-nome {
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.painel-adm-barra {
+  display: block;
+  height: 0.6rem;
+  background: #f1f5f9;
+  border-radius: 999px;
+  overflow: hidden;
+}
+.painel-adm-barra i {
+  display: block;
+  height: 100%;
+  background: #6366f1;
+  border-radius: 999px;
+}
+.painel-adm-valor {
+  text-align: right;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+@media (max-width: 640px) {
+  .painel-adm-ranking-linha {
+    grid-template-columns: 2rem 1fr 4.5rem;
+  }
+  .painel-adm-barra {
+    display: none;
+  }
 }

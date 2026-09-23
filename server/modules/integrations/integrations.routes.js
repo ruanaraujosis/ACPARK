@@ -36,12 +36,6 @@ import {
   STATUS_DECISAO
 } from "../../services/integrations/core/fator-evidencia.repository.js";
 import { ehPendenciaDeCadastro } from "../../services/integrations/core/fator-evidencia.js";
-import {
-  importarPlanilha,
-  listarLinhasDaPlanilha,
-  listarPendenciasDeVinculo,
-  vincularLinha
-} from "../../services/integrations/core/fator-planilha.repository.js";
 // Registra os providers disponiveis antes de qualquer rota responder
 import "../../services/integrations/providers/index.js";
 
@@ -564,61 +558,6 @@ export async function handleIntegrationsRoutes(req, res, context) {
     return (send(res, 200, { ok: true, job }), true);
   }
 
-
-  // Planilha de controle de fardos: fonte de corroboracao do fator.
-  //
-  // O arquivo e lido no NAVEGADOR (mesma biblioteca ja usada na importacao de produtos) e
-  // chega aqui como linhas por aba -- o servidor nao ganha dependencia de leitor de Excel.
-  if (url.pathname === "/api/admin/integrations/fator-planilha/importar" && method === "POST") {
-    if (!requireAdmin(req, res, context)) return true;
-    const body = await readBody(req);
-    const id = Number(body.id || 0);
-    if (!id) return (send(res, 400, { error: "Integracao invalida." }), true);
-
-    const abas = body.abas && typeof body.abas === "object" ? body.abas : null;
-    if (!abas || !Object.keys(abas).length) {
-      return (send(res, 400, { error: "Nenhuma aba de planilha recebida." }), true);
-    }
-
-    const resumo = await tx((client) => importarPlanilha(client, id, abas));
-    return (send(res, 200, { ok: true, resumo }), true);
-  }
-
-  // Linhas da planilha e a fila de vinculo, com candidatos sugeridos por semelhanca de nome
-  if (url.pathname === "/api/admin/integrations/fator-planilha" && method === "GET") {
-    if (!requireAdmin(req, res, context)) return true;
-    const id = Number(url.searchParams.get("id") || 0);
-    if (!id) return (send(res, 400, { error: "Integracao invalida." }), true);
-
-    const [linhas, pendencias] = await Promise.all([
-      tx((client) => listarLinhasDaPlanilha(client, id)),
-      tx((client) => listarPendenciasDeVinculo(client, id))
-    ]);
-    return (send(res, 200, { linhas, pendencias }), true);
-  }
-
-  // Vincula uma linha da planilha a um produto do cadastro.
-  //
-  // Sempre humano: o casamento textual erra -- medido, o primeiro candidato de
-  // "AGUA MINERAL GASOSA 500ML" foi "AGUA MINERAL SEM GAS 500ML", o produto oposto.
-  if (url.pathname === "/api/admin/integrations/fator-planilha/vincular" && method === "POST") {
-    const usuario = requireAdmin(req, res, context);
-    if (!usuario) return true;
-    const body = await readBody(req);
-    const id = Number(body.id || 0);
-    const nomeOperacao = normalizeText(body.nome_operacao, 160);
-    if (!id || !nomeOperacao) {
-      return (send(res, 400, { error: "Informe a integracao e a linha da planilha." }), true);
-    }
-    // Vinculo vazio desfaz: quem percebeu que casou errado precisa poder soltar
-    const externalProductId = normalizeText(body.external_product_id, 60) || null;
-
-    const alteradas = await tx((client) =>
-      vincularLinha(client, id, nomeOperacao, externalProductId, usuario.username || usuario.role || null)
-    );
-    if (!alteradas) return (send(res, 404, { error: "Linha da planilha nao encontrada." }), true);
-    return (send(res, 200, { ok: true, vinculado: Boolean(externalProductId) }), true);
-  }
 
   // Fila de lancamentos de escrita: pendentes, simulados, enviados e com erro
   if (url.pathname === "/api/admin/integrations/launches" && method === "GET") {

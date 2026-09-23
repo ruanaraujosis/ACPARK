@@ -3,9 +3,12 @@ import { sincronizarEstoqueAlmoxarifado } from "./tarefas/estoque-almoxarifado.j
 import { SINCRONIZACAO_PDV_ATIVA } from "./omie.politica.js";
 import { CHAVE_MODO_ESCRITA } from "../../core/escrita.js";
 import { escreverFatoresAprovados } from "./tarefas/escrita-fator.js";
+import { CHAVE_CRIAR_FAMILIA, sincronizarCategorias } from "./tarefas/categorias.js";
 import { sincronizarEvidenciaDeCompra } from "./tarefas/evidencia-compra.js";
 import { PADRAO_CARACTERISTICA_FATOR, sincronizarFatores } from "./tarefas/fatores.js";
 import { sincronizarLocais } from "./tarefas/locais.js";
+import { enviarAjustesDeInventario } from "./tarefas/inventarios.js";
+import { enviarConsumoAdministrativo } from "./tarefas/consumo-administrativo.js";
 import { enviarTransferencias } from "./tarefas/transferencias.js";
 import { sincronizarMovimentos } from "./tarefas/movimentos.js";
 import { sincronizarProdutos } from "./tarefas/produtos.js";
@@ -62,6 +65,16 @@ export const providerOmie = {
         "SIMULACAO monta o lancamento e nao envia nada. So mude para REAL depois de conferir os payloads simulados."
     },
     {
+      chave: CHAVE_CRIAR_FAMILIA,
+      rotulo: "Criar familia na OMIE",
+      tipo: "opcao",
+      opcoes: ["NAO", "SIM"],
+      obrigatoria: false,
+      padrao: "NAO",
+      ajuda:
+        "Com SIM, categoria que existe aqui e nao existe na OMIE e criada la como familia. Com NAO, a sincronizacao so mostra o que seria criado. Renomear e excluir familia nunca sao feitos pelo MyEstoque."
+    },
+    {
       chave: "caracteristica_fator",
       rotulo: "Caracteristica do fator de conversao",
       tipo: "texto",
@@ -87,6 +100,20 @@ export const providerOmie = {
       prioridade: "NORMAL",
       intervaloPadraoMs: 60 * MINUTO,
       executar: sincronizarProdutos
+    },
+    {
+      id: "CATEGORIAS",
+      rotulo: "Categorias x familias",
+      descricao:
+        "Mantem categoria local e familia da OMIE casadas pelo codigo da familia, nao pelo nome. A OMIE manda no nome: familia renomeada la renomeia a categoria aqui. O MyEstoque so pode CRIAR familia que ainda nao existe la -- nunca renomear nem excluir -- e exclusao nunca propaga em nenhum sentido.",
+      prioridade: "NORMAL",
+      // Pode criar familia no ERP: o nucleo exige modo REAL explicito, e a criacao ainda
+      // depende da configuracao criar_familia_na_omie, porque esta integracao ja esta em
+      // REAL por causa da transferencia de estoque -- sem a segunda chave, a capacidade
+      // nova nasceria enviando sem nunca ter passado por simulacao.
+      escrita: true,
+      intervaloPadraoMs: 6 * 60 * MINUTO,
+      executar: sincronizarCategorias
     },
     {
       id: "FATORES",
@@ -173,6 +200,36 @@ export const providerOmie = {
       // oportunista. Em simulacao ela so monta payload, entao ligar o relogio e seguro.
       intervaloPadraoMs: 5 * MINUTO,
       executar: enviarTransferencias
+    },
+    {
+      id: "CONSUMO_ADMINISTRATIVO",
+      rotulo: "Saidas por consumo administrativo",
+      descricao:
+        "Envia a SAIDA do estoque gerada pela retirada de um PDV Administrativo -- setor interno que consome sem vender. Tipo 'SAI', motivo 'PDV' (confirmado pelo usuario em 01/09/2026 -- nenhum dos quatro codigos do dominio significa literalmente consumo interno, a observacao de cada lancamento deixa isso explicito no registro da OMIE). Nunca 'TRF': a mercadoria deixa o estoque, nao muda de lugar.",
+      prioridade: "ALTA",
+      // Escrita altera dado no sistema externo: o nucleo exige modo REAL explicito para enviar
+      escrita: true,
+      requerConfiguracao: ["local_almoxarifado"],
+      intervaloPadraoMs: 5 * MINUTO,
+      executar: enviarConsumoAdministrativo
+    },
+    {
+      id: "INVENTARIO",
+      rotulo: "Ajustes de inventario para a OMIE",
+      descricao:
+        "Envia o ajuste por inventario gerado pela assinatura da contagem, no local do PDV que contou. Unica escrita do MyEstoque que usa saldo absoluto (tipo SLD, motivo INV) -- todas as outras enviam movimento.",
+      prioridade: "ALTA",
+      // Escrita altera dado no sistema externo: o nucleo exige modo REAL explicito para enviar
+      escrita: true,
+      // NAO exige local_almoxarifado de proposito: o inventario de um PDV vai no local
+      // daquele PDV (pdv_stock_location_mappings), e so o inventario do proprio almoxarifado
+      // usa o local configurado. Exigir aqui barraria a contagem de PDV por uma configuracao
+      // que ela nao usa -- o mesmo impasse que ja travou a importacao de locais. A falta do
+      // local e checada por lancamento, com mensagem propria.
+      // Roda pelo relogio para drenar sozinha quando a internet voltar. Em simulacao ela so
+      // monta payload, entao ligar o relogio e seguro.
+      intervaloPadraoMs: 5 * MINUTO,
+      executar: enviarAjustesDeInventario
     },
     {
       id: "ESCRITA_FATOR",

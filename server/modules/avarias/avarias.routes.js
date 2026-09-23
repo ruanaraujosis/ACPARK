@@ -774,7 +774,7 @@ export async function handleAvariasRoutes(req, res, context) {
               [user.pdvId, sku]
             );
             if (!stock.rows[0]) throw new Error("Produto não encontrado no estoque deste PDV.");
-            const saldoAtual = asInt(stock.rows[0].quantidade);
+            const saldoAtual = Number(stock.rows[0].quantidade) || 0;
             if (saldoAtual < requestedQty) {
               const error = new Error(`Saldo insuficiente para ${stock.rows[0].nome}. Saldo disponível: ${saldoAtual}.`);
               error.statusCode = 400;
@@ -929,7 +929,7 @@ export async function handleAvariasRoutes(req, res, context) {
           [user.pdvId, sku]
         );
         if (!stock.rows[0]) throw new Error("Produto não encontrado no estoque deste PDV.");
-        const saldoAnterior = asInt(stock.rows[0].quantidade);
+        const saldoAnterior = Number(stock.rows[0].quantidade) || 0;
         const saldoPosterior = saldoAnterior;
         if (saldoAnterior < quantidade) {
           const error = new Error(`Saldo insuficiente. Saldo disponível: ${saldoAnterior}.`);
@@ -1651,7 +1651,7 @@ export async function handleAvariasRoutes(req, res, context) {
                FOR UPDATE`,
               [row.pdv_id, item.sku_produto]
             );
-            const saldoAtual = asInt(stock.rows[0]?.quantidade);
+            const saldoAtual = Number(stock.rows[0]?.quantidade) || 0;
             if (!stock.rows[0] || saldoAtual < itemDelta) {
               const error = new Error(`Saldo insuficiente no PDV para finalizar a avaria do produto ${item.sku_produto}. Saldo disponível: ${saldoAtual}.`);
               error.statusCode = 400;
@@ -1749,7 +1749,7 @@ export async function handleAvariasRoutes(req, res, context) {
              FOR UPDATE`,
             [row.pdv_id, row.sku_produto]
           );
-          const saldoAtual = asInt(stock.rows[0]?.quantidade);
+          const saldoAtual = Number(stock.rows[0]?.quantidade) || 0;
           if (!stock.rows[0] || saldoAtual < delta) {
             const error = new Error(`Saldo insuficiente no PDV para finalizar a avaria. Saldo disponível: ${saldoAtual}.`);
             error.statusCode = 400;

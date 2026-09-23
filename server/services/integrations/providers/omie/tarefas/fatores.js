@@ -1,5 +1,5 @@
 import { interpretarFator, STATUS_FATOR } from "../../../core/fator-conversao.js";
-import { chamarOmie, ehSemRegistros, ENDPOINTS } from "../omie.api.js";
+import { chamarOmie, ehProdutoInexistente, ehSemRegistros, ENDPOINTS } from "../omie.api.js";
 
 const CALL = "ConsultarProduto";
 
@@ -163,8 +163,10 @@ export async function sincronizarFatores(contexto) {
         }
       }
     } catch (erro) {
-      // Produto que sumiu do ERP nao e falha da leitura: marca como lido para nao travar a fila
-      if (ehSemRegistros(erro)) {
+      // Produto que sumiu do ERP nao e falha da leitura: marca como lido para nao travar a fila.
+      // Duas formas da OMIE dizer isso: "nao existem registros" (sem caracteristica) e
+      // "produto nao cadastrado para o ID" (o produto em si nao existe mais).
+      if (ehSemRegistros(erro) || ehProdutoInexistente(erro)) {
         resumo.nao_encontrados += 1;
         await gravarFator(
           client,
@@ -176,6 +178,11 @@ export async function sincronizarFatores(contexto) {
         continue;
       }
       resumo.falhas += 1;
+      // A mensagem real precisa sobreviver. Ate 29/08/2026 este catch fazia so
+      // `falhas += 1; break;`, e a tela mostrava "falha na API" para qualquer causa -- foi
+      // preciso investigar o banco para descobrir que a conta estava bloqueada por consumo.
+      resumo.erro = erro?.message || String(erro);
+      resumo.erro_codigo = erro?.codigo || null;
       // Uma falha de rede no meio do lote nao deve descartar o que ja foi lido
       break;
     }
@@ -205,7 +212,9 @@ export async function sincronizarFatores(contexto) {
   if (resumo.invalidos) {
     resumo.alerta = `${resumo.invalidos} produto(s) com fator invalido no cadastro do ERP. Veja a lista de pendencias e corrija la.`;
   } else if (resumo.falhas) {
-    resumo.alerta = `A leitura parou apos ${resumo.lidos} produto(s) por falha na API. O restante continua na proxima execucao.`;
+    resumo.alerta = resumo.erro
+      ? `A leitura parou apos ${resumo.lidos} produto(s): ${resumo.erro}`
+      : `A leitura parou apos ${resumo.lidos} produto(s) por falha na API. O restante continua na proxima execucao.`;
   }
 
   return resumo;

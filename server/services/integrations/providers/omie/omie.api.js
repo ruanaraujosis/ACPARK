@@ -15,7 +15,9 @@ export const ENDPOINTS = Object.freeze({
   // pedido de compra tem zero registros e nota de entrada tem uma, vazia
   RECEBIMENTOS: "produtos/recebimentonfe",
   // Caracteristicas do produto: onde o fator aprovado e gravado de volta no ERP
-  CARACTERISTICAS: "geral/prodcaract"
+  CARACTERISTICAS: "geral/prodcaract",
+  // Familias de produto: o agrupamento que vira categoria aqui
+  FAMILIAS: "geral/familias"
 });
 
 // Normaliza a URL base cadastrada, cortando qualquer caminho depois de /api/vN.
@@ -52,6 +54,19 @@ function ehErroDeCredencial(faultstring = "") {
   return /app_key|app_secret|acesso negado|nao autorizado|invalid|credencial/i.test(String(faultstring));
 }
 
+// Bloqueio por consumo excessivo. A OMIE devolve isso como faultstring comum, e nao como HTTP
+// 429 com Retry-After -- por isso a logica de status retentavel do http.client nao alcanca.
+//
+// A mensagem carrega o prazo: "API bloqueada por consumo indevido. Tente novamente em 1690
+// segundos." Ler esse numero e o que permite ao nucleo esperar de verdade em vez de bater de
+// novo em 5 minutos e renovar a punicao (incidente de 29/08/2026).
+export function lerBloqueioPorConsumo(faultstring = "") {
+  const texto = String(faultstring);
+  if (!/bloqueada por consumo/i.test(texto)) return null;
+  const encontrado = texto.match(/(\d+)\s*segundos?/i);
+  return { segundos: encontrado ? Number(encontrado[1]) : null };
+}
+
 // Chamada unica a OMIE, usada por todas as tarefas deste provider
 export async function chamarOmie({
   integracao,
@@ -81,6 +96,19 @@ export async function chamarOmie({
 
   if (dados.faultstring || dados.faultcode) {
     const credencial = ehErroDeCredencial(dados.faultstring);
+
+    // Bloqueio por consumo vem antes das demais classificacoes: nao e erro de dados (o
+    // payload nem foi olhado) e insistir piora. O nucleo cuida da espera.
+    const bloqueio = lerBloqueioPorConsumo(dados.faultstring);
+    if (bloqueio) {
+      throw new IntegrationError(String(dados.faultstring).slice(0, 500), {
+        codigo: CODIGOS_ERRO.LIMITE_TAXA,
+        status: resposta.status,
+        retentavel: true,
+        detalhes: { call, retomarEmSegundos: bloqueio.segundos }
+      });
+    }
+
     throw new IntegrationError(String(dados.faultstring || "Falha na chamada a OMIE.").slice(0, 500), {
       codigo: credencial ? CODIGOS_ERRO.AUTENTICACAO : CODIGOS_ERRO.DADOS,
       status: resposta.status,
@@ -135,4 +163,37 @@ export function extrairLista(dados = {}, camposConhecidos = []) {
 // periodo nao pode derrubar a leitura dos outros.
 export function ehSemRegistros(erro) {
   return /n[aã]o existem registros/i.test(String(erro?.message || ""));
+}
+
+// Produto que NAO EXISTE MAIS na OMIE, respondido numa consulta de UM produto:
+// "ERROR: Produto nao cadastrado para o ID [11072266739] !"
+//
+// Predicado separado de ehSemRegistros de proposito. Aquele significa "fim da paginacao" em
+// movimentos, saldos e evidencia de compra; ampliar ele faria um produto inexistente ser
+// lido como fim de lista naqueles lacos, truncando a leitura em silencio. Aqui o significado
+// e outro: este produto especifico sumiu, siga para o proximo.
+//
+// Sem isto, um unico produto morto travava a leitura inteira de fatores: o laco fazia break
+// na primeira falha e os 2.346 produtos seguintes nunca eram lidos. Ficou escondido enquanto
+// a conta estava bloqueada por consumo, e so apareceu quando a mensagem real passou a ser
+// registrada (29/08/2026).
+export function ehProdutoInexistente(erro) {
+  return /produto n[aã]o cadastrado/i.test(String(erro?.message || ""));
+}
+
+// Ajuste que JA ENTROU na OMIE com a mesma chave de integracao:
+// "ERROR: Ja existe um ajuste de estoque para o codigo de integracao [X] com o ID Y".
+//
+// Isso e a idempotencia funcionando, nao falha: o lancamento esta la. Tratar como erro
+// deixava o item preso em ERRO e sendo retentado para sempre -- um deles chegou a 191
+// tentativas para um ajuste que ja existia desde a primeira (medido em 21/09/2026).
+export function ehAjusteJaExistente(erro) {
+  return /j[aá] existe um ajuste de estoque/i.test(String(erro?.message || ""));
+}
+
+// Extrai o ID que a OMIE informa na mensagem de ajuste duplicado, para o lancamento nao
+// perder a rastreabilidade do lado do ERP
+export function idDoAjusteJaExistente(erro) {
+  const achado = String(erro?.message || "").match(/com o ID\s*\[?(\d+)/i);
+  return achado ? achado[1] : null;
 }

@@ -4,6 +4,7 @@ import * as fila from "./job.queue.js";
 import { executarProximoJob } from "./job.runner.js";
 import { obterProvider } from "./provider-registry.js";
 import { listarEstados } from "./sync-state.js";
+import { pausaAtiva } from "./pausa-integracao.js";
 
 // Agendador de todas as integracoes registradas.
 //
@@ -62,6 +63,19 @@ export async function enfileirarCapacidadesVencidas(client, { agora = Date.now()
     // Integracao apontando para um provider que nao existe mais no codigo: ignora em vez de
     // quebrar o tick inteiro das outras
     if (!provider) continue;
+
+    // O sistema externo pediu para esperar ate tal hora: nada desta integracao e enfileirado
+    // ate la. A pausa vale para a integracao INTEIRA porque o bloqueio e da conta, nao do
+    // endpoint -- conferido no incidente de 29/08/2026, em que transferencia, inventario e
+    // leitura de fatores foram bloqueados na mesma janela.
+    //
+    // Enfileirar mesmo assim e o que mantinha o laco vivo: cada tentativa antes do prazo
+    // renovava a punicao, e o bloqueio nunca expirava.
+    const pausadaAte = await pausaAtiva(client, integracao.id);
+    if (pausadaAte) {
+      enfileirados.push({ integracao: integracao.id, pausadaAte, motivo: "limite de taxa" });
+      continue;
+    }
 
     for (const capacidade of provider.capacidades) {
       const estado = estados.find(

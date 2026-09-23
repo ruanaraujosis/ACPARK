@@ -1,7 +1,13 @@
 import { CODIGOS_ERRO, IntegrationError } from "../../../core/errors.js";
 import { emSimulacao, modoDeEscrita } from "../../../core/escrita.js";
 import * as lancamentos from "../../../core/stock-launches.repository.js";
-import { chamarOmie, ENDPOINTS } from "../omie.api.js";
+import { ehLimiteDeTaxa, pausarIntegracao, segundosDeEspera } from "../../../core/pausa-integracao.js";
+import {
+  chamarOmie,
+  ehAjusteJaExistente,
+  ENDPOINTS,
+  idDoAjusteJaExistente,
+} from "../omie.api.js";
 import {
   montarCompensacaoTransferencia,
   montarTransferenciaEstoque,
@@ -20,7 +26,7 @@ const LANCAMENTOS_POR_JOB = 25;
 // de verdade quando alguem coloca modo_escrita = REAL na configuracao da integracao.
 
 // Traduz o SKU local para o id do produto na OMIE
-async function idExternoDoProduto(client, integrationId, sku) {
+export async function idExternoDoProduto(client, integrationId, sku) {
   const resultado = await client.query(
     `SELECT external_product_id
      FROM product_integration_mappings
@@ -51,7 +57,7 @@ export const VALOR_SIMBOLICO = 0.01;
 // duraria ate a proxima rodada. price_manual fica fora daquele upsert e sobrevive.
 //
 // Medido: 1.334 dos 4.435 mapeamentos tem preco zero no cadastro, entao a fonte 3 nao e luxo.
-async function valorUnitarioDoProduto(client, integrationId, sku) {
+export async function valorUnitarioDoProduto(client, integrationId, sku) {
   const doCadastro = await client.query(
     `SELECT price, price_manual FROM product_integration_mappings
      WHERE integration_id = $1 AND sku_produto = $2 LIMIT 1`,
@@ -117,11 +123,16 @@ export async function enviarTransferencias(contexto) {
     contexto;
   const simulacao = emSimulacao(configuracao);
 
-  // Um lancamento so: a virada para real comeca com um envio conferido no ERP
+  // Um lancamento so: a virada para real comeca com um envio conferido no ERP.
+  //
+  // O filtro de evento nao e decorativo: a fila carrega tambem o ajuste de inventario, que
+  // nao tem local de destino. Sem restringir aqui, esta tarefa leria aquele lancamento,
+  // falharia ao montar a transferencia e o marcaria como ERRO.
   const abertos = await lancamentos.listarAbertos(client, {
     integrationId: integracao.id,
     limite: Number(payload.limite) || LANCAMENTOS_POR_JOB,
     apenas: payload.apenas ? Number(payload.apenas) : null,
+    eventos: [lancamentos.EVENTOS.RETIRADA, lancamentos.EVENTOS.COMPENSACAO],
   });
 
   const resumo = {
@@ -216,6 +227,40 @@ export async function enviarTransferencias(contexto) {
       });
       resumo.enviados += 1;
     } catch (erro) {
+      // Bloqueio por consumo: para o lote AQUI. Continuar queimaria as chamadas restantes
+      // contra uma porta fechada e renovaria a punicao -- foi exatamente isso que manteve o
+      // laco vivo no incidente de 29/08/2026 (50 chamadas bloqueadas a cada 5 minutos).
+      if (ehLimiteDeTaxa(erro)) {
+        const espera = segundosDeEspera(erro);
+        const pausa = await pausarIntegracao(client, integracao.id, {
+          segundos: espera,
+          motivo: erro.message
+        });
+        resumo.falhas += 1;
+        await lancamentos.registrarResultado(client, lancamento.id, {
+          status: lancamentos.STATUS.ERRO,
+          erro: erro?.message || String(erro)
+        });
+        resumo.bloqueado_por_limite = true;
+        resumo.pausado_ate = pausa?.pausadaAte || null;
+        resumo.alerta = espera
+          ? `A API pediu para esperar ${espera}s. O restante da fila continua na proxima janela.`
+          : "A API bloqueou o acesso por consumo. O restante da fila continua depois.";
+        return resumo;
+      }
+      // Ajuste que ja existe na OMIE com a mesma chave: idempotencia funcionando, nao
+      // falha. Sem este ramo o lancamento ficava em ERRO e era retentado para sempre.
+      if (ehAjusteJaExistente(erro)) {
+        await lancamentos.registrarResultado(client, lancamento.id, {
+          status: lancamentos.STATUS.ENVIADO,
+          externalId: idDoAjusteJaExistente(erro),
+          erro: null
+        });
+        resumo.enviados = (resumo.enviados || 0) + 1;
+        resumo.ja_existiam = (resumo.ja_existiam || 0) + 1;
+        continue;
+      }
+
       resumo.falhas += 1;
       await lancamentos.registrarResultado(client, lancamento.id, {
         status: lancamentos.STATUS.ERRO,
@@ -224,8 +269,21 @@ export async function enviarTransferencias(contexto) {
     }
   }
 
-  if (resumo.falhas) {
-    resumo.alerta = `${resumo.falhas} lancamento(s) falharam. Veja o erro de cada um na fila de lancamentos.`;
+  // Quem esgotou as tentativas nao volta para a fila sozinho: precisa aparecer no alerta,
+  // senao some da tela justamente por ter parado de ser tentado.
+  const esgotados = await lancamentos.contarEsgotados(client, integracao.id);
+  if (esgotados) {
+    resumo.esgotados = esgotados;
+  }
+
+  if (resumo.falhas || esgotados) {
+    const partes = [];
+    if (resumo.falhas) partes.push(`${resumo.falhas} lancamento(s) falharam`);
+    if (esgotados)
+      partes.push(
+        `${esgotados} parado(s) apos ${lancamentos.LIMITE_TENTATIVAS} tentativas, aguardando acao humana`
+      );
+    resumo.alerta = `${partes.join(" e ")}. Veja o erro de cada um na fila de lancamentos.`;
   } else if (simulacao && resumo.simulados) {
     resumo.alerta = `${resumo.simulados} lancamento(s) apenas simulados. Nada foi enviado a OMIE.`;
   }

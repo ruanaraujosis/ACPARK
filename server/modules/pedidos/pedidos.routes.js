@@ -1,12 +1,19 @@
 ﻿import { query, tx, pool, asInt, code } from "../../db.js";
 import { normalizeText, readBody, send } from "../../utils/http.js";
+import { pdvsAdministrativos } from "../../services/pdvs/pdv-administrativo.service.js";
 import {
   registrarCompensacaoDaReabertura,
+  registrarConsumoAdministrativo,
   registrarTransferenciasDaRetirada
 } from "../../services/integrations/core/stock-launches.service.js";
 import { converterQuantidadeDoPedido, obterFatoresEmLote } from "../../services/integrations/core/fator-conversao.repository.js";
 import { publishOrderAlert, publishOrderStatusChange } from "../../services/order-alerts/order-alerts.events.js";
 import { normalizeOrderStatus, orderStatuses } from "./pedidos.service.js";
+
+// Janela em que um novo envio do mesmo PDV entra no pedido anterior em vez de abrir outro card.
+// Contada a partir do primeiro envio (fixa, não deslizante): passado esse tempo o pedido está
+// fechado e o Almoxarifado pode separar sabendo que ele não vai mais crescer.
+const JANELA_JUNCAO_MINUTOS = Number(process.env.PEDIDO_JANELA_JUNCAO_MINUTOS || 20);
 
 let pedidoEditColumnsReady = null;
 let pedidoIdempotencyReady = null;
@@ -220,7 +227,28 @@ export async function handlePedidosRoutes(req, res, context) {
         throw error;
       }
 
-      const orderCode = code("PED");
+      // Pedido do mesmo PDV feito logo em seguida entra no pedido anterior, em vez de abrir um
+      // card novo no Almoxarifado. Acontece o tempo todo na prática: o PDV manda o pedido, lembra
+      // de um item e manda outro. Só vale enquanto o pedido ainda está Pendente (ninguém começou
+      // a separar) e dentro da janela contada a partir do PRIMEIRO envio -- janela fixa, para o
+      // Almoxarifado ter certeza de que, passado esse tempo, aquele pedido não cresce mais.
+      // O HAVING é essencial: um pedido pode ter itens em status misto (o painel move item a
+      // item). Se um único item já saiu de Pendente, o Almoxarifado começou a mexer naquele
+      // pedido e ele não pode mais receber itens novos por junção.
+      const aberto = await client.query(
+        `SELECT codigo_pedido
+         FROM pedidos
+         WHERE pdv_id = $1
+           AND criado_em >= CURRENT_TIMESTAMP - ($2 || ' minutes')::interval
+         GROUP BY codigo_pedido
+         HAVING bool_and(status = 'Pendente')
+         ORDER BY min(criado_em) ASC
+         LIMIT 1`,
+        [user.pdvId, String(JANELA_JUNCAO_MINUTOS)]
+      );
+      const orderCode = aberto.rows[0]?.codigo_pedido || code("PED");
+      const juntouAoAnterior = Boolean(aberto.rows[0]?.codigo_pedido);
+
       for (const item of items) {
         const sku = normalizeText(item.sku, 60);
         const qty = asInt(item.quantidade);
@@ -255,12 +283,37 @@ export async function handlePedidosRoutes(req, res, context) {
           unidadeMedida: item.unidade_medida
         });
 
-        await client.query(
-          `INSERT INTO pedidos
-            (codigo_pedido, solicitante, sku_produto, pdv_id, quantidade_solicitada, observacao)
-           VALUES ($1, $2, $3, $4, $5, $6)`,
-          [orderCode, solicitante, sku, user.pdvId, conversao.unidades, observacao]
-        );
+        // Produto que já está no pedido soma na linha existente em vez de duplicar: o
+        // Almoxarifado separa uma vez só, com o total certo. FOR UPDATE evita que dois envios
+        // simultâneos do mesmo PDV leiam a mesma linha e uma das somas se perca.
+        const existente = juntouAoAnterior
+          ? await client.query(
+            `SELECT id, quantidade_solicitada
+             FROM pedidos
+             WHERE codigo_pedido = $1 AND sku_produto = $2 AND status = 'Pendente'
+             ORDER BY id
+             LIMIT 1
+             FOR UPDATE`,
+            [orderCode, sku]
+          )
+          : { rows: [] };
+
+        if (existente.rows[0]) {
+          await client.query(
+            `UPDATE pedidos
+             SET quantidade_solicitada = quantidade_solicitada + $2,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE id = $1`,
+            [existente.rows[0].id, conversao.unidades]
+          );
+        } else {
+          await client.query(
+            `INSERT INTO pedidos
+              (codigo_pedido, solicitante, sku_produto, pdv_id, quantidade_solicitada, observacao)
+             VALUES ($1, $2, $3, $4, $5, $6)`,
+            [orderCode, solicitante, sku, user.pdvId, conversao.unidades, observacao]
+          );
+        }
       }
       await client.query(
         `UPDATE pedido_idempotencia
@@ -273,6 +326,7 @@ export async function handlePedidosRoutes(req, res, context) {
       return {
         codigo: orderCode,
         repeated: false,
+        juntouAoAnterior,
         alert: {
           orderId: orderCode,
           orderNumber: orderCode,
@@ -285,9 +339,200 @@ export async function handlePedidosRoutes(req, res, context) {
       };
     });
     if (!result.repeated && result.alert) {
-      publishOrderAlert("NEW_PENDING_ORDER", result.alert);
+      // Entrou num pedido que já existia: atualiza a tela do Almoxarifado, mas sem tocar o
+      // alarme de pedido novo -- o card já está lá e o alarme repetido viraria ruído.
+      publishOrderAlert(result.juntouAoAnterior ? "ORDER_ITEMS_UPDATED" : "NEW_PENDING_ORDER", result.alert);
     }
-    send(res, result.repeated ? 200 : 201, { ok: true, codigo: result.codigo, repeated: result.repeated });
+    send(res, result.repeated ? 200 : 201, {
+      ok: true,
+      codigo: result.codigo,
+      repeated: result.repeated,
+      juntouAoAnterior: result.juntouAoAnterior
+    });
+    return true;
+  }
+
+  // O PDV corrige o próprio pedido enquanto ele ainda não foi tocado pelo Almoxarifado.
+  //
+  // Duas travas, checadas no servidor e nunca só na tela:
+  //   1. o pedido tem que ser DESTE PDV (não basta estar logado como PDV);
+  //   2. TODOS os itens do pedido precisam estar em Pendente -- se um único item já saiu, a
+  //      separação começou e o pedido está fora do alcance do PDV.
+  if (url.pathname === "/api/pdv/order-items" && method === "PATCH") {
+    if (user.role !== "pdv") return send(res, 403, { error: "Entre como PDV para editar o pedido." }), true;
+    await ensurePedidoEditColumns();
+    const body = await readBody(req);
+    const orderCode = normalizeText(body.codigo_pedido, 80);
+    const itens = Array.isArray(body.items) ? body.items : [];
+    const novos = Array.isArray(body.adicionar) ? body.adicionar : [];
+    if (!orderCode || (!itens.length && !novos.length)) {
+      return send(res, 400, { error: "Informe o pedido e ao menos um item." }), true;
+    }
+
+    try {
+      const resultado = await tx(async (client) => {
+        const linhas = await client.query(
+          // solicitante e observacao vem junto: um produto novo herda os dois do pedido
+          `SELECT id, sku_produto, quantidade_solicitada, status, pdv_id, solicitante, observacao
+           FROM pedidos
+           WHERE codigo_pedido = $1
+           ORDER BY id
+           FOR UPDATE`,
+          [orderCode]
+        );
+        if (!linhas.rows.length) {
+          const erro = new Error("Pedido não encontrado.");
+          erro.statusCode = 404;
+          throw erro;
+        }
+        if (linhas.rows.some((linha) => linha.pdv_id !== user.pdvId)) {
+          const erro = new Error("Este pedido é de outro PDV.");
+          erro.statusCode = 403;
+          throw erro;
+        }
+        if (linhas.rows.some((linha) => normalizeOrderStatus(linha.status) !== "Pendente")) {
+          const erro = new Error("O Almoxarifado já começou a separar este pedido. Fale com o almoxarifado para ajustar.");
+          erro.statusCode = 409;
+          throw erro;
+        }
+
+        const porId = new Map(linhas.rows.map((linha) => [String(linha.id), linha]));
+        let alterados = 0;
+        let removidos = 0;
+
+        for (const item of itens) {
+          const linha = porId.get(String(item.id));
+          // Item que não é deste pedido é ignorado em silêncio de propósito: a tela pode estar
+          // desatualizada (outro envio juntou itens), e falhar tudo por causa disso seria pior
+          if (!linha) continue;
+          const quantidade = asInt(item.quantidade_solicitada);
+
+          if (item.remover === true || quantidade <= 0) {
+            await client.query("DELETE FROM pedidos WHERE id = $1", [linha.id]);
+            removidos += 1;
+            continue;
+          }
+          if (quantidade === Number(linha.quantidade_solicitada)) continue;
+          await client.query(
+            `UPDATE pedidos
+             SET quantidade_solicitada = $2,
+                 pedido_editado = TRUE,
+                 pedido_editado_em = CURRENT_TIMESTAMP,
+                 pedido_editado_por = $3,
+                 version = COALESCE(version, 1) + 1,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE id = $1`,
+            [linha.id, quantidade, user.name || "PDV"]
+          );
+          alterados += 1;
+        }
+
+        // Produtos novos entram na MESMA transação das edições: o pedido nunca fica num estado
+        // intermediário se algo falhar no meio (ex: produto que saiu da liberação do PDV).
+        let adicionados = 0;
+        const primeiraLinha = linhas.rows[0];
+        for (const novo of novos) {
+          const sku = normalizeText(novo.sku, 60);
+          const quantidade = asInt(novo.quantidade);
+          if (!sku || quantidade <= 0) {
+            const erro = new Error("Informe o produto e uma quantidade maior que zero.");
+            erro.statusCode = 400;
+            throw erro;
+          }
+
+          // Mesma checagem da criação do pedido: o produto precisa estar liberado para este PDV
+          // e ativo. Sem isso, o PDV poderia inserir qualquer SKU editando a requisição.
+          const liberado = await client.query(
+            `SELECT 1
+             FROM estoque_pdv e
+             JOIN produtos p ON p.sku = e.sku_produto
+             JOIN produto_categorias prc ON prc.sku_produto = p.sku
+             JOIN pdv_categorias pc ON pc.pdv_id = e.pdv_id AND pc.categoria = prc.categoria
+             WHERE e.pdv_id = $1 AND e.sku_produto = $2 AND e.permitido = TRUE AND p.ativo = TRUE
+             LIMIT 1`,
+            [user.pdvId, sku]
+          );
+          if (!liberado.rows.length) {
+            const erro = new Error("Produto não liberado para este PDV.");
+            erro.statusCode = 400;
+            throw erro;
+          }
+
+          // O PDV pode pedir por embalagem; o banco guarda sempre unidade (mesma regra da criação)
+          const conversao = await converterQuantidadeDoPedido(client, {
+            sku,
+            quantidade,
+            unidadeMedida: novo.unidade_medida
+          });
+
+          // Produto que já está no pedido soma, em vez de criar uma segunda linha do mesmo item
+          const jaExiste = await client.query(
+            `SELECT id FROM pedidos
+             WHERE codigo_pedido = $1 AND sku_produto = $2
+             ORDER BY id LIMIT 1
+             FOR UPDATE`,
+            [orderCode, sku]
+          );
+          if (jaExiste.rows[0]) {
+            await client.query(
+              `UPDATE pedidos
+               SET quantidade_solicitada = quantidade_solicitada + $2,
+                   pedido_editado = TRUE,
+                   pedido_editado_em = CURRENT_TIMESTAMP,
+                   pedido_editado_por = $3,
+                   version = COALESCE(version, 1) + 1,
+                   updated_at = CURRENT_TIMESTAMP
+               WHERE id = $1`,
+              [jaExiste.rows[0].id, conversao.unidades, user.name || "PDV"]
+            );
+          } else {
+            await client.query(
+              `INSERT INTO pedidos
+                (codigo_pedido, solicitante, sku_produto, pdv_id, quantidade_solicitada, observacao,
+                 status, pedido_editado, pedido_editado_em, pedido_editado_por)
+               VALUES ($1, $2, $3, $4, $5, $6, 'Pendente', TRUE, CURRENT_TIMESTAMP, $7)`,
+              [
+                orderCode,
+                primeiraLinha.solicitante,
+                sku,
+                user.pdvId,
+                conversao.unidades,
+                primeiraLinha.observacao,
+                user.name || "PDV"
+              ]
+            );
+          }
+          adicionados += 1;
+        }
+
+        const restantes = await client.query(
+          "SELECT count(*)::int AS n FROM pedidos WHERE codigo_pedido = $1",
+          [orderCode]
+        );
+        return { alterados, removidos, adicionados, itensRestantes: restantes.rows[0].n };
+      });
+
+      await ensurePedidoAuditTable();
+      await tx(async (client) => registrarAuditoriaStatus(client, {
+        codigoPedido: orderCode,
+        acao: "pedido_editado_pdv",
+        usuario: user.name || "PDV",
+        observacao: `PDV editou o pedido ainda pendente (${resultado.alterados} alterado(s), ${resultado.removidos} removido(s), ${resultado.adicionados} adicionado(s))`,
+        dados: { origem: "pdv", ...resultado }
+      }));
+
+      // Atualiza a tela do Almoxarifado na hora, sem alarme sonoro (o card já está lá)
+      publishOrderAlert("ORDER_ITEMS_UPDATED", {
+        orderId: orderCode,
+        orderNumber: orderCode,
+        pointId: user.pdvId,
+        pointName: user.name || "PDV",
+        origin: "PDV"
+      });
+      send(res, 200, { ok: true, ...resultado });
+    } catch (erro) {
+      send(res, erro.statusCode || 500, { error: erro.message || "Não foi possível editar o pedido." });
+    }
     return true;
   }
 
@@ -298,7 +543,8 @@ export async function handlePedidosRoutes(req, res, context) {
     const from = url.searchParams.get("from");
     const to = url.searchParams.get("to");
     const rows = await query(
-      `SELECT p.codigo_pedido, p.data_hora, pr.nome AS produto, pr.qtd_total AS estoque_central, p.quantidade_solicitada,
+      // p.id e p.version sao necessarios para o PDV editar o proprio pedido pendente
+      `SELECT p.id, p.version, p.codigo_pedido, p.sku_produto, p.data_hora, pr.nome AS produto, pr.qtd_total AS estoque_central, p.quantidade_solicitada,
               p.quantidade_liberada,
               COALESCE(p.item_origem, 'PDV') AS item_origem,
               CASE
@@ -319,7 +565,14 @@ export async function handlePedidosRoutes(req, res, context) {
        ORDER BY p.data_hora ASC, p.id ASC`,
       [pdvId, from || null, to || null]
     );
-    send(res, 200, { orders: rows });
+    // O fator vai junto para o PDV ver e editar o pedido na mesma unidade em que pediu
+    // (embalagem), em vez do número em unidades que fica guardado no banco.
+    const fatoresPdv = await obterFatoresEmLote(pool, rows.map((linha) => linha.sku_produto));
+    const pedidosComFator = rows.map((linha) => {
+      const info = fatoresPdv.get(linha.sku_produto) || { fator: 1, status: "UNITARIO", embalagem: null };
+      return { ...linha, fator_conversao: info.fator, fator_status: info.status, embalagem: info.embalagem };
+    });
+    send(res, 200, { orders: pedidosComFator });
     return true;
   }
 
@@ -457,14 +710,21 @@ export async function handlePedidosRoutes(req, res, context) {
 
       const deleted = await tx(async (client) => {
         const rows = await client.query(
-          `SELECT id, status, quantidade_liberada, pdv_id, sku_produto,
-                  retirada_assinatura, retirada_em, pronto_retirada_em, liberado_em,
-                  COALESCE(item_origem, 'PDV') AS item_origem,
-                  COALESCE(release_mode, '') AS release_mode
-           FROM pedidos
-           WHERE codigo_pedido = $1
-           ORDER BY id
-           FOR UPDATE`,
+          // LEFT JOIN de propósito: um produto removido do cadastro depois do pedido não pode
+          // sumir a linha do FOR UPDATE nem travar a auditoria -- só perde o nome bonito.
+          // "FOR UPDATE OF p": travar só pedidos -- Postgres recusa FOR UPDATE no lado nulo de
+          // um LEFT JOIN ("FOR UPDATE não pode ser aplicado ao lado com valores nulos de uma
+          // junção externa"), e produtos nem precisa de lock aqui, só do nome pra auditoria.
+          `SELECT p.id, p.status, p.quantidade_solicitada, p.quantidade_liberada, p.pdv_id, p.sku_produto,
+                  pr.nome AS produto,
+                  p.retirada_assinatura, p.retirada_em, p.pronto_retirada_em, p.liberado_em,
+                  COALESCE(p.item_origem, 'PDV') AS item_origem,
+                  COALESCE(p.release_mode, '') AS release_mode
+           FROM pedidos p
+           LEFT JOIN produtos pr ON pr.sku = p.sku_produto
+           WHERE p.codigo_pedido = $1
+           ORDER BY p.id
+           FOR UPDATE OF p`,
           [orderCode]
         );
         if (!rows.rows.length) {
@@ -486,9 +746,9 @@ export async function handlePedidosRoutes(req, res, context) {
         if (rowsToDelete.some((item) => item.retirada_assinatura || item.retirada_em || item.pronto_retirada_em || item.liberado_em)) {
           blockedReasons.push("retirada, assinatura ou liberação registrada");
         }
-        if (rowsToDelete.some((item) => item.item_origem !== "PDV")) {
-          blockedReasons.push("item incluído fora do pedido original do PDV");
-        }
+        // Item incluído pelo Almoxarifado (item_origem !== "PDV") NÃO bloqueia mais a exclusão
+        // (decisão do usuário, 08/09/2026) -- o histórico por item abaixo já registra a origem
+        // de cada linha, então essa informação não se perde, só deixa de travar a exclusão.
         if (rowsToDelete.some((item) => item.release_mode)) {
           blockedReasons.push("operação de liberação parcial em andamento");
         }
@@ -532,6 +792,34 @@ export async function handlePedidosRoutes(req, res, context) {
           throw error;
         }
 
+        const usuario = user.name || user.role || "Almoxarifado";
+
+        // Um registro de auditoria por item ANTES de apagar (não um resumo agregado só): quem
+        // olhar o relatório de edição precisa ver produto, SKU, quantidade e origem de cada
+        // linha cancelada, não só "pedido excluído" sem detalhe. Ação própria (item_cancelado)
+        // em vez de reaproveitar pedido_excluido_definitivamente aqui: a palavra "cancelado"
+        // precisa aparecer no relatório, e um rótulo por linha deixa isso explícito de cara.
+        for (const item of rowsToDelete) {
+          await client.query(
+            `INSERT INTO pedido_auditoria (codigo_pedido, acao, usuario, observacao, dados)
+             VALUES ($1, $2, $3, $4, $5::jsonb)`,
+            [
+              orderCode,
+              "item_cancelado",
+              usuario,
+              `Item cancelado: ${item.produto || item.sku_produto} (${item.sku_produto}). ${justification}`,
+              JSON.stringify({
+                produto: item.produto || null,
+                sku_produto: item.sku_produto,
+                quantidade_solicitada: asInt(item.quantidade_solicitada),
+                quantidade_liberada: asInt(item.quantidade_liberada) || null,
+                item_origem: item.item_origem,
+                status: normalizeOrderStatus(item.status)
+              })
+            ]
+          );
+        }
+
         const result = await client.query("DELETE FROM pedidos WHERE codigo_pedido = $1 RETURNING id", [orderCode]);
         await client.query(
           `INSERT INTO pedido_auditoria (codigo_pedido, acao, usuario, observacao, dados)
@@ -539,7 +827,7 @@ export async function handlePedidosRoutes(req, res, context) {
           [
             orderCode,
             "pedido_excluido_definitivamente",
-            user.name || user.role || "Almoxarifado",
+            usuario,
             justification,
             JSON.stringify({
               total_itens: result.rows.length,
@@ -1307,6 +1595,10 @@ export async function handlePedidosRoutes(req, res, context) {
         error.statusCode = 400;
         throw error;
       }
+      // Quais PDVs deste pedido sao administrativos. Uma consulta so, antes do laco: um
+      // pedido pode ter itens de mais de um PDV, e perguntar por item repetiria a leitura.
+      const administrativos = await pdvsAdministrativos(client, targetRows.map((row) => row.pdv_id));
+
       // Baixa definitiva: sai do estoque central e entra no saldo físico do PDV.
       // Só a quantidade liberada é movimentada; a diferença para o solicitado não vira pendência.
       for (const row of targetRows) {
@@ -1315,33 +1607,81 @@ export async function handlePedidosRoutes(req, res, context) {
           "UPDATE produtos SET qtd_total = qtd_total - $1 WHERE sku = $2 RETURNING sku, nome, qtd_total",
           [qty, row.sku_produto]
         );
-        // Saldo central negativo não bloqueia a retirada, mas volta para a tela como aviso
+        // Saldo central negativo não bloqueia a retirada, mas volta para a tela como aviso.
+        // Number(), não asInt(): qtd_total é NUMERIC e volta do driver como string ("-0.5") --
+        // asInt() truncaria pra "-0" antes de comparar, e "-0 < 0" é falso (bug real, pego
+        // antes de ampliar a coluna: um saldo negativo pequeno deixaria de avisar).
         const saldo = baixa.rows[0];
-        if (saldo && asInt(saldo.qtd_total) < 0) {
-          negativos.push({ sku: saldo.sku, nome: saldo.nome, saldo: asInt(saldo.qtd_total) });
+        if (saldo && Number(saldo.qtd_total) < 0) {
+          negativos.push({ sku: saldo.sku, nome: saldo.nome, saldo: Number(saldo.qtd_total) });
         }
         const pendente = asInt(row.quantidade_solicitada) - qty;
         if (pendente > 0) sobras.push({ sku: row.sku_produto, solicitada: asInt(row.quantidade_solicitada), liberada: qty, nao_atendida: pendente });
-        await client.query(
-          `INSERT INTO estoque_pdv (pdv_id, sku_produto, quantidade)
-           VALUES ($1, $2, $3)
-           ON CONFLICT (pdv_id, sku_produto) DO UPDATE SET quantidade = estoque_pdv.quantidade + EXCLUDED.quantidade`,
-          [row.pdv_id, row.sku_produto, qty]
-        );
+
+        // PDV Administrativo NAO acumula saldo.
+        //
+        // Ele nao e ponto de venda: e um setor interno (escritorio, limpeza, marketing,
+        // manutencao) que CONSOME estoque sem vender. O que ele retira sai da empresa para
+        // consumo, entao nao vira saldo de revenda em lugar nenhum. A linha de estoque_pdv
+        // continua existindo porque e nela que mora a permissao de pedido
+        // (`permitido = TRUE`, conferida na criacao do pedido) -- ela libera, nunca acumula.
+        if (!administrativos.has(row.pdv_id)) {
+          await client.query(
+            `INSERT INTO estoque_pdv (pdv_id, sku_produto, quantidade)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (pdv_id, sku_produto) DO UPDATE SET quantidade = estoque_pdv.quantidade + EXCLUDED.quantidade`,
+            [row.pdv_id, row.sku_produto, qty]
+          );
+        }
       }
 
       // Enfileira a transferência ALMOXARIFADO → PDV para a integração externa.
       // Nunca bloqueia: sem integração, sem vínculo ou sem internet, a retirada conclui
       // do mesmo jeito e o lançamento fica pendente na fila.
+      //
+      // O PDV Administrativo fica de FORA: para ele nao ha transferencia entre locais,
+      // porque nao existe local de destino -- a mercadoria sai da empresa como consumo
+      // interno. O lancamento dele e uma SAIDA do local do almoxarifado, tratada logo
+      // abaixo, e mandar TRF aqui faria a OMIE acreditar que o estoque continua na empresa,
+      // so que em outro lugar.
+      const itensDeRevenda = targetRows.filter((row) => !administrativos.has(row.pdv_id));
       lancamentoIntegracao = await registrarTransferenciasDaRetirada(client, {
         codigoPedido: orderCode,
-        itens: targetRows.map((row) => ({
+        itens: itensDeRevenda.map((row) => ({
           pedidoItemId: row.id,
           sku: row.sku_produto,
           pdvId: row.pdv_id,
           quantidade: asInt(row.quantidade_liberada)
         }))
       });
+
+      // SAIDA por consumo interno do PDV Administrativo -- "SAI", nunca "TRF".
+      //
+      // O lancamento e enfileirado e o payload e montado, mas NADA sai para a OMIE: o dominio
+      // de motivo de "SAI" na conta tem so quatro valores (INV, PER, OPS, PDV, conferidos na
+      // documentacao da API) e nenhum significa consumo interno. Ate o usuario escolher, o
+      // payload leva um sentinela e a tarefa se recusa a enviar, mesmo em modo REAL.
+      //
+      // Enfileirar mesmo assim e proposital: quando o motivo for definido, o historico de
+      // consumo ja estara montado e conferido, em vez de comecar do zero naquele dia.
+      const itensAdministrativos = targetRows.filter((row) => administrativos.has(row.pdv_id));
+      if (itensAdministrativos.length) {
+        const consumo = await registrarConsumoAdministrativo(client, {
+          codigoPedido: orderCode,
+          itens: itensAdministrativos.map((row) => ({
+            pedidoItemId: row.id,
+            sku: row.sku_produto,
+            pdvId: row.pdv_id,
+            quantidade: asInt(row.quantidade_liberada)
+          }))
+        });
+        lancamentoIntegracao = {
+          ...(lancamentoIntegracao || {}),
+          consumo_administrativo: consumo,
+          motivo_consumo:
+            "Saída por consumo administrativo registrada em simulação: o código de motivo da OMIE para consumo interno ainda não foi escolhido, então nada é enviado."
+        };
+      }
 
       const finalized = await client.query(
         `UPDATE pedidos

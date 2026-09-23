@@ -27,7 +27,11 @@ test("order alerts are restricted to warehouse users and have preferences", () =
 });
 
 test("order creation publishes one event only for fresh idempotent creation", () => {
-  assert.match(pedidoRoutesSource, /publishOrderAlert\("NEW_PENDING_ORDER"/);
+  // NEW_PENDING_ORDER (com alarme) fica reservado ao pedido que abre um card novo. Quando o
+  // envio entra num pedido que ja existe (juncao dentro da janela), sai ORDER_ITEMS_UPDATED,
+  // que atualiza a tela sem repetir o alarme -- o card ja esta la.
+  assert.match(pedidoRoutesSource, /\? "ORDER_ITEMS_UPDATED" : "NEW_PENDING_ORDER"/);
+  // A garantia original: reenvio idempotente do MESMO clique nao publica evento nenhum
   assert.match(pedidoRoutesSource, /if \(!result\.repeated && result\.alert\)/);
   assert.match(eventsSource, /eventId/);
   assert.match(eventsSource, /clients = new Set/);
