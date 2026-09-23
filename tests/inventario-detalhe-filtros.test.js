@@ -49,3 +49,10 @@ test("CSS: checkbox de 'Só os não contados' não herda o tamanho global de inp
   assert.match(css, /grid-template-columns: minmax\(10rem, 1fr\) minmax\(9rem, 14rem\) auto;/);
   assert.match(css, /\.order-panel-foot \.order-card-actions \{\s*max-width: 100%;/);
 });
+
+test("CSS: a lista do painel de inventário mostra ao menos 10 produtos (altura mínima) e o corpo rola", () => {
+  const css = fs.readFileSync(new URL("../public/styles.css", import.meta.url), "utf8");
+  assert.match(css, /\.order-panel-content > \.table-wrap\.inventario-tabela \{[^}]*min-height: 48rem;/);
+  assert.match(css, /\.inventario-detail-overlay \.order-panel-content \{\s*overflow-y: auto;/);
+  assert.match(css, /@media \(max-width: 720px\)[\s\S]*min-height: 58rem;/);
+});

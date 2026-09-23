@@ -4120,7 +4120,13 @@ body.has-order-panel {
    produtos): mesmo com alertas e filtros acima disputando espaço, ela nunca pode encolher a
    ponto de sumir -- uma altura mínima garante que sempre sobra algo para rolar. */
 .order-panel-content > .table-wrap.inventario-tabela {
-  min-height: 12rem;
+  /* Pelo menos ~10 produtos visíveis na lista (linha de ~4rem + cabeçalho); se o painel for
+     menor que isso, o corpo do painel rola em vez de espremer a tabela */
+  min-height: 48rem;
+}
+
+.inventario-detail-overlay .order-panel-content {
+  overflow-y: auto;
 }
 
 .order-panel-context {
@@ -6805,10 +6811,10 @@ html .inventario-so-pendentes input[type="checkbox"] {
     white-space: normal;
   }
 
-  /* Com o rodapé e os filtros ocupando a tela, o corpo do painel de inventário precisa rolar:
-     senão a tabela fica cortada e inalcançável */
-  .inventario-detail-overlay .order-panel-content {
-    overflow-y: auto;
+  /* No celular o nome do produto quebra em 2-3 linhas: cada linha é mais alta, então a lista
+     precisa de mais altura para mostrar 10 produtos */
+  .order-panel-content > .table-wrap.inventario-tabela {
+    min-height: 58rem;
   }
 
   .inventario-resumo {
