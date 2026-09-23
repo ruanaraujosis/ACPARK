@@ -51,10 +51,12 @@ test("o vencedor por local é o mais recente dentro do corte, e o Almoxarifado u
   assert.match(rota, /ORDER BY pdv_id, ajuste_aplicado_em DESC/);
 });
 
-test("produto sem ninguém ter contado no ciclo vencedor não aparece no relatório", () => {
+test("produto sem ninguém ter contado no ciclo vencedor não aparece no relatório (a menos que ?todos=1)", () => {
   // Catálogo inteiro sem nenhuma contagem viraria relatório enorme e inútil. skusContados só
   // recebe SKU de quem foi de fato contado (quantidade_contada IS NOT NULL) no próprio vencedor.
-  assert.match(rota, /if \(!skusContados\.has\(produto\.sku\)\) continue;/);
+  // mostraTodos (?todos=1) pula esse filtro de propósito -- read-only, não afeta a regra do ajuste.
+  assert.match(rota, /if \(!mostraTodos && !skusContados\.has\(produto\.sku\)\) continue;/);
+  assert.match(rota, /const mostraTodos = url\.searchParams\.get\("todos"\) === "1";/);
   assert.match(rota, /WHERE inventario_id = ANY\(\$1\) AND quantidade_contada IS NOT NULL/);
 });
 
@@ -384,6 +386,48 @@ test("os quatro campos de contagem de inventário aceitam decimal (step 0.01, in
   assert.match(appJs, /class="inventario-admin-qtd" type="number" min="0" step="0\.01" inputmode="decimal"/);
   assert.match(appJs, /class="inventario-add-qty" type="number" min="0" step="0\.01" value="0" inputmode="decimal"/);
   assert.doesNotMatch(appJs, /class="[a-z-]*inventario[a-z-]*qty?" type="number"[^>]*step="1"/, "nenhum campo de contagem de inventário deveria ter voltado a step=1");
+});
+
+// ===== Auto-save (localStorage + debounce pro PATCH que já existia) =====
+
+test("contagem do PDV: localStorage a cada tecla + PATCH debounced 2,5s depois de parar de digitar", () => {
+  const fnBind = appJs.slice(appJs.indexOf("function bindInventarioPdv"), appJs.indexOf("// Abre a contagem"));
+  assert.match(fnBind, /const autoSalvarNoServidor = debounce\(\(\) => salvarContagemInventarioAuto\(codigo\), 2500\);/);
+  assert.match(fnBind, /salvarRascunhoInventarioLocal\(chaveRascunhoInventarioPdv\(codigo\), itensDaTelaInventario\);/);
+  assert.match(fnBind, /autoSalvarNoServidor\(\);/);
+
+  // O auto-save é silencioso (sem desabilitar botão nem toast de sucesso a cada poucos
+  // segundos) -- só erro continua aparecendo, porque perder a contagem em silêncio é pior.
+  const fnAuto = appJs.slice(appJs.indexOf("async function salvarContagemInventarioAuto"), appJs.indexOf("async function salvarContagemInventarioAuto") + 500);
+  assert.match(fnAuto, /silentLoading: true/);
+  assert.doesNotMatch(fnAuto, /toast\(".*salv/i);
+
+  // Rascunho local é lido e mesclado por cima do que o servidor devolveu, na abertura da tela
+  assert.match(appJs, /const rascunho = lerRascunhoInventarioLocal\(chaveRascunhoInventarioPdv\(inventario\.codigo_inventario\)\);/);
+});
+
+test("contagem do PDV: rascunho local some depois de salvar (manual, automático ou enviar)", () => {
+  const trechoSalvar = appJs.slice(appJs.indexOf("async function salvarContagemInventario("), appJs.indexOf("async function salvarContagemInventarioAuto"));
+  assert.match(trechoSalvar, /limparRascunhoInventarioLocal\(chaveRascunhoInventarioPdv\(codigo\)\);/);
+
+  const trechoAuto = appJs.slice(appJs.indexOf("async function salvarContagemInventarioAuto"), appJs.indexOf("// Envio: salva antes"));
+  assert.match(trechoAuto, /limparRascunhoInventarioLocal\(chaveRascunhoInventarioPdv\(codigo\)\);/);
+
+  const trechoEnviar = appJs.slice(appJs.indexOf("async function enviarContagemInventario"), appJs.indexOf("// ===== Aba INVENTÁRIOS do Almoxarifado ====="));
+  assert.match(trechoEnviar, /limparRascunhoInventarioLocal\(chaveRascunhoInventarioPdv\(codigo\)\);/);
+});
+
+test("contagem própria do Almoxarifado: mesmo padrão de auto-save (localStorage + PATCH debounced)", () => {
+  const fim = appJs.indexOf("document.querySelector(\"#almox-concluir\")");
+  const trecho = appJs.slice(appJs.indexOf("function bindContagemDoAlmoxarifado"), fim);
+  assert.match(trecho, /const chaveRascunho = chaveRascunhoInventarioAlmox\(codigo\);/);
+  assert.match(trecho, /const autoSalvarNoServidor = debounce\(\(\) => salvar\(\)\.catch\(\(\) => \{\}\), 2500\);/);
+  assert.match(trecho, /salvarRascunhoInventarioLocal\(chaveRascunho, itensDaTelaAlmox\);/);
+  // salvar() já limpa o rascunho local ao ter sucesso -- reaproveitado tanto pelo auto-save
+  // quanto pelo clique manual e pelo "Assinar e confirmar", sem precisar repetir em 3 lugares
+  assert.match(trecho, /const salvar = async \(\) => \{[\s\S]{0,300}limparRascunhoInventarioLocal\(chaveRascunho\);/);
+
+  assert.match(appJs, /const rascunho = lerRascunhoInventarioLocal\(chaveRascunhoInventarioAlmox\(inventario\.codigo_inventario\)\);/);
 });
 
 test("contagemDigitada não arredonda nem exige inteiro -- decimal já passava, sem precisar mudar essa função", () => {

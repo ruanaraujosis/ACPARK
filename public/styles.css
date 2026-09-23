@@ -3646,10 +3646,6 @@ th {
   font-weight: 900;
 }
 
-.release-summary-pill {
-  cursor: default;
-}
-
 /* Quadro Kanban de liberação */
 .release-kanban-board {
   display: grid;

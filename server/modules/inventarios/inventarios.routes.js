@@ -557,6 +557,12 @@ async function rotasDoAlmoxarifado(req, res, context) {
     const pdvIdsFiltro = new Set(locaisFiltroBruto.filter((v) => v !== "ALMOX").map(Number));
     const incluiAlmoxarifado = !locaisFiltroAtivo || locaisFiltroBruto.includes("ALMOX");
 
+    // "Mostrar todos": lista o catálogo inteiro (da categoria filtrada, se houver), célula "—"
+    // pra quem ninguém contou -- em vez do padrão de só entrar quem foi contado por um local
+    // visível. Read-only: não muda em nada a regra de ajuste ("sem contagem não é tocado"),
+    // só o que este relatório exibe.
+    const mostraTodos = url.searchParams.get("todos") === "1";
+
     // PDVs administrativos ficam fora das colunas: não vendem, então não têm saldo de
     // revenda -- não faz sentido uma coluna de estoque para eles neste relatório.
     const pdvsTodos = await query("SELECT id, nome FROM pdvs WHERE administrativo = FALSE ORDER BY nome");
@@ -650,7 +656,7 @@ async function rotasDoAlmoxarifado(req, res, context) {
     // leitura: aqui, célula sem contagem fica em branco, nunca herda um número de outro momento).
     const linhas = [];
     for (const produto of produtos) {
-      if (!skusContados.has(produto.sku)) continue;
+      if (!mostraTodos && !skusContados.has(produto.sku)) continue;
       const porPdv = {};
       let total = 0;
       for (const pdv of pdvs) {
@@ -695,6 +701,7 @@ async function rotasDoAlmoxarifado(req, res, context) {
       incluiAlmoxarifado,
       categoriasFiltro,
       locaisFiltro: locaisFiltroBruto,
+      mostraTodos,
       vencedores: vencedores.map((v) => ({
         pdv_id: v.pdv_id,
         codigo_inventario: v.codigo_inventario,

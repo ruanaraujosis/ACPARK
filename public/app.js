@@ -24,6 +24,26 @@ function createIdempotencyKey() {
   return uuid();
 }
 
+// Lê o rascunho local do carrinho do PDV. "rascunho" no nome da chave garante que a varredura
+// genérica de clearStoredOrderDrafts() (em viewOrder) já limpa ela junto das outras.
+function lerRascunhoCarrinhoLocal() {
+  try {
+    return JSON.parse(localStorage.getItem("pedido-rascunho-carrinho") || "null");
+  } catch {
+    return null;
+  }
+}
+
+// Atraso genérico: só chama fn depois de ms sem nova chamada -- usado no auto-save (inventário,
+// carrinho do PDV) pra não mandar uma requisição a cada tecla, só quando a digitação parou.
+function debounce(fn, ms) {
+  let timer = null;
+  return (...args) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), ms);
+  };
+}
+
 // Monta as opções de fetch incluindo o header de idempotência
 function idempotentRequestOptions(body, idempotencyKey = createIdempotencyKey()) {
   return {
@@ -72,7 +92,7 @@ function shell(content, actions = "") {
   const displayName = role === "admin" ? "Almoxarifado" : state.user?.name;
   const shouldShowHero = state.currentView === "dashboard";
   const items = role === "admin"
-    ? [["dashboard", "Dashboard"], ["products", "Estoque central"], ["stock", "Estoque PDVs"], ["inventarios", "Inventários"], ["release", "Liberação"], ["damages", "Devoluções de avarias"], ["integrations", "Integrações"], ["history", "Histórico"], ["damage-history", "Histórico de Devoluções"], ["auto", "Autopedidos"], ["config", "Config"]]
+    ? [["dashboard", "Dashboard"], ["products", "Estoque central"], ["stock", "Estoque PDVs"], ["inventarios", "Inventários"], ["release", "Liberação"], ["damages", "Devoluções de avarias"], ["integrations", "Integrações"], ["history", "Histórico"], ["damage-history", "Histórico de Devoluções"], ["auto", "Autopedidos"], ["config", "Configurações"]]
     : state.pdvAdministrativo
       // PDV Administrativo consome sem vender: nao existe saldo para ele, entao "Meu estoque"
       // sai do menu (ausencia, nao zero) e entra o painel de consumo do setor.
@@ -437,8 +457,13 @@ async function viewOrder(options = {}) {
   const savedRequester = savedDraft?.solicitante && savedDraft.solicitante !== state.user?.name
     ? savedDraft.solicitante
     : "";
-  if (!state.cart.length && savedDraft?.items?.length) {
-    state.cart = savedDraft.items
+  // Rascunho local do carrinho: cobre a janela entre digitar e o debounce chegar no servidor
+  // (ou uma reconexão sem internet) -- prioridade sobre o rascunho do servidor por ser sempre
+  // o mais recente dos dois (localStorage grava a cada mudança, o servidor só a cada 2,5s).
+  const rascunhoLocalCarrinho = lerRascunhoCarrinhoLocal();
+  const draftParaRestaurar = rascunhoLocalCarrinho?.items?.length ? rascunhoLocalCarrinho : savedDraft;
+  if (!state.cart.length && draftParaRestaurar?.items?.length) {
+    state.cart = draftParaRestaurar.items
       .map((item) => ({
         sku: String(item.sku || ""),
         nome: String(item.nome || ""),
@@ -537,6 +562,24 @@ async function viewOrder(options = {}) {
     observacao: document.querySelector("#observacao")?.value || "",
     items: state.cart.map((item) => ({ ...item }))
   });
+  // Auto-save do carrinho: localStorage a cada mudança (nunca some ao trocar de aba), e o
+  // rascunho no servidor (rota já existente) 2,5s depois de parar de mexer -- não a cada tecla.
+  // "rascunho" no nome da chave garante que clearStoredOrderDrafts() já varre e limpa ela.
+  const salvarRascunhoCarrinhoLocal = () => {
+    try {
+      localStorage.setItem("pedido-rascunho-carrinho", JSON.stringify(currentDraftPayload()));
+    } catch {
+      // Navegador privado/sem storage: o auto-save no servidor continua funcionando sozinho
+    }
+  };
+  const autoSalvarCarrinhoNoServidor = debounce(async () => {
+    if (!state.cart.length) return;
+    try {
+      await request("/api/pdv/order-draft", { method: "POST", body: JSON.stringify(currentDraftPayload()), silentLoading: true });
+    } catch {
+      // Rascunho local já protege o que foi digitado; próxima mudança tenta de novo
+    }
+  }, 2500);
   const clearStoredOrderDrafts = () => {
     const userKeys = [
       state.user?.id,
@@ -652,6 +695,8 @@ async function viewOrder(options = {}) {
   };
 
   const renderCart = () => {
+    salvarRascunhoCarrinhoLocal();
+    autoSalvarCarrinhoNoServidor();
     document.querySelector("#cart").innerHTML = state.cart.length
       ? table(COLUNAS_PEDIDO_PDV, state.cart.map((item, index) => {
         const { fator, embalagem, invalido } = fatorDoProduto(item.sku);
@@ -791,6 +836,7 @@ async function viewOrder(options = {}) {
       state.cart = [];
       state.orderIdempotencyKey = null;
       await request("/api/pdv/order-draft", { method: "DELETE", silentLoading: true }).catch(() => {});
+      try { localStorage.removeItem("pedido-rascunho-carrinho"); } catch {}
       toast("Pedido enviado para o Almoxarifado.");
       route("mine");
     } catch (error) {
@@ -4523,6 +4569,13 @@ async function viewIntegrations(filters = {}) {
   };
 
   shell(`
+    <div class="config-tabs release-tabs integrations-tabs" role="tablist" aria-label="Seção de integrações">
+      <button class="config-tab is-active" type="button" data-integrations-tab="central" role="tab" aria-selected="true">Central de APIs</button>
+      <button class="config-tab" type="button" data-integrations-tab="fila" role="tab" aria-selected="false">Fila de sincronização</button>
+      <button class="config-tab" type="button" data-integrations-tab="lancamentos" role="tab" aria-selected="false">Lançamentos</button>
+    </div>
+
+    <div data-integrations-panel="central">
     <section class="card filter-panel">
       <div class="filter-copy">
         <p class="eyebrow">Integrações</p>
@@ -4593,7 +4646,9 @@ async function viewIntegrations(filters = {}) {
         </article>`;
       }).join("") || `<section class="card"><div class="empty-state">Nenhuma integração cadastrada. Use “+ Adicionar integração” para conectar uma API.</div></section>`}
     </section>
+    </div>
 
+    <div data-integrations-panel="fila" hidden>
     <section class="card filter-panel mt-4">
       <div class="filter-copy">
         <p class="eyebrow">Monitoramento</p>
@@ -4771,7 +4826,9 @@ async function viewIntegrations(filters = {}) {
               : "Nenhuma evidência ainda. Use “Varrer histórico” para ler as notas de compra do ERP."
           }</div>`}
     </section>
+    </div>
 
+    <div data-integrations-panel="lancamentos" hidden>
     <section class="card mt-4">
       <h3 class="section-title text-xl font-black">Lançamentos enviados à integração</h3>
       <p class="text-sm text-slate-500">
@@ -4819,7 +4876,24 @@ async function viewIntegrations(filters = {}) {
         </tr>`))}
       ${divergences.length ? "" : `<div class="empty-state">Nenhuma divergência pendente.</div>`}
     </section>
+    </div>
   `);
+
+  // Troca de aba é só exibição -- os dados das 3 já vieram no mesmo carregamento, nenhuma
+  // reconsulta ao servidor acontece ao trocar (mesmo espírito de data-stock-view em viewStock).
+  document.querySelectorAll("[data-integrations-tab]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const aba = button.dataset.integrationsTab;
+      document.querySelectorAll("[data-integrations-tab]").forEach((tab) => {
+        const ativa = tab.dataset.integrationsTab === aba;
+        tab.classList.toggle("is-active", ativa);
+        tab.setAttribute("aria-selected", String(ativa));
+      });
+      document.querySelectorAll("[data-integrations-panel]").forEach((painel) => {
+        painel.hidden = painel.dataset.integrationsPanel !== aba;
+      });
+    });
+  });
 
   const recarregar = () => viewIntegrations({ status, capacidade, integrationId });
 
@@ -6583,12 +6657,6 @@ async function viewRelease(filters = {}) {
           ${!loadError && orders.length >= 80 ? `<button class="btn secondary load-more-finalized" type="button" data-next-offset="${finalizedOffset + 80}">Carregar mais finalizados</button>` : ""}
         </section>
       ` : `
-        <div class="config-tabs release-tabs release-kanban-summary" role="list" aria-label="Resumo dos pedidos ativos">
-          ${statuses.map((status) => `
-            <span class="config-tab release-summary-pill" data-release-status="${esc(status)}" role="listitem">
-              ${esc(statusLabels[status] || status)} <span data-release-count="${esc(status)}">${byStatus[status].length}</span>
-            </span>`).join("")}
-        </div>
         <section class="release-kanban-board" id="release-kanban-board" aria-label="Quadro de pedidos ativos">
           ${loadError
             ? `<div class="card release-error-state"><strong>Não foi possível carregar os pedidos.</strong><p>Tente novamente mantendo os filtros atuais.</p><button class="btn secondary retry-release" type="button">Tentar novamente</button></div>`
@@ -8511,13 +8579,10 @@ function updateReleaseKanbanColumnEmptyStates() {
 // Atualiza a contagem de cards por coluna do Kanban
 function updateReleaseKanbanCounts() {
   document.querySelectorAll("[data-release-column]").forEach((column) => {
-    const status = column.dataset.releaseColumn;
     const total = new Set([...column.querySelectorAll(".release-kanban-card")]
       .map((card) => card.dataset.order)
       .filter(Boolean)).size;
     column.querySelector("[data-release-count]") && (column.querySelector("[data-release-count]").textContent = total);
-    const globalCount = document.querySelector(`.release-kanban-summary [data-release-count="${CSS.escape(status)}"]`);
-    if (globalCount) globalCount.textContent = total;
   });
 }
 
@@ -10410,6 +10475,17 @@ async function viewInventario(options = {}) {
   const data = await request("/api/pdv/inventario", { silentLoading: Boolean(options.auto) });
   const { janela, inventario, itens = [], produtos = [] } = data;
   const contagens = new Map(itens.map((item) => [item.sku_produto, item]));
+
+  // Rascunho local por PDV+inventário: cobre a janela entre digitar e o debounce chegar no
+  // servidor (ou uma reconexão sem internet). Só entra se for do MESMO ciclo de contagem --
+  // um rascunho de um inventário antigo nunca deveria sobrescrever um novo.
+  if (inventario) {
+    const rascunho = lerRascunhoInventarioLocal(chaveRascunhoInventarioPdv(inventario.codigo_inventario));
+    for (const item of rascunho) {
+      if (item.quantidade === null || item.quantidade === undefined) continue;
+      contagens.set(item.sku, { ...contagens.get(item.sku), sku_produto: item.sku, quantidade_contada: item.quantidade });
+    }
+  }
   const somenteLeitura = Boolean(inventario) && inventario.status !== "Em contagem";
 
   const categorias = [...new Set(produtos.flatMap((p) => String(p.categoria || "").split(",").map((c) => c.trim()).filter(Boolean)))]
@@ -10493,11 +10569,17 @@ function bindInventarioPdv(codigo) {
   document.querySelector("#inventario-categoria")?.addEventListener("change", aplicarFiltros);
   document.querySelector("#inventario-pendentes")?.addEventListener("change", aplicarFiltros);
 
+  // Auto-save: localStorage a cada tecla (nunca perde o que foi digitado, mesmo sem internet),
+  // e PATCH no servidor 2,5s depois de parar de digitar -- não a cada tecla.
+  const autoSalvarNoServidor = debounce(() => salvarContagemInventarioAuto(codigo), 2500);
+
   // Digitar marca a linha e atualiza o resumo, sem redesenhar (perderia o que não foi salvo)
   document.querySelectorAll(".inventario-qtd").forEach((campo) => {
     campo.addEventListener("input", () => {
       campo.closest("tr")?.classList.toggle("is-contado", contagemDigitada(campo.value) !== null);
       atualizarResumoInventario();
+      salvarRascunhoInventarioLocal(chaveRascunhoInventarioPdv(codigo), itensDaTelaInventario);
+      autoSalvarNoServidor();
     });
   });
 
@@ -10525,6 +10607,30 @@ function itensDaTelaInventario() {
   }));
 }
 
+// Rascunho local de contagem -- genérico pras duas telas (PDV e Almoxarifado), chave por
+// inventário (cada ciclo é um código novo, então um rascunho velho nunca colide com um novo).
+const chaveRascunhoInventarioPdv = (codigo) => `inventario-rascunho-pdv-${codigo}`;
+const chaveRascunhoInventarioAlmox = (codigo) => `inventario-rascunho-almox-${codigo}`;
+function lerRascunhoInventarioLocal(chave) {
+  try {
+    return JSON.parse(localStorage.getItem(chave) || "[]");
+  } catch {
+    return [];
+  }
+}
+function salvarRascunhoInventarioLocal(chave, coletor) {
+  try {
+    localStorage.setItem(chave, JSON.stringify(coletor()));
+  } catch {
+    // Navegador privado/sem storage: o auto-save no servidor continua funcionando sozinho
+  }
+}
+function limparRascunhoInventarioLocal(chave) {
+  try {
+    localStorage.removeItem(chave);
+  } catch {}
+}
+
 // Salvamento parcial
 async function salvarContagemInventario(botao, codigo) {
   const textoAnterior = botao.textContent;
@@ -10535,12 +10641,29 @@ async function salvarContagemInventario(botao, codigo) {
       method: "PATCH",
       body: JSON.stringify({ codigo_inventario: codigo, itens: itensDaTelaInventario() })
     });
+    limparRascunhoInventarioLocal(chaveRascunhoInventarioPdv(codigo));
     toast("Contagem salva. Você pode continuar depois.");
   } catch (error) {
     toast(error.message || "Não foi possível salvar a contagem.", "error");
   } finally {
     botao.disabled = false;
     botao.textContent = textoAnterior;
+  }
+}
+
+// Auto-save silencioso: mesmo PATCH do botão, sem mexer em texto/estado de botão nenhum, e
+// sem toast de sucesso -- digitar não pode gerar uma notificação a cada poucos segundos. Erro
+// continua aparecendo, porque perder a contagem em silêncio seria pior que o aviso.
+async function salvarContagemInventarioAuto(codigo) {
+  try {
+    await request("/api/pdv/inventario", {
+      method: "PATCH",
+      body: JSON.stringify({ codigo_inventario: codigo, itens: itensDaTelaInventario() }),
+      silentLoading: true
+    });
+    limparRascunhoInventarioLocal(chaveRascunhoInventarioPdv(codigo));
+  } catch (error) {
+    toast(error.message || "Não foi possível salvar a contagem automaticamente.", "error");
   }
 }
 
@@ -10579,6 +10702,7 @@ async function enviarContagemInventario(botao, codigo) {
       method: "POST",
       body: JSON.stringify({ codigo_inventario: codigo })
     });
+    limparRascunhoInventarioLocal(chaveRascunhoInventarioPdv(codigo));
     toast("Contagem enviada ao Almoxarifado.");
     await viewInventario();
   } catch (error) {
@@ -10643,7 +10767,7 @@ async function viewInventarios(options = {}) {
             <td><span class="status-chip">${esc(ROTULO_STATUS_INVENTARIO[inv.status] || inv.status)}</span></td>
             <td>${inv.contados} de ${inv.itens}</td>
             <td>${textoIdadeContagem(inv)}</td>
-            <td><button class="btn secondary inventario-abrir" type="button" data-codigo="${esc(inv.codigo_inventario)}">Abrir</button></td>
+            <td><button class="btn secondary inventario-abrir" type="button" data-codigo="${esc(inv.codigo_inventario)}">${inv.status === "Aguardando assinatura" ? "Revisar" : "Abrir"}</button></td>
           </tr>`))
         : `<p class="text-sm text-slate-500">Nenhum inventário ${filtro ? "neste estado" : "registrado"}.</p>`}
     </section>
@@ -10671,10 +10795,11 @@ function lerFiltroRelatorioEstoqueSalvo() {
     const bruto = JSON.parse(localStorage.getItem(CHAVE_FILTRO_RELATORIO_ESTOQUE) || "{}");
     return {
       categorias: Array.isArray(bruto.categorias) ? bruto.categorias : [],
-      locais: Array.isArray(bruto.locais) ? bruto.locais : []
+      locais: Array.isArray(bruto.locais) ? bruto.locais : [],
+      todos: Boolean(bruto.todos)
     };
   } catch {
-    return { categorias: [], locais: [] };
+    return { categorias: [], locais: [], todos: false };
   }
 }
 
@@ -10740,6 +10865,11 @@ async function openRelatorioEstoqueModal() {
           <div class="multi-filter-options">${listaFiltro(opcoesLocais, salvo.locais, "relatorio-local-check")}</div>
         </div>
         <p class="text-xs text-slate-500">Sem seleção em Categorias/Locais = mostra tudo (comportamento padrão).</p>
+
+        <label class="multi-filter-check">
+          <input id="relatorio-todos" type="checkbox" ${salvo.todos ? "checked" : ""} />
+          <span>Mostrar todos os produtos da categoria</span>
+        </label>
       </div>
       <div class="form-actions">
         <button class="btn secondary" id="relatorio-imprimir" type="button">Imprimir (A4)</button>
@@ -10769,18 +10899,19 @@ async function openRelatorioEstoqueModal() {
   const coletarFiltro = () => ({
     corte: modal.querySelector("#relatorio-corte")?.value || "",
     categorias: [...modal.querySelectorAll(".relatorio-categoria-check:checked")].map((c) => c.value),
-    locais: [...modal.querySelectorAll(".relatorio-local-check:checked")].map((c) => c.value)
+    locais: [...modal.querySelectorAll(".relatorio-local-check:checked")].map((c) => c.value),
+    todos: Boolean(modal.querySelector("#relatorio-todos")?.checked)
   });
 
   modal.querySelector("#relatorio-imprimir")?.addEventListener("click", async () => {
     const filtro = coletarFiltro();
-    salvarFiltroRelatorioEstoque({ categorias: filtro.categorias, locais: filtro.locais });
+    salvarFiltroRelatorioEstoque({ categorias: filtro.categorias, locais: filtro.locais, todos: filtro.todos });
     const dados = await buscarDadosRelatorioDeEstoque(filtro);
     if (dados) printInventoryReport(dados);
   });
   modal.querySelector("#relatorio-excel")?.addEventListener("click", async () => {
     const filtro = coletarFiltro();
-    salvarFiltroRelatorioEstoque({ categorias: filtro.categorias, locais: filtro.locais });
+    salvarFiltroRelatorioEstoque({ categorias: filtro.categorias, locais: filtro.locais, todos: filtro.todos });
     const dados = await buscarDadosRelatorioDeEstoque(filtro);
     if (!dados) return;
     try {
@@ -10800,6 +10931,7 @@ async function buscarDadosRelatorioDeEstoque(filtro) {
   const params = new URLSearchParams({ corte: filtro.corte });
   if (filtro.categorias?.length) params.set("categorias", filtro.categorias.join(","));
   if (filtro.locais?.length) params.set("locais", filtro.locais.join(","));
+  if (filtro.todos) params.set("todos", "1");
   try {
     return await request(`/api/admin/inventario/relatorio?${params.toString()}`);
   } catch (error) {
@@ -11844,6 +11976,16 @@ function fecharContagemPropria() {
 function renderContagemPropria(overlay, dados) {
   const { inventario, itens = [], produtos = [] } = dados;
   const contagens = new Map(itens.map((item) => [item.sku_produto, item]));
+
+  // Mesmo rascunho local da contagem do PDV, aqui para a contagem própria do Almoxarifado --
+  // cobre a janela entre digitar e o debounce chegar no servidor.
+  if (inventario) {
+    const rascunho = lerRascunhoInventarioLocal(chaveRascunhoInventarioAlmox(inventario.codigo_inventario));
+    for (const item of rascunho) {
+      if (item.quantidade === null || item.quantidade === undefined) continue;
+      contagens.set(item.sku, { ...contagens.get(item.sku), sku_produto: item.sku, quantidade_contada: item.quantidade });
+    }
+  }
   const categorias = [...new Set(produtos.flatMap((p) => String(p.categoria || "").split(",").map((c) => c.trim()).filter(Boolean)))]
     .sort((a, b) => a.localeCompare(b, "pt-BR"));
 
@@ -11947,19 +12089,28 @@ function bindContagemDoAlmoxarifado(codigo) {
   document.querySelector("#almox-categoria")?.addEventListener("change", aplicarFiltros);
   document.querySelector("#almox-pendentes")?.addEventListener("change", aplicarFiltros);
 
-  document.querySelectorAll(".almox-qtd").forEach((campo) =>
-    campo.addEventListener("input", () => {
-      campo.closest("tr")?.classList.toggle("is-contado", contagemDigitada(campo.value) !== null);
-      atualizarResumoAlmox();
-    })
-  );
-
+  const chaveRascunho = chaveRascunhoInventarioAlmox(codigo);
   const salvar = async () => {
     await request("/api/admin/inventario/proprio", {
       method: "PATCH",
       body: JSON.stringify({ codigo_inventario: codigo, itens: itensDaTelaAlmox() })
     });
+    limparRascunhoInventarioLocal(chaveRascunho);
   };
+
+  // Auto-save: localStorage a cada tecla, PATCH no servidor 2,5s depois de parar de digitar.
+  // Erro no auto-save fica silencioso na tela (sem toast a cada poucos segundos) -- o rascunho
+  // local já garante que nada se perde enquanto a rede não volta.
+  const autoSalvarNoServidor = debounce(() => salvar().catch(() => {}), 2500);
+
+  document.querySelectorAll(".almox-qtd").forEach((campo) =>
+    campo.addEventListener("input", () => {
+      campo.closest("tr")?.classList.toggle("is-contado", contagemDigitada(campo.value) !== null);
+      atualizarResumoAlmox();
+      salvarRascunhoInventarioLocal(chaveRascunho, itensDaTelaAlmox);
+      autoSalvarNoServidor();
+    })
+  );
 
   document.querySelector("#almox-salvar")?.addEventListener("click", async (evento) => {
     const botao = evento.currentTarget;

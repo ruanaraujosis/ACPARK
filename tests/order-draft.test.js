@@ -20,6 +20,24 @@ test("pdv order screen can save, restore and clear cart draft", () => {
   assert.match(app, /Salvar rascunho/);
   assert.match(app, /Limpar rascunho/);
   assert.match(app, /currentDraftPayload/);
-  assert.match(app, /state\.cart = savedDraft\.items/);
+  // localStorage tem prioridade sobre o rascunho do servidor -- é sempre o mais recente dos
+  // dois (grava a cada mudança; o servidor só a cada 2,5s via debounce)
+  assert.match(app, /const rascunhoLocalCarrinho = lerRascunhoCarrinhoLocal\(\);/);
+  assert.match(app, /const draftParaRestaurar = rascunhoLocalCarrinho\?\.items\?\.length \? rascunhoLocalCarrinho : savedDraft;/);
+  assert.match(app, /state\.cart = draftParaRestaurar\.items/);
   assert.match(app, /Você pode continuar este pedido depois/);
+});
+
+test("carrinho do PDV tem auto-save: localStorage a cada mudança + debounce pro servidor", () => {
+  assert.match(app, /function lerRascunhoCarrinhoLocal\(\)/);
+  assert.match(app, /localStorage\.getItem\("pedido-rascunho-carrinho"\)/);
+  assert.match(app, /localStorage\.setItem\("pedido-rascunho-carrinho", JSON\.stringify\(currentDraftPayload\(\)\)\)/);
+  // Debounce de 2,5s -- não manda uma requisição a cada tecla
+  assert.match(app, /const autoSalvarCarrinhoNoServidor = debounce\(async \(\) => \{/);
+  assert.match(app, /\}, 2500\);/);
+  // renderCart roda depois de toda mudança no carrinho (adicionar, editar qtd, trocar unidade,
+  // remover) -- ligar o auto-save ali cobre os 4 pontos de mutação sem duplicar em cada um
+  const renderCartFn = app.slice(app.indexOf("const renderCart = () => {"), app.indexOf("renderAvailableProducts();\n  renderCart();"));
+  assert.match(renderCartFn, /salvarRascunhoCarrinhoLocal\(\);/);
+  assert.match(renderCartFn, /autoSalvarCarrinhoNoServidor\(\);/);
 });
