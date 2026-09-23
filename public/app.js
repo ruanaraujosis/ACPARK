@@ -10767,7 +10767,7 @@ async function viewInventarios(options = {}) {
             <td><span class="status-chip">${esc(ROTULO_STATUS_INVENTARIO[inv.status] || inv.status)}</span></td>
             <td>${inv.contados} de ${inv.itens}</td>
             <td>${textoIdadeContagem(inv)}</td>
-            <td><button class="btn secondary inventario-abrir" type="button" data-codigo="${esc(inv.codigo_inventario)}">${inv.status === "Aguardando assinatura" ? "Revisar" : "Abrir"}</button></td>
+            <td><button class="btn secondary inventario-abrir" type="button" data-codigo="${esc(inv.codigo_inventario)}">Abrir</button></td>
           </tr>`))
         : `<p class="text-sm text-slate-500">Nenhum inventário ${filtro ? "neste estado" : "registrado"}.</p>`}
     </section>
@@ -11199,7 +11199,9 @@ function renderDetalheInventario(overlay, codigo, dados) {
       ${editavel ? "" : `<div class="release-alert card"><strong>Somente leitura.</strong>
         <p>${inventario.status === "Em contagem"
           ? "O PDV ainda está contando."
-          : "Contagem confirmada. Para corrigir, é preciso abrir um novo inventário."}</p></div>`}
+          : inventario.status === "Aguardando assinatura"
+            ? "Aguardando a assinatura do PDV. Use Revisar para voltar à conferência e corrigir a contagem."
+            : "Contagem confirmada. Para corrigir, é preciso abrir um novo inventário."}</p></div>`}
 
       <div class="table-wrap inventario-tabela">
         ${table(["Produto", "Contado (un)", "Saldo atual", "Diferença", "Contado em", "Ação"], itens.map((item) => {
@@ -11255,6 +11257,9 @@ function renderDetalheInventario(overlay, codigo, dados) {
       </div>` : inventario.status === "Em contagem" ? `
       <div class="order-card-actions no-print">
         <button class="btn danger secondary inventario-excluir" type="button">Excluir inventário</button>
+      </div>` : inventario.status === "Aguardando assinatura" ? `
+      <div class="order-card-actions no-print">
+        <button class="btn secondary inventario-revisar" type="button">Revisar</button>
       </div>` : ""
   });
 
@@ -11283,6 +11288,7 @@ function bindDetalheInventario(overlay, codigo) {
 
   card.querySelector(".inventario-salvar")?.addEventListener("click", (e) => salvarCorrecoesInventario(e.currentTarget, codigo));
   card.querySelector(".inventario-confirmar")?.addEventListener("click", (e) => confirmarInventario(e.currentTarget, codigo));
+  card.querySelector(".inventario-revisar")?.addEventListener("click", (e) => revisarInventario(e.currentTarget, codigo));
   card.querySelector(".inventario-excluir")?.addEventListener("click", () => excluirInventario(codigo));
 
   // Busca de produto para adicionar, no mesmo formato usado no pedido pendente do PDV
@@ -11422,6 +11428,35 @@ async function confirmarInventario(botao, codigo) {
     await recarregarDetalheInventario();
   } catch (error) {
     toast(error.message || "Não foi possível confirmar a contagem.", "error");
+  } finally {
+    botao.disabled = false;
+    botao.textContent = textoAnterior;
+  }
+}
+
+// Devolve o inventário de "Aguardando assinatura" para a conferência (Enviado), para corrigir
+// a contagem antes de pedir a assinatura de novo
+async function revisarInventario(botao, codigo) {
+  const confirmado = await confirmSystem({
+    title: "Voltar para a conferência?",
+    message: "O PDV deixará de ver o pedido de assinatura. Deseja voltar para a conferência?",
+    confirmLabel: "Revisar"
+  });
+  if (!confirmado) return;
+
+  const textoAnterior = botao.textContent;
+  botao.disabled = true;
+  botao.textContent = "Voltando...";
+  try {
+    await request("/api/admin/inventario/revisar", {
+      method: "POST",
+      body: JSON.stringify({ codigo_inventario: codigo })
+    });
+    toast("Inventário de volta à conferência. O PDV não vê mais o pedido de assinatura.");
+    await viewInventarios();
+    await recarregarDetalheInventario();
+  } catch (error) {
+    toast(error.message || "Não foi possível voltar para a conferência.", "error");
   } finally {
     botao.disabled = false;
     botao.textContent = textoAnterior;
@@ -11601,6 +11636,7 @@ function rotuloAcaoInventario(acao) {
     item_adicionado: "Produto adicionado",
     item_removido: "Produto removido",
     inventario_confirmado: "Contagem confirmada",
+    inventario_revisao: "Voltou para conferência",
     inventario_excluido: "Inventário excluído",
     ajuste_em_simulacao: "Ajuste não enviado (modo simulação)",
     janela_alterada: "Janela de contagem alterada"
@@ -11622,6 +11658,13 @@ function conectarEventosDoPdv() {
     // Só troca de tela se o PDV não estiver no meio de outra coisa
     if (["inventario", "mine", "my-stock"].includes(state.currentView)) await route("inventario");
     else marcarAvisoDeAssinatura();
+  });
+  // Revisão do Almoxarifado: o pedido de assinatura some, para o PDV não assinar algo que
+  // voltou para conferência (o servidor também recusaria a assinatura)
+  eventosDoPdv.addEventListener("INVENTARIO_ASSINATURA_CANCELADA", async () => {
+    document.querySelector(".nav-btn[data-view='inventario']")?.classList.remove("tem-pendencia");
+    toast("O Almoxarifado voltou sua contagem para conferência. A assinatura foi cancelada.");
+    if (["inventario", "mine", "my-stock"].includes(state.currentView)) await route("inventario");
   });
   eventosDoPdv.onerror = () => {
     // O polling da própria tela continua sendo o plano B; reconecta sozinho

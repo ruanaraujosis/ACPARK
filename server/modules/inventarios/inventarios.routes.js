@@ -1096,6 +1096,60 @@ async function rotasDoAlmoxarifado(req, res, context) {
     return true;
   }
 
+  // REVISAR: devolve "Aguardando assinatura" para "Enviado" (conferência), para o Almoxarifado
+  // corrigir a contagem antes de pedir a assinatura de novo. Não ajusta estoque nem toca na
+  // OMIE (esse estado ainda não aplicou ajuste). "Confirmado" é imutável e nunca volta.
+  if (url.pathname === "/api/admin/inventario/revisar" && method === "POST") {
+    if (!requireUser(req, res, "admin")) return true;
+    const corpo = await readBody(req);
+    try {
+      const resultado = await tx(async (client) => {
+        const inventario = await travarInventario(client, corpo?.codigo_inventario);
+        if (inventario.status !== STATUS_INVENTARIO.AGUARDANDO_ASSINATURA) {
+          const erro = new Error(`Só é possível revisar uma contagem aguardando assinatura (esta está em "${inventario.status}").`);
+          erro.statusCode = 409;
+          throw erro;
+        }
+        // Zera confirmado_*: não sobra marca de uma confirmação de um ciclo desfeito
+        await client.query(
+          `UPDATE inventarios SET status = $2, confirmado_em = NULL, confirmado_por = NULL,
+                                  atualizado_em = CURRENT_TIMESTAMP
+           WHERE id = $1`,
+          [inventario.id, STATUS_INVENTARIO.ENVIADO]
+        );
+        await auditarInventario(client, {
+          inventarioId: inventario.id,
+          codigoInventario: inventario.codigo_inventario,
+          acao: "inventario_revisao",
+          usuario,
+          valorAnterior: STATUS_INVENTARIO.AGUARDANDO_ASSINATURA,
+          valorNovo: STATUS_INVENTARIO.ENVIADO,
+          dados: { origem: "admin" }
+        });
+        return { codigo_inventario: inventario.codigo_inventario, pdv_id: inventario.pdv_id, status: STATUS_INVENTARIO.ENVIADO };
+      });
+
+      publishOrderAlert("INVENTARIO_STATUS_CHANGED", {
+        codigoInventario: resultado.codigo_inventario,
+        pdvId: resultado.pdv_id,
+        status: STATUS_INVENTARIO.ENVIADO,
+        usuario
+      });
+      // O PDV perde o pedido de assinatura em tempo real (canal só dele)
+      publicarEventoDoPdv("INVENTARIO_ASSINATURA_CANCELADA", resultado.pdv_id, {
+        codigoInventario: resultado.codigo_inventario
+      });
+      send(res, 200, resultado);
+    } catch (error) {
+      if (error.statusCode) {
+        send(res, error.statusCode, { error: error.message });
+        return true;
+      }
+      throw error;
+    }
+    return true;
+  }
+
   return false;
 }
 
