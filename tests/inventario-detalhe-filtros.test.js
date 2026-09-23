@@ -42,3 +42,10 @@ test("o filtro só esconde a linha e o salvamento lê todas, visíveis ou não",
   assert.match(salvar, /document\.querySelectorAll\("\.inventario-item-linha"\)/);
   assert.doesNotMatch(salvar, /hidden|:not\(|offsetParent/);
 });
+
+test("CSS: checkbox de 'Só os não contados' não herda o tamanho global de input", () => {
+  const css = fs.readFileSync(new URL("../public/styles.css", import.meta.url), "utf8");
+  assert.match(css, /html \.inventario-so-pendentes input\[type="checkbox"\] \{[^}]*width: 1\.15rem;[^}]*min-height: 0;/);
+  assert.match(css, /grid-template-columns: minmax\(10rem, 1fr\) minmax\(9rem, 14rem\) auto;/);
+  assert.match(css, /\.order-panel-foot \.order-card-actions \{\s*max-width: 100%;/);
+});
