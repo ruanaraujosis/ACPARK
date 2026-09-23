@@ -828,7 +828,25 @@ async function rotasDoAlmoxarifado(req, res, context) {
       send(res, 404, { error: "Inventário não encontrado." });
       return true;
     }
-    const itens = await query(SQL_ITENS_DETALHE, [inventario.id, inventario.pdv_id]);
+    const itensBase = await query(SQL_ITENS_DETALHE, [inventario.id, inventario.pdv_id]);
+    // Categorias por item: segunda consulta simples e junção em JS (mesma fonte do catálogo do
+    // PDV, produto_categorias) -- não multiplica linhas de produto com várias categorias e evita
+    // string_agg com ORDER BY interno
+    const categoriasDosItens = itensBase.length
+      ? await query(
+          "SELECT sku_produto, categoria FROM produto_categorias WHERE sku_produto = ANY($1)",
+          [itensBase.map((i) => i.sku_produto)]
+        )
+      : [];
+    const categoriasPorSku = new Map();
+    for (const linha of categoriasDosItens) {
+      if (!categoriasPorSku.has(linha.sku_produto)) categoriasPorSku.set(linha.sku_produto, new Set());
+      categoriasPorSku.get(linha.sku_produto).add(linha.categoria);
+    }
+    const itens = itensBase.map((item) => ({
+      ...item,
+      categorias: [...(categoriasPorSku.get(item.sku_produto) || [])].sort()
+    }));
     const historico = await query(
       `SELECT acao, usuario, valor_anterior, valor_novo, sku_produto, observacao, criado_em
        FROM inventario_auditoria WHERE inventario_id = $1 ORDER BY criado_em DESC, id DESC`,

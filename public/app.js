@@ -11203,6 +11203,15 @@ function renderDetalheInventario(overlay, codigo, dados) {
             ? "Aguardando a assinatura do PDV. Use Revisar para voltar à conferência e corrigir a contagem."
             : "Contagem confirmada. Para corrigir, é preciso abrir um novo inventário."}</p></div>`}
 
+      <div class="inventario-filtros">
+        <input id="detalhe-busca" type="search" placeholder="Buscar por nome ou SKU" aria-label="Buscar produto" />
+        <select id="detalhe-categoria" aria-label="Filtrar por categoria">
+          <option value="">Todas as categorias</option>
+          ${[...new Set(itens.flatMap((i) => i.categorias || []))].sort((a, b) => a.localeCompare(b, "pt-BR")).map((c) => `<option value="${esc(c.toLowerCase())}">${esc(c)}</option>`).join("")}
+        </select>
+        <label class="inventario-so-pendentes"><input type="checkbox" id="detalhe-pendentes" /> Só os não contados</label>
+      </div>
+
       <div class="table-wrap inventario-tabela">
         ${table(["Produto", "Contado (un)", "Saldo atual", "Diferença", "Contado em", "Ação"], itens.map((item) => {
           // Sem contagem significa NAO MUDA: o ajuste nao toca no produto que ninguem contou.
@@ -11212,7 +11221,9 @@ function renderDetalheInventario(overlay, codigo, dados) {
           const temContagem = contado !== null && contado !== undefined;
           const diferenca = temContagem ? Number(contado) - Number(item.saldo_atual || 0) : null;
           return `
-          <tr class="inventario-item-linha" data-id="${item.id}" data-sku="${esc(item.sku_produto)}">
+          <tr class="inventario-item-linha" data-id="${item.id}" data-sku="${esc(item.sku_produto)}"
+            data-busca="${esc(`${item.sku_produto} ${item.produto || ""}`.toLowerCase())}"
+            data-categorias="${esc((item.categorias || []).map((c) => c.toLowerCase()).join("|"))}">
             <td class="inventario-produto">${esc(item.produto || item.sku_produto)}<span class="inventario-sku">${esc(item.sku_produto)}${item.origem === "ALMOX" ? " · adicionado pelo Almoxarifado" : ""}</span></td>
             <td><input class="inventario-admin-qtd" type="number" min="0" step="0.01" inputmode="decimal"
               value="${temContagem ? esc(contado) : ""}" placeholder="—"
@@ -11285,6 +11296,24 @@ function bindDetalheInventario(overlay, codigo) {
       linha.classList.toggle("is-marked-remove", !marcado);
       botao.setAttribute("title", marcado ? "Remover do inventário" : "Desfazer remoção");
     }));
+
+  // Busca/categoria/"só não contados": só ESCONDE a linha (classe hidden). Nunca remove do DOM,
+  // porque salvarCorrecoesInventario lê a tabela inteira -- filtrar não pode perder correção.
+  // Escopado ao overlay (ids detalhe-*) para não colidir com outras telas abertas.
+  const aplicarFiltrosDetalhe = () => {
+    const termo = String(card.querySelector("#detalhe-busca")?.value || "").trim().toLowerCase();
+    const categoria = String(card.querySelector("#detalhe-categoria")?.value || "").trim().toLowerCase();
+    const soPendentes = card.querySelector("#detalhe-pendentes")?.checked;
+    card.querySelectorAll(".inventario-item-linha").forEach((tr) => {
+      const casaBusca = !termo || String(tr.dataset.busca || "").includes(termo);
+      const casaCategoria = !categoria || String(tr.dataset.categorias || "").split("|").includes(categoria);
+      const pendente = contagemDigitada(tr.querySelector(".inventario-admin-qtd")?.value) === null;
+      tr.classList.toggle("hidden", !casaBusca || !casaCategoria || (soPendentes && !pendente));
+    });
+  };
+  card.querySelector("#detalhe-busca")?.addEventListener("input", aplicarFiltrosDetalhe);
+  card.querySelector("#detalhe-categoria")?.addEventListener("change", aplicarFiltrosDetalhe);
+  card.querySelector("#detalhe-pendentes")?.addEventListener("change", aplicarFiltrosDetalhe);
 
   card.querySelector(".inventario-salvar")?.addEventListener("click", (e) => salvarCorrecoesInventario(e.currentTarget, codigo));
   card.querySelector(".inventario-confirmar")?.addEventListener("click", (e) => confirmarInventario(e.currentTarget, codigo));
