@@ -563,7 +563,7 @@ CREATE TABLE public.estoque_pdv (
     id integer NOT NULL,
     pdv_id integer,
     sku_produto text,
-    quantidade integer DEFAULT 0,
+    quantidade numeric DEFAULT 0,
     estoque_minimo integer DEFAULT 0,
     estoque_maximo integer DEFAULT 0,
     permitido boolean DEFAULT false,

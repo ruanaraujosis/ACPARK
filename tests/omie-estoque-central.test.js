@@ -377,9 +377,8 @@ test("a OMIE substitui o estoque do PDV vinculado, sem somar", async () => {
   assert.deepEqual(escrita.params, [6, "PRD00001", 42, 42]);
 });
 
-test("saldo fracionario e arredondado na coluna inteira, mas exato no espelho", async () => {
-  // estoque_pdv.quantidade e integer; saldo_omie e numeric. Gravar a fracao na coluna
-  // inteira faria o Postgres recusar a linha e derrubar a sincronizacao inteira.
+test("saldo fracionario grava o valor exato na coluna e no espelho", async () => {
+  // estoque_pdv.quantidade e NUMERIC desde 23/09/2026: produto em KG/ML nao pode ser arredondado.
   const client = clientFalso([
     {
       contem: "FROM pdv_stock_location_mappings",
@@ -404,8 +403,8 @@ test("saldo fracionario e arredondado na coluna inteira, mas exato no espelho", 
   });
 
   assert.equal(resumo.criados, 1, "produto sem linha no PDV precisa entrar");
-  const [, , inteiro, exato] = client.escritasEm("estoque_pdv")[0].params;
-  assert.equal(inteiro, 3);
+  const [, , gravado, exato] = client.escritasEm("estoque_pdv")[0].params;
+  assert.equal(gravado, 2.6);
   assert.equal(exato, 2.6);
 });
 

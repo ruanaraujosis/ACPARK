@@ -547,12 +547,13 @@ async function api(req, res) {
       const administrativo = body.administrativo === true;
       if (administrativo && !eraAdministrativo) {
         const saldo = await query(
-          "SELECT COALESCE(SUM(quantidade), 0)::int AS total FROM estoque_pdv WHERE pdv_id = $1 AND quantidade > 0",
+          "SELECT COALESCE(SUM(quantidade), 0)::numeric AS total FROM estoque_pdv WHERE pdv_id = $1 AND quantidade > 0",
           [pdvId]
         );
-        if (saldo[0].total > 0) {
+        // Number(): o pg devolve numeric como texto; sem ::int o saldo fracionário (0,4) não vira 0
+        if (Number(saldo[0].total) > 0) {
           return send(res, 409, {
-            error: `Este PDV ainda tem ${saldo[0].total} unidade(s) em estoque. A regra de baixa do saldo ao virar administrativo está em definição — zere o estoque por inventário antes de trocar o perfil.`
+            error: `Este PDV ainda tem ${Number(saldo[0].total)} unidade(s) em estoque. A regra de baixa do saldo ao virar administrativo está em definição — zere o estoque por inventário antes de trocar o perfil.`
           });
         }
       }
