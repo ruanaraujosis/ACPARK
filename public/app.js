@@ -15,7 +15,7 @@ import {
   stopOrderAlerts
 } from "./js/services/order-alerts.js";
 import { stopAllOrderAlerts, testOrderAlert } from "./js/services/audio-alert-manager.js";
-import { definirPreferenciasDoPdv, limparAlertasDoPdv, mostrarBotaoDeAtivacaoPdv, mostrarPedidoProntoParaRetirada } from "./js/services/pdv-order-alerts.js?v=20260924-alerta-pdv-config";
+import { definirPreferenciasDoPdv, limparAlertasDoPdv, mostrarBotaoDeAtivacaoPdv, mostrarPedidoProntoParaRetirada } from "./js/services/pdv-order-alerts.js?v=20260924-linhas-alinhadas";
 
 let damageDraftItems = [];
 let renderDamageDraftItems;
@@ -8195,7 +8195,9 @@ function aprimorarSeletorDeLocal(select, { titulo = "", compacto = false } = {})
 function contextoDeOrigem(group = []) {
   const padrao = group.find((item) => !item.origem_por_item);
   const partesPorSku = new Map();
-  for (const item of group) {
+  // Na MESMA ordem em que a tabela desenha (ordenarPartesJuntas): senão a "primeira parte" e o
+  // "Desfazer" caíam em linhas diferentes das que a pessoa vê em cima
+  for (const item of ordenarPartesJuntas(group)) {
     const sku = item.sku_produto || item.sku || "";
     if (!partesPorSku.has(sku)) partesPorSku.set(sku, []);
     partesPorSku.get(sku).push(item.id);
@@ -8234,7 +8236,7 @@ function celulaOrigemDoItem(item, contexto, editable) {
     : `<span>${esc(nome)}</span>`;
   const acao = !editable ? ""
     : partes.length > 1
-      ? (partes[0] === item.id ? `<button class="link-action juntar-item" type="button" data-sku="${esc(sku)}">Desfazer divisão</button>` : "")
+      ? (partes[0] === item.id ? `<button class="link-action juntar-item" type="button" data-sku="${esc(sku)}" title="Desfazer divisão">Juntar</button>` : "")
       : `<button class="link-action dividir-item" type="button" data-id="${esc(item.id)}">Dividir</button>`;
   return `<td class="order-panel-origem-cell">${seletor}${acao}</td>`;
 }
@@ -8284,7 +8286,7 @@ function releasePanelItemsTable(group = [], editable = false) {
         </td>` : ""}
         <td class="order-panel-product">
           <strong class="release-product-name">${esc(item.produto || "-")}</strong>
-          <small>${esc(item.sku_produto || item.sku || "sem SKU")}${item.item_origem === "ALMOX" ? ` <span class="order-source-badge">Almox</span>` : ""}</small>
+          <small>${esc(item.sku_produto || item.sku || "sem SKU")}${item.item_origem === "ALMOX" && (contextoOrigem.partesPorSku.get(item.sku_produto || item.sku || "") || []).length < 2 ? ` <span class="order-source-badge">Almox</span>` : ""}</small>
           <small class="order-panel-pdv">PDV ${releasePanelStock(item.estoque_pdv)} · mín ${releasePanelStock(item.estoque_minimo)} · máx ${releasePanelStock(item.estoque_maximo)}</small>
         </td>
         ${celulaOrigemDoItem(item, contextoOrigem, editable)}

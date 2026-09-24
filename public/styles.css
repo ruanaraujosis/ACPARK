@@ -4861,6 +4861,7 @@ tr[data-item-id].is-marked-remove .pdv-item-qty {
 /* Ação em texto dentro da célula (Dividir / Desfazer divisão) */
 .link-action {
   display: block;
+  white-space: nowrap;
   margin-top: 0.3rem;
   border: 0;
   background: none;
@@ -4872,10 +4873,10 @@ tr[data-item-id].is-marked-remove .pdv-item-qty {
   cursor: pointer;
 }
 
-/* Parte de um item dividido: recuada sob a primeira, para ler como o mesmo produto */
-.release-item-part .order-panel-product {
-  padding-left: 1.6rem;
-  border-left: 3px solid rgba(0, 123, 135, 0.25);
+/* Parte de um item dividido: mesma coluna e altura das outras linhas (recuo desalinhava);
+   só um traço sutil no topo mostra que continua o produto de cima */
+.release-item-part td {
+  border-top-style: dashed;
 }
 
 /* Seletor e "Aplicar a todos" na mesma linha, com a mesma altura da caixa do destino */
