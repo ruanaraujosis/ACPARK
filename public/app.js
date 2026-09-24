@@ -14,7 +14,7 @@ import {
   startOrderAlerts,
   stopOrderAlerts
 } from "./js/services/order-alerts.js";
-import { limparAlertasDoPdv, mostrarBotaoDeAtivacaoPdv, mostrarPedidoProntoParaRetirada } from "./js/services/pdv-order-alerts.js?v=20260924-origem-por-item";
+import { limparAlertasDoPdv, mostrarBotaoDeAtivacaoPdv, mostrarPedidoProntoParaRetirada } from "./js/services/pdv-order-alerts.js?v=20260924-locais-origem";
 
 let damageDraftItems = [];
 let renderDamageDraftItems;
@@ -8256,7 +8256,13 @@ function abrirDivisaoDeItem(item, dados, destino, aoConcluir) {
   const sku = item.sku_produto;
   const pedida = Number(item.quantidade_solicitada || 0);
   const locais = [{ id: "", nome: "Almoxarifado" }, ...(dados.pdvs || []).filter((p) => String(p.id) !== String(destino))];
-  const saldo = (id) => Number(dados.saldos?.[sku]?.[id ? String(id) : "ALMOX"] || 0);
+  // Saldo desconhecido (rota de saldo fora do ar) vira null: mostra "—" e conta como 0 na sugestão
+  const saldoOuNulo = (id) => {
+    const valor = dados.saldos?.[sku]?.[id ? String(id) : "ALMOX"];
+    return valor === undefined ? null : Number(valor);
+  };
+  const saldo = (id) => saldoOuNulo(id) ?? 0;
+  const saldoTexto = (id) => saldoOuNulo(id) ?? "—";
   const noAlmox = Math.max(0, Math.min(saldo(""), pedida));
   const melhorPdv = locais.slice(1).sort((a, b) => saldo(b.id) - saldo(a.id))[0];
   const partes = noAlmox > 0 && noAlmox < pedida && melhorPdv
@@ -8274,7 +8280,7 @@ function abrirDivisaoDeItem(item, dados, destino, aoConcluir) {
       </div>
       <div class="photo-viewer-body relatorio-estoque-body">
         <p class="text-sm text-slate-600">O PDV pediu <strong>${pedida}</strong>. Saldo por local:
-          ${locais.map((local) => `${esc(local.nome)} <strong>${saldo(local.id)}</strong>`).join(" · ")}</p>
+          ${locais.map((local) => `${esc(local.nome)} <strong>${saldoTexto(local.id)}</strong>`).join(" · ")}</p>
         <div class="divisao-partes"></div>
         <button class="btn secondary divisao-adicionar" type="button">+ Parte</button>
         <p class="divisao-soma text-sm font-bold"></p>
@@ -8292,7 +8298,7 @@ function abrirDivisaoDeItem(item, dados, destino, aoConcluir) {
       <div class="divisao-parte">
         <input type="number" min="1" step="1" value="${parte.quantidade}" data-indice="${indice}" class="divisao-qtd" aria-label="Quantidade da parte ${indice + 1}" />
         <select data-indice="${indice}" class="divisao-origem" aria-label="Origem da parte ${indice + 1}">
-          ${locais.map((local) => `<option value="${esc(local.id)}" ${String(local.id) === parte.origem ? "selected" : ""}>${esc(local.nome)} (${saldo(local.id)})</option>`).join("")}
+          ${locais.map((local) => `<option value="${esc(local.id)}" ${String(local.id) === parte.origem ? "selected" : ""}>${esc(local.nome)} (${saldoTexto(local.id)})</option>`).join("")}
         </select>
         ${partes.length > 2 ? `<button class="icon-action danger divisao-remover" type="button" data-indice="${indice}" aria-label="Remover parte">&times;</button>` : ""}
       </div>`).join("");
@@ -8385,23 +8391,41 @@ function bindReleasePanel(overlay, group = [], context = {}) {
   let dadosDeOrigem = { pdvs: [], saldos: {} };
   const destino = String(group[0]?.pdv_id ?? "");
   const nomeDaOrigem = (valor) => (valor ? dadosDeOrigem.pdvs.find((p) => String(p.id) === String(valor))?.nome || "PDV" : "Almoxarifado");
-  const saldoEm = (sku, valor) => Number(dadosDeOrigem.saldos[sku]?.[valor ? String(valor) : "ALMOX"] || 0);
+  // Sem saldo carregado (rota fora do ar), o local aparece sem número em vez de "0" enganoso
+  const saldoEm = (sku, valor) => {
+    const saldo = dadosDeOrigem.saldos[sku]?.[valor ? String(valor) : "ALMOX"];
+    return saldo === undefined ? null : Number(saldo);
+  };
   const opcoesDeOrigem = (atual, sku) => {
     const locais = [{ id: "", nome: "Almoxarifado" }, ...dadosDeOrigem.pdvs.filter((p) => String(p.id) !== destino)];
     return locais.map((local) => {
-      const rotulo = sku ? `${local.nome} (${saldoEm(sku, local.id)})` : local.nome;
+      const saldo = sku ? saldoEm(sku, local.id) : null;
+      const rotulo = saldo === null ? local.nome : `${local.nome} (${saldo})`;
       return `<option value="${esc(local.id)}" ${String(local.id) === String(atual) ? "selected" : ""}>${esc(rotulo)}</option>`;
     }).join("");
   };
+  // Os LOCAIS vêm de /api/admin/pdvs (rota estável) e o SALDO de cada um é um complemento: se a
+  // rota de saldo falhar, os locais continuam aparecendo, só sem número. Antes os dois vinham da
+  // rota de saldo e o erro era engolido -- sem ela, só sobrava "Almoxarifado" (24/09/2026).
+  const preencherSeletores = () => {
+    if (origemSel && !origemSel.disabled) origemSel.innerHTML = opcoesDeOrigem(origemSel.dataset.origemAtual, "");
+    seletoresDeItem.forEach((sel) => { sel.innerHTML = opcoesDeOrigem(sel.dataset.atual, sel.dataset.sku); });
+  };
   if (origemSel || seletoresDeItem.length) {
     const skus = [...new Set(group.map((item) => item.sku_produto).filter(Boolean))];
-    request(`/api/admin/pedido/saldos-origem?skus=${encodeURIComponent(skus.join(","))}`, { silentLoading: true })
-      .then((r) => {
-        dadosDeOrigem = r;
-        if (origemSel && !origemSel.disabled) origemSel.innerHTML = opcoesDeOrigem(origemSel.dataset.origemAtual, "");
-        seletoresDeItem.forEach((sel) => { sel.innerHTML = opcoesDeOrigem(sel.dataset.atual, sel.dataset.sku); });
-      })
-      .catch(() => {});
+    Promise.allSettled([
+      request("/api/admin/pdvs", { silentLoading: true }),
+      request(`/api/admin/pedido/saldos-origem?skus=${encodeURIComponent(skus.join(","))}`, { silentLoading: true })
+    ]).then(([locais, saldos]) => {
+      if (locais.status === "fulfilled") {
+        dadosDeOrigem.pdvs = (locais.value.pdvs || []).filter((p) => p.administrativo !== true);
+      } else {
+        toast("Não foi possível carregar os locais de estoque.", "error");
+      }
+      if (saldos.status === "fulfilled") dadosDeOrigem.saldos = saldos.value.saldos || {};
+      else console.warn("Saldo por local indisponível:", saldos.reason?.message || saldos.reason);
+      preencherSeletores();
+    });
   }
   // "Aplicar a todos": muda só os itens que seguem o padrão; os ajustados um a um ficam
   panel.querySelector(".order-panel-aplicar-origem")?.addEventListener("click", async () => {

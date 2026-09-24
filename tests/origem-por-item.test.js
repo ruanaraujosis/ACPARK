@@ -97,3 +97,15 @@ test("produto dividido conta uma vez; PDV vê somado; cupom e comprovante dizem 
   assert.match(app, /if \(new Set\(rows\.map\(\(item\) => item\.origem\)\)\.size > 1\)/);
   assert.match(app, /function comOrigemQuandoMisturado\(itens = \[\]\)/);
 });
+
+test("os locais de estoque não dependem da rota de saldo (sem ela, só sobrava Almoxarifado)", () => {
+  // Visto em 24/09/2026: o servidor rodando não tinha /saldos-origem, o erro era engolido e
+  // os seletores ficavam só com "Almoxarifado". Locais vêm da rota estável; saldo é complemento.
+  const bind = app.slice(app.indexOf("const preencherSeletores = () => {"), app.indexOf("// \"Aplicar a todos\""));
+  assert.match(bind, /Promise\.allSettled\(\[\s*request\("\/api\/admin\/pdvs"/);
+  assert.match(bind, /if \(locais\.status === "fulfilled"\)/);
+  assert.match(bind, /Não foi possível carregar os locais de estoque\./);
+  assert.doesNotMatch(bind, /\.catch\(\(\) => \{\}\)/, "erro de locais não pode ser engolido em silêncio");
+  // Sem saldo, o local aparece sem número (nunca um "0" inventado)
+  assert.match(app, /const rotulo = saldo === null \? local\.nome : `\$\{local\.nome\} \(\$\{saldo\}\)`;/);
+});
