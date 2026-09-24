@@ -106,6 +106,35 @@ test("os locais de estoque não dependem da rota de saldo (sem ela, só sobrava 
   assert.match(bind, /if \(locais\.status === "fulfilled"\)/);
   assert.match(bind, /Não foi possível carregar os locais de estoque\./);
   assert.doesNotMatch(bind, /\.catch\(\(\) => \{\}\)/, "erro de locais não pode ser engolido em silêncio");
-  // Sem saldo, o local aparece sem número (nunca um "0" inventado)
-  assert.match(app, /const rotulo = saldo === null \? local\.nome : `\$\{local\.nome\} \(\$\{saldo\}\)`;/);
+  // Sem saldo, o local aparece sem número (nunca um "0" inventado): data-saldo vazio vira "—"
+  assert.match(app, /data-saldo="\$\{saldo === null \? "" : esc\(saldo\)\}"/);
+  assert.match(app, /if \(saldo === undefined \|\| saldo === null \|\| saldo === ""\) return `<span class="local-saldo is-desconhecido"/);
+});
+
+test("seletor de locais: componente sobre o <select> original, que continua sendo a fonte do valor", () => {
+  assert.match(app, /function aprimorarSeletorDeLocal\(select, \{ titulo = "", compacto = false \} = \{\}\)/);
+  // Escolher só muda o select e dispara "change": quem grava a origem não muda
+  assert.match(app, /select\.value = valor;\s*atualizarSeletorDeLocal\(select\);\s*select\.dispatchEvent\(new Event\("change", \{ bubbles: true \}\)\);/);
+  // Aplicado no painel (padrão e item), na transferência e no local padrão do PDV
+  assert.match(app, /aprimorarSeletorDeLocal\(origemSel, \{ titulo: "Origem padrão do pedido" \}\)/);
+  assert.match(app, /aprimorarSeletorDeLocal\(sel, \{\s*titulo: `Origem de/);
+  assert.match(app, /aprimorarSeletorDeLocal\(destinoSel, \{ titulo: "PDV de destino" \}\)/);
+  assert.match(app, /aprimorarSeletorDeLocal\(localPadrao, \{ titulo: "Local de estoque padrão" \}\)/);
+  // Saldo vai em data-saldo (o botão e a lista mostram como chip); marcador de posição não vira opção
+  assert.match(app, /const atributoSaldo = sku \? ` data-saldo=/);
+  assert.match(app, /<option value="" data-placeholder>Escolha o PDV<\/option>/);
+  // Celular vira painel de baixo; no desktop fecha ao rolar, mas não no celular
+  assert.match(app, /window\.matchMedia\("\(max-width: 720px\)"\)\.matches/);
+  assert.match(app, /if \(celular \|\| Date\.now\(\) - abertoEm < 150 \|\| menu\.contains\(evento\?\.target\)\) return;/);
+  const css = fs.readFileSync(new URL("../public/styles.css", import.meta.url), "utf8");
+  assert.match(css, /\.local-menu\.is-sheet \{/);
+  assert.match(css, /grid-template-columns: minmax\(0, 1fr\);/);
+});
+
+test("na linha do produto o seletor mostra só o selo; nome e saldo no título e na lista", () => {
+  assert.match(app, /if \(botao\.classList\.contains\("is-compacto"\)\) \{[\s\S]{0,400}?botao\.innerHTML = avatar;/);
+  assert.match(app, /botao\.title = `\$\{nome\}\$\{saldo\}`;/);
+  assert.match(app, /const largura = Math\.max\(r\.width, 300\);/);
+  const css = fs.readFileSync(new URL("../public/styles.css", import.meta.url), "utf8");
+  assert.match(css, /\.local-picker\.is-compacto \{\s*justify-content: center;\s*width: 38px;/);
 });

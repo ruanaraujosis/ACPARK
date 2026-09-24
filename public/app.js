@@ -14,7 +14,7 @@ import {
   startOrderAlerts,
   stopOrderAlerts
 } from "./js/services/order-alerts.js";
-import { limparAlertasDoPdv, mostrarBotaoDeAtivacaoPdv, mostrarPedidoProntoParaRetirada } from "./js/services/pdv-order-alerts.js?v=20260924-locais-origem";
+import { limparAlertasDoPdv, mostrarBotaoDeAtivacaoPdv, mostrarPedidoProntoParaRetirada } from "./js/services/pdv-order-alerts.js?v=20260924-seletor-compacto2";
 
 let damageDraftItems = [];
 let renderDamageDraftItems;
@@ -6650,7 +6650,7 @@ async function abrirTransferenciaRapida() {
             </label>
             <label class="grid gap-1 text-sm font-bold">PDV de destino
               <select id="transfer-destino">
-                <option value="">Escolha o PDV</option>
+                <option value="" data-placeholder>Escolha o PDV</option>
                 ${pdvs.map((p) => `<option value="${p.id}">${esc(p.nome)}</option>`).join("")}
               </select>
             </label>
@@ -6687,6 +6687,8 @@ async function abrirTransferenciaRapida() {
   };
   origemSel.addEventListener("change", sincronizarOpcoes);
   destinoSel.addEventListener("change", sincronizarOpcoes);
+  aprimorarSeletorDeLocal(origemSel, { titulo: "Local de origem" });
+  aprimorarSeletorDeLocal(destinoSel, { titulo: "PDV de destino" });
 
   // Quantidade é inteira: quantidade_solicitada é integer no banco
   const adicionar = (sku, quantidade) => {
@@ -7909,6 +7911,202 @@ function formatarSolicitadoEmbalagem(unidadesLiberadas, fator) {
   return `${valor.toFixed(2).replace(".", ",")} EMB`;
 }
 
+// ===== Seletor de local de estoque (Almoxarifado / PDVs) =====
+//
+// O menu nativo do <select> não aceita estilo. Este componente desenha o botão e a lista por
+// cima do <select> original, que continua sendo a fonte da verdade: escolher um local só muda
+// select.value e dispara "change" -- quem grava a origem não sabe que o componente existe.
+// Cada <option> pode trazer data-saldo (saldo do produto naquele local).
+
+// Iniciais para o selo redondo de cada local ("DECK INFERIOR" -> "DI")
+function iniciaisDoLocal(nome = "") {
+  const palavras = String(nome).trim().split(/\s+/).filter(Boolean);
+  if (!palavras.length) return "?";
+  return (palavras.length === 1 ? palavras[0].slice(0, 2) : palavras[0][0] + palavras[1][0]).toUpperCase();
+}
+
+// Chip do saldo: verde com estoque, cinza zerado, vermelho negativo; sem dado, "—"
+function chipDeSaldo(saldo) {
+  if (saldo === undefined || saldo === null || saldo === "") return `<span class="local-saldo is-desconhecido" title="Saldo não carregado">—</span>`;
+  const n = Number(saldo);
+  const classe = n > 0 ? "is-positivo" : n < 0 ? "is-negativo" : "is-zero";
+  return `<span class="local-saldo ${classe}" title="Saldo neste local">${esc(String(n).replace(".", ","))}</span>`;
+}
+
+// Redesenha o botão a partir da opção escolhida no <select>
+function atualizarSeletorDeLocal(select) {
+  const botao = select?.__seletorDeLocal;
+  if (!botao) return;
+  const opcao = select.selectedOptions[0] || select.options[0];
+  const nome = opcao?.textContent?.trim() || "Almoxarifado";
+  const ehCentral = !opcao?.value;
+  botao.disabled = select.disabled;
+  // "Escolha o PDV": marcador de posição, sem selo nem saldo
+  if (opcao && "placeholder" in opcao.dataset) {
+    botao.innerHTML = `<span class="local-picker-nome is-placeholder">${esc(nome)}</span><span class="local-picker-seta" aria-hidden="true">&#9662;</span>`;
+    return;
+  }
+  const avatar = `<span class="local-avatar ${ehCentral ? "is-central" : ""}" aria-hidden="true">${ehCentral ? "AL" : esc(iniciaisDoLocal(nome))}</span>`;
+  // Na linha do produto (compacto) só o selo, para economizar espaço; nome e saldo ficam no
+  // título (passar o mouse) e no rótulo acessível, e aparecem normalmente ao abrir a lista
+  if (botao.classList.contains("is-compacto")) {
+    const saldo = opcao && "saldo" in opcao.dataset && opcao.dataset.saldo !== "" ? ` · saldo ${opcao.dataset.saldo}` : "";
+    botao.title = `${nome}${saldo}`;
+    botao.setAttribute("aria-label", `${botao.dataset.titulo || "Origem"}: ${nome}${saldo}`);
+    botao.innerHTML = avatar;
+    return;
+  }
+  botao.innerHTML = `
+    ${avatar}
+    <span class="local-picker-nome">${esc(nome)}</span>
+    ${opcao && "saldo" in opcao.dataset ? chipDeSaldo(opcao.dataset.saldo) : ""}
+    <span class="local-picker-seta" aria-hidden="true">&#9662;</span>`;
+}
+
+let menuDeLocalAberto = null;
+
+// Foca a opção sem rolar a página: rolar dispararia o fechamento do menu (que fecha ao rolar,
+// para não ficar descolado do botão) -- só a lista rola, para a opção ficar à vista
+function focarOpcao(item) {
+  if (!item) return;
+  item.focus({ preventScroll: true });
+  item.scrollIntoView({ block: "nearest" });
+}
+
+// Fecha o menu aberto (se houver) e devolve o foco ao botão
+function fecharMenuDeLocal(devolverFoco = true) {
+  if (!menuDeLocalAberto) return;
+  const { menu, fundo, botao, aoRolar } = menuDeLocalAberto;
+  menu.remove();
+  fundo?.remove();
+  window.removeEventListener("scroll", aoRolar, true);
+  window.removeEventListener("resize", aoRolar);
+  botao.setAttribute("aria-expanded", "false");
+  if (devolverFoco) botao.focus({ preventScroll: true });
+  menuDeLocalAberto = null;
+}
+
+// Abre a lista. No desktop flutua junto ao botão (fixed, para não ser cortada pela rolagem da
+// tabela); no celular vira um painel de baixo com fundo escurecido.
+function abrirMenuDeLocal(select, botao, titulo) {
+  fecharMenuDeLocal(false);
+  const celular = window.matchMedia("(max-width: 720px)").matches;
+  const opcoes = [...select.options].filter((opcao) => !opcao.hidden && !("placeholder" in opcao.dataset));
+  const central = opcoes.filter((opcao) => !opcao.value);
+  const pdvs = opcoes.filter((opcao) => opcao.value);
+  const linha = (opcao) => {
+    const escolhido = opcao.value === select.value;
+    const nome = opcao.textContent.trim();
+    return `
+      <li role="option" class="local-opcao ${escolhido ? "is-escolhido" : ""}" data-valor="${esc(opcao.value)}" aria-selected="${escolhido}" tabindex="-1">
+        <span class="local-avatar ${opcao.value ? "" : "is-central"}" aria-hidden="true">${opcao.value ? esc(iniciaisDoLocal(nome)) : "AL"}</span>
+        <span class="local-opcao-nome">${esc(nome)}</span>
+        ${"saldo" in opcao.dataset ? chipDeSaldo(opcao.dataset.saldo) : ""}
+        <span class="local-check" aria-hidden="true">${escolhido ? "&#10003;" : ""}</span>
+      </li>`;
+  };
+  const menu = document.createElement("div");
+  menu.className = `local-menu ${celular ? "is-sheet" : ""}`;
+  menu.innerHTML = `
+    ${celular ? `<div class="local-menu-head"><strong>${esc(titulo || "Local de origem")}</strong><button class="icon-action local-menu-fechar" type="button" aria-label="Fechar">&times;</button></div>` : ""}
+    <ul class="local-menu-lista" role="listbox" aria-label="${esc(titulo || "Local de origem")}">
+      ${central.length ? `<li class="local-grupo" role="presentation">Estoque central</li>${central.map(linha).join("")}` : ""}
+      ${pdvs.length ? `<li class="local-grupo" role="presentation">PDVs</li>${pdvs.map(linha).join("")}` : ""}
+    </ul>`;
+  const fundo = celular ? Object.assign(document.createElement("div"), { className: "local-menu-fundo" }) : null;
+  if (fundo) document.body.appendChild(fundo);
+  document.body.appendChild(menu);
+
+  const posicionar = () => {
+    if (celular) return;
+    const r = botao.getBoundingClientRect();
+    // Largura mínima para os nomes caberem inteiros ao lado do saldo e do check
+    const largura = Math.max(r.width, 300);
+    const esquerda = Math.min(r.left, window.innerWidth - largura - 12);
+    const abaixo = window.innerHeight - r.bottom;
+    menu.style.width = `${largura}px`;
+    menu.style.left = `${Math.max(12, esquerda)}px`;
+    if (abaixo < 280 && r.top > abaixo) {
+      menu.style.top = "";
+      menu.style.bottom = `${window.innerHeight - r.top + 6}px`;
+    } else {
+      menu.style.bottom = "";
+      menu.style.top = `${r.bottom + 6}px`;
+    }
+  };
+  posicionar();
+  // Rolar a página com o menu aberto o deixaria descolado do botão: fecha junto. Só no desktop
+  // (o painel de baixo do celular não depende da posição do botão) e ignorando a rolagem que
+  // ainda chega logo depois de abrir (a do toque que abriu o menu, por exemplo).
+  const abertoEm = Date.now();
+  const aoRolar = (evento) => {
+    if (celular || Date.now() - abertoEm < 150 || menu.contains(evento?.target)) return;
+    fecharMenuDeLocal(false);
+  };
+  window.addEventListener("scroll", aoRolar, true);
+  window.addEventListener("resize", aoRolar);
+  botao.setAttribute("aria-expanded", "true");
+  menuDeLocalAberto = { menu, fundo, botao, aoRolar };
+
+  const itens = [...menu.querySelectorAll(".local-opcao")];
+  const escolher = (valor) => {
+    fecharMenuDeLocal();
+    if (valor === select.value) return;
+    select.value = valor;
+    atualizarSeletorDeLocal(select);
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  };
+  itens.forEach((item) => item.addEventListener("click", () => escolher(item.dataset.valor)));
+  menu.addEventListener("keydown", (evento) => {
+    const atual = itens.indexOf(document.activeElement);
+    if (evento.key === "ArrowDown") { evento.preventDefault(); focarOpcao(itens[Math.min(atual + 1, itens.length - 1)]); }
+    else if (evento.key === "ArrowUp") { evento.preventDefault(); focarOpcao(itens[Math.max(atual - 1, 0)]); }
+    else if (evento.key === "Enter" || evento.key === " ") { evento.preventDefault(); if (atual >= 0) escolher(itens[atual].dataset.valor); }
+    else if (evento.key === "Escape" || evento.key === "Tab") { evento.preventDefault(); fecharMenuDeLocal(); }
+  });
+  menu.querySelector(".local-menu-fechar")?.addEventListener("click", () => fecharMenuDeLocal());
+  fundo?.addEventListener("click", () => fecharMenuDeLocal());
+  focarOpcao(itens.find((item) => item.classList.contains("is-escolhido")) || itens[0]);
+}
+
+// Clique fora do menu fecha
+document.addEventListener("mousedown", (evento) => {
+  if (!menuDeLocalAberto) return;
+  const { menu, botao } = menuDeLocalAberto;
+  if (!menu.contains(evento.target) && !botao.contains(evento.target)) fecharMenuDeLocal(false);
+});
+
+// Troca o menu nativo de um <select> de locais pelo componente (uma vez por select)
+function aprimorarSeletorDeLocal(select, { titulo = "", compacto = false } = {}) {
+  if (!select || select.__seletorDeLocal) return;
+  const botao = document.createElement("button");
+  botao.type = "button";
+  botao.className = `local-picker ${compacto ? "is-compacto" : ""}`;
+  botao.dataset.titulo = titulo;
+  botao.setAttribute("aria-haspopup", "listbox");
+  botao.setAttribute("aria-expanded", "false");
+  botao.setAttribute("aria-label", select.getAttribute("aria-label") || titulo || "Local de origem");
+  select.classList.add("local-picker-nativo");
+  select.tabIndex = -1;
+  select.setAttribute("aria-hidden", "true");
+  select.after(botao);
+  select.__seletorDeLocal = botao;
+  botao.addEventListener("click", () => {
+    if (menuDeLocalAberto?.botao === botao) fecharMenuDeLocal();
+    else abrirMenuDeLocal(select, botao, titulo);
+  });
+  botao.addEventListener("keydown", (evento) => {
+    if (evento.key === "ArrowDown" || evento.key === "ArrowUp") {
+      evento.preventDefault();
+      abrirMenuDeLocal(select, botao, titulo);
+    }
+  });
+  // As opções chegam depois (os locais carregam em segundo plano): redesenha quando mudarem
+  new MutationObserver(() => atualizarSeletorDeLocal(select)).observe(select, { childList: true, subtree: true, attributes: true });
+  select.addEventListener("change", () => atualizarSeletorDeLocal(select));
+  atualizarSeletorDeLocal(select);
+}
+
 // ===== Origem por item no painel do pedido =====
 
 // Origem padrão do pedido (a das linhas não ajustadas uma a uma), as partes de cada produto e o
@@ -8400,13 +8598,19 @@ function bindReleasePanel(overlay, group = [], context = {}) {
     const locais = [{ id: "", nome: "Almoxarifado" }, ...dadosDeOrigem.pdvs.filter((p) => String(p.id) !== destino)];
     return locais.map((local) => {
       const saldo = sku ? saldoEm(sku, local.id) : null;
-      const rotulo = saldo === null ? local.nome : `${local.nome} (${saldo})`;
-      return `<option value="${esc(local.id)}" ${String(local.id) === String(atual) ? "selected" : ""}>${esc(rotulo)}</option>`;
+      // Nome limpo no texto; o saldo vai em data-saldo e o seletor de locais mostra como chip
+      const atributoSaldo = sku ? ` data-saldo="${saldo === null ? "" : esc(saldo)}"` : "";
+      return `<option value="${esc(local.id)}"${atributoSaldo} ${String(local.id) === String(atual) ? "selected" : ""}>${esc(local.nome)}</option>`;
     }).join("");
   };
   // Os LOCAIS vêm de /api/admin/pdvs (rota estável) e o SALDO de cada um é um complemento: se a
   // rota de saldo falhar, os locais continuam aparecendo, só sem número. Antes os dois vinham da
   // rota de saldo e o erro era engolido -- sem ela, só sobrava "Almoxarifado" (24/09/2026).
+  if (origemSel) aprimorarSeletorDeLocal(origemSel, { titulo: "Origem padrão do pedido" });
+  seletoresDeItem.forEach((sel) => aprimorarSeletorDeLocal(sel, {
+    titulo: `Origem de ${sel.closest("tr")?.dataset.product || sel.dataset.sku}`,
+    compacto: true
+  }));
   const preencherSeletores = () => {
     if (origemSel && !origemSel.disabled) origemSel.innerHTML = opcoesDeOrigem(origemSel.dataset.origemAtual, "");
     seletoresDeItem.forEach((sel) => { sel.innerHTML = opcoesDeOrigem(sel.dataset.atual, sel.dataset.sku); });
@@ -8451,6 +8655,7 @@ function bindReleasePanel(overlay, group = [], context = {}) {
       await reloadReleasePanel(overlay, orderCode, context);
     } catch (error) {
       sel.value = sel.dataset.atual;
+      atualizarSeletorDeLocal(sel);
       toast(error.message || "Não foi possível mudar a origem do item.", "error");
     }
   }));
@@ -10878,6 +11083,8 @@ async function viewConfigV2() {
     const localPadrao = pdvEditForm.querySelector('[name="local_estoque_padrao_pdv_id"]');
     localPadrao.querySelectorAll("option").forEach((opcao) => { opcao.hidden = opcao.value === String(pdv.id); });
     localPadrao.value = String(localPadraoPorPdv.get(String(pdv.id)) ?? "");
+    aprimorarSeletorDeLocal(localPadrao, { titulo: "Local de estoque padrão" });
+    atualizarSeletorDeLocal(localPadrao);
     document.querySelector("#pdv-edit-title").textContent = `Editar PDV: ${pdv.nome}`;
     categoryPickers["edit-pdv-category"].set(pdv.categorias || []);
     setConfigTab("manage");

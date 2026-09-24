@@ -4196,16 +4196,20 @@ body.has-order-panel {
 }
 
 /* Local de origem (editável) e de destino do pedido, lado a lado */
+/* Origem (maior, com o botão ao lado) e destino lado a lado, alinhados pelo topo: sem
+   align-items: start a coluna do destino esticava e a caixa ficava mais alta que o seletor */
 .order-panel-locais {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
-  gap: 0.6rem;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  gap: 0.6rem 0.9rem;
+  align-items: start;
   flex-shrink: 0;
 }
 
 .order-panel-local {
   display: grid;
-  gap: 0.25rem;
+  gap: 0.35rem;
+  align-content: start;
   margin: 0;
   color: var(--ac-teal-dark);
   font-size: 0.72rem;
@@ -4216,7 +4220,8 @@ body.has-order-panel {
 .order-panel-local strong {
   display: flex;
   align-items: center;
-  min-height: 44px;
+  box-sizing: border-box;
+  height: 44px;
   padding: 0 0.85rem;
   border: 1px solid rgba(0, 123, 135, 0.16);
   border-radius: 16px;
@@ -4827,7 +4832,8 @@ tr[data-item-id].is-marked-remove .pdv-item-qty {
 
 /* ===== Origem por item no painel do pedido ===== */
 .order-panel-origem-cell {
-  min-width: 11rem;
+  width: 5.5rem;
+  min-width: 5.5rem;
 }
 
 .order-panel-origem-cell select {
@@ -4860,15 +4866,283 @@ tr[data-item-id].is-marked-remove .pdv-item-qty {
   border-left: 3px solid rgba(0, 123, 135, 0.25);
 }
 
+/* Seletor e "Aplicar a todos" na mesma linha, com a mesma altura da caixa do destino */
 .order-panel-origem-linha {
   display: flex;
-  flex-wrap: wrap;
   gap: 0.5rem;
+  align-items: stretch;
   text-transform: none;
 }
 
 .order-panel-origem-linha select {
-  flex: 1 1 10rem;
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 44px;
+}
+
+.order-panel-origem-linha .btn {
+  flex: 0 0 auto;
+  height: 44px;
+  min-height: 44px;
+  padding-block: 0;
+  white-space: nowrap;
+}
+
+/* Celular: origem e destino um embaixo do outro; o botão ocupa a largura toda */
+@media (max-width: 720px) {
+  .order-panel-locais {
+    grid-template-columns: 1fr;
+  }
+
+  .order-panel-origem-linha {
+    flex-wrap: wrap;
+  }
+
+  .order-panel-origem-linha select,
+  .order-panel-origem-linha .btn {
+    flex: 1 1 100%;
+  }
+}
+
+/* ===== Seletor de local de estoque (Almoxarifado / PDVs) =====
+   O <select> original fica escondido (continua sendo a fonte do valor); o botão e o menu
+   abaixo são o que a pessoa vê. */
+html .local-picker-nativo {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.local-picker {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  height: 44px;
+  padding: 0 0.75rem 0 0.45rem;
+  border: 1px solid rgba(0, 123, 135, 0.22);
+  border-radius: 16px;
+  background: white;
+  color: var(--ac-ink);
+  font: inherit;
+  font-weight: 800;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.local-picker:hover:not(:disabled),
+.local-picker[aria-expanded="true"] {
+  border-color: var(--ac-aqua);
+  box-shadow: 0 0 0 3px rgba(16, 182, 199, 0.14);
+}
+
+.local-picker:focus-visible {
+  outline: 2px solid var(--ac-aqua);
+  outline-offset: 2px;
+}
+
+.local-picker:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
+/* Linha do produto: só o selo redondo (a lista completa abre ao clicar) */
+.local-picker.is-compacto {
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border-radius: 999px;
+}
+
+.local-picker-nome {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.local-picker-nome.is-placeholder {
+  padding-left: 0.3rem;
+  color: #94a3b8;
+  font-weight: 700;
+}
+
+.local-picker-seta {
+  flex: 0 0 auto;
+  color: var(--ac-teal-dark);
+  font-size: 0.8rem;
+  transition: transform 0.15s;
+}
+
+.local-picker[aria-expanded="true"] .local-picker-seta {
+  transform: rotate(180deg);
+}
+
+/* Selo redondo do local: iniciais do PDV; o Almoxarifado tem cor própria */
+.local-avatar {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  background: rgba(16, 182, 199, 0.14);
+  color: var(--ac-teal-dark);
+  font-size: 0.68rem;
+  font-weight: 900;
+  letter-spacing: 0.02em;
+}
+
+.local-avatar.is-central {
+  background: rgba(234, 88, 12, 0.12);
+  color: #9a3412;
+}
+
+.local-picker.is-compacto .local-avatar {
+  width: 30px;
+  height: 30px;
+  font-size: 0.66rem;
+}
+
+/* Saldo do produto no local */
+.local-saldo {
+  flex: 0 0 auto;
+  min-width: 2rem;
+  padding: 0.18rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 900;
+  text-align: center;
+}
+
+.local-saldo.is-positivo {
+  background: rgba(22, 163, 74, 0.12);
+  color: #15803d;
+}
+
+.local-saldo.is-zero,
+.local-saldo.is-desconhecido {
+  background: rgba(148, 163, 184, 0.16);
+  color: #64748b;
+}
+
+.local-saldo.is-negativo {
+  background: rgba(220, 38, 38, 0.12);
+  color: #b91c1c;
+}
+
+/* Menu: flutua junto ao botão (fixed, para não ser cortado pela rolagem da tabela) */
+.local-menu {
+  position: fixed;
+  z-index: 1200;
+  box-sizing: border-box;
+  max-height: min(340px, 60vh);
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 0.4rem;
+  border: 1px solid rgba(0, 123, 135, 0.18);
+  border-radius: 18px;
+  background: white;
+  box-shadow: 0 18px 40px rgba(0, 58, 64, 0.18);
+}
+
+.local-menu-lista {
+  display: grid;
+  /* minmax(0, 1fr): sem isso o nome longo alargava a coluna e a lista rolava de lado */
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.15rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.local-grupo {
+  padding: 0.45rem 0.6rem 0.2rem;
+  color: #94a3b8;
+  font-size: 0.64rem;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.local-opcao {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0.35rem 0.55rem;
+  border-radius: 12px;
+  color: var(--ac-ink);
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.local-opcao:hover,
+.local-opcao:focus {
+  outline: none;
+  background: rgba(16, 182, 199, 0.08);
+}
+
+.local-opcao.is-escolhido {
+  background: rgba(16, 182, 199, 0.14);
+  color: var(--ac-teal-dark);
+}
+
+.local-opcao-nome {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.local-check {
+  flex: 0 0 1rem;
+  color: var(--ac-teal-dark);
+  font-weight: 900;
+  text-align: center;
+}
+
+/* Celular: painel de baixo, largura total, com fundo escurecido e alvos maiores */
+.local-menu-fundo {
+  position: fixed;
+  inset: 0;
+  z-index: 1199;
+  background: rgba(0, 38, 42, 0.35);
+}
+
+.local-menu.is-sheet {
+  top: auto;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  width: auto;
+  max-height: 70vh;
+  padding: 0.6rem 0.8rem calc(0.8rem + env(safe-area-inset-bottom, 0px));
+  border-radius: 22px 22px 0 0;
+}
+
+.local-menu-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.2rem 0.3rem 0.5rem;
+  color: var(--ac-teal-dark);
+}
+
+.local-menu.is-sheet .local-opcao {
+  min-height: 52px;
 }
 
 /* Diálogo de divisão: quantidade + origem por parte */
