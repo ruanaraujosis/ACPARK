@@ -14,7 +14,7 @@ import {
   startOrderAlerts,
   stopOrderAlerts
 } from "./js/services/order-alerts.js";
-import { limparAlertasDoPdv, mostrarBotaoDeAtivacaoPdv, mostrarPedidoProntoParaRetirada } from "./js/services/pdv-order-alerts.js?v=20260924-cupom-sem-origem";
+import { limparAlertasDoPdv, mostrarBotaoDeAtivacaoPdv, mostrarPedidoProntoParaRetirada } from "./js/services/pdv-order-alerts.js?v=20260924-comprovante-origem-nome";
 
 let damageDraftItems = [];
 let renderDamageDraftItems;
@@ -9770,7 +9770,7 @@ async function printOrder(card, options = {}) {
 // produto pode aparecer duas vezes, uma por parte)
 function comOrigemQuandoMisturado(itens = []) {
   if (new Set(itens.map((item) => item.origem || "")).size <= 1) return itens;
-  return itens.map((item) => ({ ...item, produto: `${item.produto} (de ${item.origem || "Almoxarifado"})` }));
+  return itens.map((item) => ({ ...item, produto: `${item.produto} (${item.origem || "Almoxarifado"})` }));
 }
 
 // Extrai os itens de retirada a partir do card do pedido

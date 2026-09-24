@@ -161,3 +161,7 @@ test("a coluna Origem não repete o local num selo 'de ...' (o seletor já mostr
   const celula = app.slice(app.indexOf("function celulaOrigemDoItem"), app.indexOf("function releasePanelItemsTable"));
   assert.doesNotMatch(celula, /order-source-badge is-origem/);
 });
+
+test("comprovante de retirada mostra só o nome do local, sem 'de'", () => {
+  assert.match(app, /produto: `\$\{item\.produto\} \(\$\{item\.origem \|\| "Almoxarifado"\}\)`/);
+});
