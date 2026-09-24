@@ -1426,7 +1426,8 @@ CREATE TABLE public.pdvs (
     is_cozinha boolean DEFAULT false,
     codigo_orion text,
     categoria text,
-    administrativo boolean DEFAULT false NOT NULL
+    administrativo boolean DEFAULT false NOT NULL,
+    local_estoque_padrao_pdv_id integer
 );
 
 
@@ -1578,7 +1579,9 @@ CREATE TABLE public.pedidos (
     reversao_pdv_observacao text,
     reversao_pdv_em timestamp without time zone,
     reversao_pdv_por text,
-    reenviado_pdv_em timestamp without time zone
+    reenviado_pdv_em timestamp without time zone,
+    local_origem_pdv_id integer,
+    origem_por_item boolean
 );
 
 
