@@ -8,16 +8,30 @@
 // administrativo não tem saldo de revenda); origem sem saldo NÃO bloqueia, vira aviso, como já
 // acontece com o estoque central; o padrão do PDV vale só para pedidos novos.
 
-// Origem de uma linha nova de pedido, em SQL: se o pedido já tem linhas, herda a origem delas
-// (mesmo que seja NULL = Almoxarifado, escolhida de propósito); senão, o padrão do PDV.
-// Recebe os números dos parâmetros do INSERT onde estão o código do pedido e o PDV.
+// Origem PADRÃO do pedido, em SQL: a das linhas que NÃO tiveram a origem escolhida no item
+// (origem_por_item), mesmo que seja NULL = Almoxarifado, escolhido de propósito. Sem nenhuma
+// linha assim (pedido novo, ou todos os itens ajustados um a um), vale o padrão do PDV.
+// Recebe os números dos parâmetros onde estão o código do pedido e o PDV.
 export function sqlOrigemDaNovaLinha(parametroCodigo, parametroPdv) {
   return `CASE
-    WHEN EXISTS (SELECT 1 FROM pedidos po WHERE po.codigo_pedido = $${parametroCodigo})
-      THEN (SELECT po.local_origem_pdv_id FROM pedidos po WHERE po.codigo_pedido = $${parametroCodigo} ORDER BY po.id LIMIT 1)
+    WHEN EXISTS (SELECT 1 FROM pedidos po WHERE po.codigo_pedido = $${parametroCodigo} AND po.origem_por_item IS NOT TRUE)
+      THEN (SELECT po.local_origem_pdv_id FROM pedidos po
+            WHERE po.codigo_pedido = $${parametroCodigo} AND po.origem_por_item IS NOT TRUE ORDER BY po.id LIMIT 1)
     ELSE (SELECT pp.local_estoque_padrao_pdv_id FROM pdvs pp WHERE pp.id = $${parametroPdv})
   END`;
 }
+
+// Mesma origem padrão, lida em JS (para desfazer a divisão de um item)
+export async function origemPadraoDoPedido(client, codigoPedido, pdvId) {
+  const { rows } = await client.query(`SELECT ${sqlOrigemDaNovaLinha(1, 2)} AS origem`, [codigoPedido, pdvId]);
+  const valor = rows[0]?.origem;
+  return valor === null || valor === undefined ? null : Number(valor);
+}
+
+// Ordem para escolher em qual linha SOMAR quando o mesmo produto é pedido de novo: a da origem
+// padrão primeiro, nunca uma parte ajustada à mão (senão a soma cairia num local escolhido para
+// outra coisa). Desempata pelo id, como antes.
+export const ORDEM_LINHA_PADRAO_PRIMEIRO = "ORDER BY (origem_por_item IS TRUE), id";
 
 // Normaliza o valor vindo da tela: vazio/"ALMOX"/0 = Almoxarifado (NULL)
 export function origemInformada(valor) {
@@ -82,6 +96,20 @@ export async function estornarOrigem(client, { origemPdvId, sku, quantidade }) {
     "UPDATE estoque_pdv SET quantidade = quantidade + $3::numeric WHERE pdv_id = $1 AND sku_produto = $2",
     [origemPdvId, sku, quantidade]
   );
+}
+
+// Pedido com item dividido (mesmo produto em mais de uma linha) não volta para Pendente: lá o
+// PDV edita os itens e não sabe das partes -- somaria numa e deixaria a outra para trás
+export async function exigirSemItemDividido(client, codigoPedido) {
+  const { rows } = await client.query(
+    "SELECT sku_produto FROM pedidos WHERE codigo_pedido = $1 GROUP BY sku_produto HAVING COUNT(*) > 1 LIMIT 1",
+    [codigoPedido]
+  );
+  if (rows.length) {
+    const erro = new Error(`O produto ${rows[0].sku_produto} está dividido entre origens. Desfaça a divisão antes de voltar o pedido para Pendente.`);
+    erro.statusCode = 409;
+    throw erro;
+  }
 }
 
 // Número do PDV de origem de uma linha de pedido (NULL = Almoxarifado)

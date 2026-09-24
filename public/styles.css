@@ -4818,6 +4818,72 @@ tr[data-item-id].is-marked-remove .pdv-item-qty {
   vertical-align: middle;
 }
 
+/* Selo de origem ("de PARK"): azul-petróleo, para não confundir com o laranja do "Almox" */
+.order-source-badge.is-origem {
+  border-color: rgba(0, 123, 135, 0.3);
+  background: rgba(16, 182, 199, 0.08);
+  color: var(--ac-teal-dark);
+}
+
+/* ===== Origem por item no painel do pedido ===== */
+.order-panel-origem-cell {
+  min-width: 11rem;
+}
+
+.order-panel-origem-cell select {
+  min-height: 36px;
+  padding-block: 0.3rem;
+  font-size: 0.85rem;
+}
+
+.order-panel-origem-cell .order-source-badge {
+  margin: 0.3rem 0 0;
+}
+
+/* Ação em texto dentro da célula (Dividir / Desfazer divisão) */
+.link-action {
+  display: block;
+  margin-top: 0.3rem;
+  border: 0;
+  background: none;
+  padding: 0;
+  color: var(--ac-teal-dark);
+  font-size: 0.78rem;
+  font-weight: 800;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* Parte de um item dividido: recuada sob a primeira, para ler como o mesmo produto */
+.release-item-part .order-panel-product {
+  padding-left: 1.6rem;
+  border-left: 3px solid rgba(0, 123, 135, 0.25);
+}
+
+.order-panel-origem-linha {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  text-transform: none;
+}
+
+.order-panel-origem-linha select {
+  flex: 1 1 10rem;
+}
+
+/* Diálogo de divisão: quantidade + origem por parte */
+.divisao-partes {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.divisao-parte {
+  display: grid;
+  grid-template-columns: 6rem minmax(0, 1fr) auto;
+  gap: 0.5rem;
+  align-items: center;
+}
+
 /* Almoxarifado: busca e seleção de produtos na liberação */
 .almox-product-search-box {
   position: relative;

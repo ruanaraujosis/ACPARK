@@ -1,0 +1,99 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+
+const ler = (caminho) => fs.readFileSync(new URL(caminho, import.meta.url), "utf8").split("\r\n").join("\n");
+const routes = ler("../server/modules/pedidos/pedidos.routes.js");
+const origem = ler("../server/services/pedidos/origem-estoque.service.js");
+const app = ler("../public/app.js");
+const migracao = ler("../tools/migrar-local-origem-estoque.mjs");
+
+const rota = (inicio, fim) => routes.slice(routes.indexOf(inicio), routes.indexOf(fim, routes.indexOf(inicio)));
+
+test("a chave de idempotência da OMIE é por linha: duas partes do mesmo produto não colidem", async () => {
+  // Risco mais silencioso da divisão: com a mesma chave, o ON CONFLICT DO NOTHING descartaria a
+  // segunda parte e a OMIE nunca a receberia. Provado também contra o banco real, com ROLLBACK.
+  const { montarChaveIdempotencia } = await import("../server/services/integrations/core/stock-launches.repository.js");
+  const base = { codigoPedido: "PED-1", sku: "SKU-X", evento: "RETIRADA", versao: 1 };
+  const parte1 = montarChaveIdempotencia({ ...base, pedidoItemId: 101 });
+  const parte2 = montarChaveIdempotencia({ ...base, pedidoItemId: 102 });
+  assert.notEqual(parte1, parte2);
+  assert.equal(parte1, montarChaveIdempotencia({ ...base, pedidoItemId: 101 }), "a mesma parte continua idempotente");
+  // Cada parte vai com o seu id e a sua origem
+  const baixa = routes.slice(routes.indexOf("export async function baixarEstoqueDaRetirada"), routes.indexOf("export async function avisarPdvPedidoAguardandoRetirada"));
+  assert.match(baixa, /pedidoItemId: row\.id,\s*sku: row\.sku_produto,\s*pdvId: row\.pdv_id,\s*origemPdvId: origemDaLinha\(row\)/);
+});
+
+test("migração ganha origem_por_item (sem DEFAULT)", () => {
+  assert.match(migracao, /ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS origem_por_item BOOLEAN"/);
+});
+
+test("as fusões de linhas do mesmo produto respeitam a origem", () => {
+  // Enviar para retirada e finalizar só fundem linhas da MESMA origem
+  assert.equal((routes.match(/AND local_origem_pdv_id IS NOT DISTINCT FROM \$4/g) || []).length, 2);
+  assert.match(routes, /RETURNING id, codigo_pedido, sku_produto, quantidade_liberada, local_origem_pdv_id`/);
+  // Reabertura agrupa por PDV + produto + origem
+  assert.match(routes, /const key = `\$\{row\.pdv_id\}::\$\{row\.sku_produto\}::\$\{origemDaLinha\(row\) \?\? "ALMOX"\}`;/);
+  // PDV somando produto repetido cai na linha da origem padrão, nunca numa parte ajustada
+  assert.equal((routes.match(/\$\{ORDEM_LINHA_PADRAO_PRIMEIRO\}/g) || []).length, 2);
+  assert.match(origem, /export const ORDEM_LINHA_PADRAO_PRIMEIRO = "ORDER BY \(origem_por_item IS TRUE\), id";/);
+});
+
+test("origem por item: só admin, só antes de finalizar, id do próprio pedido, sem repetir origem", () => {
+  const r = rota('"/api/admin/orders/origem" && method === "POST"', '"/api/admin/pedido/saldos-origem"');
+  assert.match(r, /requireUser\(req, res, "admin"\)/);
+  assert.match(r, /Pedido finalizado não muda de local de origem/);
+  assert.match(r, /O item \$\{pedido\?\.id\} não pertence a este pedido\./);
+  assert.match(r, /já tem uma parte saindo dessa origem/);
+  assert.match(r, /origem_por_item = TRUE/);
+  assert.match(r, /acao: "local_origem_item_alterado"/);
+  // "Aplicar a todos" não reescreve os itens ajustados um a um
+  assert.match(r, /WHERE codigo_pedido = \$1 AND origem_por_item IS NOT TRUE/);
+});
+
+test("dividir item: soma igual ao pedido, 2 a 5 partes, inteiras, origens distintas, só Em andamento", () => {
+  const r = rota('"/api/admin/pedido/dividir-item"', '"/api/admin/pedido/juntar-item"');
+  assert.match(r, /requireUser\(req, res, "admin"\)/);
+  assert.match(r, /Só dá para dividir um item com o pedido Em andamento\./);
+  assert.match(r, /Divida em 2 a 5 partes\./);
+  assert.match(r, /quantidade inteira maior que zero/);
+  assert.match(r, /A soma das partes \(\$\{soma\}\) precisa ser igual ao pedido \(\$\{pedida\}\)\./);
+  assert.match(r, /Cada parte precisa de uma origem diferente\./);
+  assert.match(r, /validarOrigem\(client, \{ origemPdvId: parte\.origem, destinoPdvId: linha\.pdv_id \}\)/);
+  // A liberação já digitada é repartida sem mudar o total
+  assert.match(r, /liberadas\[liberadas\.length - 1\] \+= liberadaRestante;/);
+  assert.match(r, /'ALMOX', \$16, TRUE\)/);
+  assert.match(r, /acao: "item_dividido"/);
+});
+
+test("desfazer divisão soma as partes e volta para a origem padrão", () => {
+  const r = rota('"/api/admin/pedido/juntar-item"', "// TRANSFERÊNCIA RÁPIDA");
+  assert.match(r, /Este produto não está dividido\./);
+  assert.match(r, /const origem = await origemPadraoDoPedido\(client, orderCode, manter\.pdv_id\);/);
+  assert.match(r, /acao: "divisao_desfeita"/);
+});
+
+test("pedido com item dividido não volta para Pendente (Kanban e painel)", () => {
+  assert.match(origem, /Desfaça a divisão antes de voltar o pedido para Pendente\./);
+  assert.match(routes, /if \(nextStatus === "Pendente"\) await exigirSemItemDividido\(client, orderCode\);/);
+  assert.match(routes, /if \(codigoDoPedido\) await exigirSemItemDividido\(client, codigoDoPedido\);/);
+});
+
+test("tela: coluna Origem por item, dividir/desfazer, padrão com 'aplicar a todos'", () => {
+  assert.match(app, /\["Produto", "Origem", "Estoque central", "Solicitado", "Liberado"\]/);
+  assert.match(app, /function celulaOrigemDoItem\(item, contexto, editable\)/);
+  assert.match(app, /class="link-action dividir-item"/);
+  assert.match(app, /class="link-action juntar-item"/);
+  assert.match(app, /function abrirDivisaoDeItem\(item, dados, destino, aoConcluir\)/);
+  assert.match(app, /\/api\/admin\/pedido\/saldos-origem/);
+  assert.match(app, /Origem padrão do pedido/);
+  assert.match(app, /order-panel-aplicar-origem/);
+});
+
+test("produto dividido conta uma vez; PDV vê somado; cupom e comprovante dizem a origem", () => {
+  assert.match(app, /return new Set\(group\.map\(\(item\) => item\.sku_produto \|\| item\.sku \|\| item\.id\)\)\.size;/);
+  assert.doesNotMatch(app, /const totalItems = group\.length;/);
+  assert.match(app, /const itensSomados = somarPartesDoMesmoProduto\(visibleItems\);/);
+  assert.match(app, /if \(new Set\(rows\.map\(\(item\) => item\.origem\)\)\.size > 1\)/);
+  assert.match(app, /function comOrigemQuandoMisturado\(itens = \[\]\)/);
+});

@@ -45,7 +45,8 @@ test("origem = destino e PDV administrativo como origem são recusados", () => {
 });
 
 test("pedido novo herda a origem do pedido ou o padrão do PDV (todas as inserções)", () => {
-  assert.match(origem, /WHEN EXISTS \(SELECT 1 FROM pedidos po WHERE po\.codigo_pedido = \$\$\{parametroCodigo\}\)/);
+  // A origem padrão é a das linhas NÃO ajustadas item a item (origem_por_item)
+  assert.match(origem, /WHEN EXISTS \(SELECT 1 FROM pedidos po WHERE po\.codigo_pedido = \$\$\{parametroCodigo\} AND po\.origem_por_item IS NOT TRUE\)/);
   assert.equal((routes.match(/\$\{sqlOrigemDaNovaLinha\(1, [34]\)\}/g) || []).length, 3);
   assert.match(index, /\(SELECT local_estoque_padrao_pdv_id FROM pdvs WHERE id = \$2\)\)/, "autopedido usa o padrão");
 });
@@ -80,7 +81,8 @@ test("OMIE: origem vem do local do PDV de origem; sem vínculo ignora e avisa", 
 
 test("telas: local padrão no PDV, local atual/destino no painel e aba de transferência", () => {
   assert.match(app, /name="local_estoque_padrao_pdv_id"/);
-  assert.match(app, /Local atual \(origem\)/);
+  assert.match(app, /Origem padrão do pedido/);
+  assert.match(app, /Aplicar a todos os itens/);
   assert.match(app, /Local de destino<strong>/);
   assert.match(app, /\/api\/admin\/orders\/origem/);
   assert.match(app, /id="release-transfer-tab"/);

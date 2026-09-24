@@ -14,7 +14,7 @@ import {
   startOrderAlerts,
   stopOrderAlerts
 } from "./js/services/order-alerts.js";
-import { limparAlertasDoPdv, mostrarBotaoDeAtivacaoPdv, mostrarPedidoProntoParaRetirada } from "./js/services/pdv-order-alerts.js?v=20260924-transferencia-origem5";
+import { limparAlertasDoPdv, mostrarBotaoDeAtivacaoPdv, mostrarPedidoProntoParaRetirada } from "./js/services/pdv-order-alerts.js?v=20260924-origem-por-item";
 
 let damageDraftItems = [];
 let renderDamageDraftItems;
@@ -313,6 +313,11 @@ function orderGroupsForStatus(grouped = [], status) {
 // Retorna os itens já liberados de um grupo de pedido
 function orderReleasedItems(group = []) {
   return group.filter((item) => Number(item.quantidade_liberada || 0) > 0);
+}
+
+// Quantos produtos diferentes há no pedido (partes de um item dividido contam uma vez)
+function contarProdutosDistintos(group = []) {
+  return new Set(group.map((item) => item.sku_produto || item.sku || item.id)).size;
 }
 
 // Calcula o valor de estoque central de um item
@@ -1452,9 +1457,34 @@ async function adicionarProdutoAoPedidoPdv(botao) {
 }
 
 // Monta o HTML do card de pedido no PDV
+// Junta as partes de um produto dividido numa linha só, somando o pedido e o liberado.
+// "Almox" (item incluído pelo Almoxarifado) só fica se nenhuma parte veio do PDV.
+function somarPartesDoMesmoProduto(itens = []) {
+  const porSku = new Map();
+  for (const item of itens) {
+    const atual = porSku.get(item.sku_produto);
+    if (!atual) {
+      porSku.set(item.sku_produto, { ...item });
+      continue;
+    }
+    atual.quantidade_solicitada = Number(atual.quantidade_solicitada || 0) + Number(item.quantidade_solicitada || 0);
+    atual.quantidade_liberada = Number(atual.quantidade_liberada || 0) + Number(item.quantidade_liberada || 0);
+    if (item.item_origem !== "ALMOX") atual.item_origem = item.item_origem;
+  }
+  return [...porSku.values()];
+}
+
 function pdvOrderCard(group) {
   const first = group[0];
   const visibleItems = orderDisplayItemsForStatus(group);
+  // Item dividido entre origens: durante a separação o PDV vê um produto só, com o total que
+  // pediu; na retirada e depois, cada parte aparece com o local de onde saiu
+  const itensSomados = somarPartesDoMesmoProduto(visibleItems);
+  const origensMisturadas = new Set(visibleItems.map((o) => o.local_origem || "")).size > 1;
+  const skusDivididos = new Set(visibleItems.filter((o, i, todos) => todos.findIndex((x) => x.sku_produto === o.sku_produto) !== i).map((o) => o.sku_produto));
+  const seloDaLinha = (o) => origensMisturadas
+    ? ` <span class="order-source-badge is-origem">de ${esc(o.local_origem || "Almoxarifado")}</span>`
+    : o.item_origem === "ALMOX" && !skusDivididos.has(o.sku_produto) ? ` <span class="order-source-badge">Almox</span>` : "";
   const isWithdrawalStatus = first.status === "Aguardando Retirada";
   const statusTime = first.status === "Pendente"
     ? `Pendente desde ${moneyDate(first.data_hora)}`
@@ -1515,12 +1545,12 @@ function pdvOrderCard(group) {
         : ["Aguardando Retirada", "Finalizado"].includes(first.status)
           ? table(["Produto", "Estoque central", "Quantidade solicitada", "Quantidade liberada"], visibleItems.map((o) => `
         <tr>
-          <td>${esc(o.produto)} ${o.item_origem === "ALMOX" ? `<span class="order-source-badge">Almox</span>` : ""}</td>
+          <td>${esc(o.produto)}${seloDaLinha(o)}</td>
           <td class="release-number-cell">${centralStockValue(o)}</td>
           <td>${o.quantidade_solicitada}</td>
           <td>${o.quantidade_liberada}</td>
         </tr>`))
-          : table(["Produto", "Estoque central", "Solicitado", "Liberado", "Falta enviar"], visibleItems.map((o) => `
+          : table(["Produto", "Estoque central", "Solicitado", "Liberado", "Falta enviar"], itensSomados.map((o) => `
         <tr>
           <td>${esc(o.produto)} ${o.item_origem === "ALMOX" ? `<span class="order-source-badge">Almox</span>` : ""}</td>
           <td class="release-number-cell">${centralStockValue(o)}</td>
@@ -7585,7 +7615,8 @@ function releaseKanbanColumn(status, groups = []) {
 function releaseKanbanCard(group = []) {
   const first = group[0] || {};
   const key = orderGroupKey(first);
-  const totalItems = group.length;
+  // Produto dividido entre origens é UM produto em várias linhas: conta pelo SKU
+  const totalItems = contarProdutosDistintos(group);
   const totalRequested = group.reduce((sum, item) => sum + Number(item.quantidade_solicitada || 0), 0);
   const version = releaseKanbanGroupVersion(group);
   const statusTime = moneyDate(first.criado_em || first.data_hora || new Date().toISOString());
@@ -7713,7 +7744,8 @@ function placeReleaseKanbanCardOnce(card, zone) {
 function releaseFinalizedCard(group = []) {
   const first = group[0] || {};
   const key = orderGroupKey(first);
-  const totalItems = group.length;
+  // Produto dividido entre origens é UM produto em várias linhas: conta pelo SKU
+  const totalItems = contarProdutosDistintos(group);
   const totalRequested = group.reduce((sum, item) => sum + Number(item.quantidade_solicitada || 0), 0);
   const totalReleased = group.reduce((sum, item) => sum + Number(item.quantidade_liberada || 0), 0);
   const finishedAt = moneyDate(first.retirada_em || first.liberado_em || first.criado_em || first.data_hora || new Date().toISOString());
@@ -7877,10 +7909,63 @@ function formatarSolicitadoEmbalagem(unidadesLiberadas, fator) {
   return `${valor.toFixed(2).replace(".", ",")} EMB`;
 }
 
+// ===== Origem por item no painel do pedido =====
+
+// Origem padrão do pedido (a das linhas não ajustadas uma a uma), as partes de cada produto e o
+// status -- tudo o que a coluna "Origem" precisa para decidir o que mostrar em cada linha
+function contextoDeOrigem(group = []) {
+  const padrao = group.find((item) => !item.origem_por_item);
+  const partesPorSku = new Map();
+  for (const item of group) {
+    const sku = item.sku_produto || item.sku || "";
+    if (!partesPorSku.has(sku)) partesPorSku.set(sku, []);
+    partesPorSku.get(sku).push(item.id);
+  }
+  return {
+    status: group[0]?.status || "",
+    padrao: padrao ? String(padrao.local_origem_pdv_id ?? "") : "",
+    partesPorSku,
+    origensDistintas: new Set(group.map((item) => String(item.local_origem_pdv_id ?? ""))).size
+  };
+}
+
+// Partes do mesmo produto ficam juntas na tabela, na ordem em que o produto apareceu
+function ordenarPartesJuntas(group = []) {
+  const ordem = new Map();
+  group.forEach((item, indice) => {
+    const sku = item.sku_produto || item.sku || "";
+    if (!ordem.has(sku)) ordem.set(sku, indice);
+  });
+  return [...group].sort((a, b) => (ordem.get(a.sku_produto || a.sku || "") - ordem.get(b.sku_produto || b.sku || "")) || (a.id - b.id));
+}
+
+// Célula "Origem": seletor por item (antes de finalizar), selo quando difere do padrão e as
+// ações de dividir/desfazer (só Em andamento, a mesma janela das rotas)
+function celulaOrigemDoItem(item, contexto, editable) {
+  const sku = item.sku_produto || item.sku || "";
+  const nome = item.local_origem || "Almoxarifado";
+  const atual = String(item.local_origem_pdv_id ?? "");
+  const partes = contexto.partesPorSku.get(sku) || [];
+  const podeMudar = contexto.status !== "Finalizado";
+  const seletor = podeMudar
+    ? `<select class="item-origem" data-id="${esc(item.id)}" data-sku="${esc(sku)}" data-atual="${esc(atual)}" aria-label="Origem de ${esc(item.produto || sku)}">
+        <option value="" ${atual ? "" : "selected"}>Almoxarifado</option>
+        ${atual ? `<option value="${esc(atual)}" selected>${esc(nome)}</option>` : ""}
+      </select>`
+    : `<span>${esc(nome)}</span>`;
+  const selo = atual !== contexto.padrao ? `<span class="order-source-badge is-origem">de ${esc(nome)}</span>` : "";
+  const acao = !editable ? ""
+    : partes.length > 1
+      ? (partes[0] === item.id ? `<button class="link-action juntar-item" type="button" data-sku="${esc(sku)}">Desfazer divisão</button>` : "")
+      : `<button class="link-action dividir-item" type="button" data-id="${esc(item.id)}">Dividir</button>`;
+  return `<td class="order-panel-origem-cell">${seletor}${selo}${acao}</td>`;
+}
+
 function releasePanelItemsTable(group = [], editable = false) {
   const draft = getReleaseDraft(group[0]?.codigo_pedido);
   const draftById = new Map((draft.items || []).map((item) => [String(item.id), item]));
-  const rows = group.map((item) => {
+  const contextoOrigem = contextoDeOrigem(group);
+  const rows = ordenarPartesJuntas(group).map((item) => {
     const central = centralStockValue(item);
     const requested = Number(item.quantidade_solicitada || 0);
     const saved = Number(item.quantidade_liberada || 0);
@@ -7904,8 +7989,9 @@ function releasePanelItemsTable(group = [], editable = false) {
             : "";
     const stockClass = central < 0 ? "negative" : central === 0 ? "zero" : "positive";
     return `
-      <tr class="release-item-row ${rowState}"
+      <tr class="release-item-row ${rowState} ${(contextoOrigem.partesPorSku.get(item.sku_produto || item.sku || "") || [])[0] !== item.id ? "release-item-part" : ""}"
         data-id="${esc(item.id)}"
+        data-origem-nome="${esc(item.local_origem || "Almoxarifado")}"
         data-version="${esc(item.version || 1)}"
         data-requested="${esc(requested)}"
         data-released="${esc(released)}"
@@ -7923,6 +8009,7 @@ function releasePanelItemsTable(group = [], editable = false) {
           <small>${esc(item.sku_produto || item.sku || "sem SKU")}${item.item_origem === "ALMOX" ? ` <span class="order-source-badge">Almox</span>` : ""}</small>
           <small class="order-panel-pdv">PDV ${releasePanelStock(item.estoque_pdv)} · mín ${releasePanelStock(item.estoque_minimo)} · máx ${releasePanelStock(item.estoque_maximo)}</small>
         </td>
+        ${celulaOrigemDoItem(item, contextoOrigem, editable)}
         <td class="release-number-cell"><span class="stock-badge ${stockClass}">${central}</span></td>
         <td class="release-number-cell" data-requested-value${fatorValido ? ` data-fator="${fator}"` : ""}>${fatorValido ? formatarSolicitadoEmbalagem(released, fator) : requested}</td>
         <td class="release-number-cell">${editable
@@ -7938,8 +8025,8 @@ function releasePanelItemsTable(group = [], editable = false) {
   });
   // Na leitura, Liberado é a última coluna: é dela que o comprovante de retirada lê as quantidades
   const headers = editable
-    ? ["", "Produto", "Estoque central", "Solicitado", "Liberar", "Falta", ""]
-    : ["Produto", "Estoque central", "Solicitado", "Liberado"];
+    ? ["", "Produto", "Origem", "Estoque central", "Solicitado", "Liberar", "Falta", ""]
+    : ["Produto", "Origem", "Estoque central", "Solicitado", "Liberado"];
   const linhas = rows.length ? rows : [`<tr><td colspan="${headers.length}">Nenhum produto neste pedido.</td></tr>`];
   return table(headers, linhas).replace("table-wrap", "table-wrap order-panel-table");
 }
@@ -7949,7 +8036,8 @@ function releasePanelHtml(group = []) {
   const first = group[0] || {};
   const status = first.status || "";
   const editable = status === "Em Andamento";
-  const totalItems = group.length;
+  // Produto dividido entre origens é UM produto em várias linhas: conta pelo SKU
+  const totalItems = contarProdutosDistintos(group);
   const totalRequested = group.reduce((sum, item) => sum + Number(item.quantidade_solicitada || 0), 0);
   const totalReleased = group.reduce((sum, item) => sum + Number(item.quantidade_liberada || 0), 0);
   const unavailable = group.filter((item) => centralStockValue(item) <= 0).length;
@@ -7995,12 +8083,14 @@ function releasePanelHtml(group = []) {
           <p class="order-panel-hint">${esc(releasePanelStepHint(status))}</p>
         </div>
         <div class="order-panel-locais">
-          <label class="order-panel-local">Local atual (origem)
-            <select class="order-panel-origem" ${status === "Finalizado" ? "disabled" : ""}
-              data-origem-atual="${esc(first.local_origem_pdv_id ?? "")}" aria-label="Local de origem do pedido">
-              <option value="" ${first.local_origem_pdv_id ? "" : "selected"}>Almoxarifado</option>
-              ${first.local_origem_pdv_id ? `<option value="${esc(first.local_origem_pdv_id)}" selected>${esc(first.local_origem || "PDV")}</option>` : ""}
-            </select>
+          <label class="order-panel-local">Origem padrão do pedido
+            <span class="order-panel-origem-linha">
+              <select class="order-panel-origem" ${status === "Finalizado" ? "disabled" : ""}
+                data-origem-atual="${esc(contextoDeOrigem(group).padrao)}" aria-label="Origem padrão do pedido">
+                <option value="">Almoxarifado</option>
+              </select>
+              ${status === "Finalizado" ? "" : `<button class="btn secondary order-panel-aplicar-origem" type="button">Aplicar a todos os itens</button>`}
+            </span>
           </label>
           <p class="order-panel-local">Local de destino<strong>${esc(first.pdv || "PDV")}</strong></p>
         </div>
@@ -8159,6 +8249,113 @@ async function finalizeReleaseOrder(orderCode = "", context = {}, trigger = null
 }
 
 // Liga todos os eventos do painel do pedido
+// Diálogo "Dividir item": quanto sai de cada origem. Mostra o saldo de cada local e valida a
+// soma ao vivo. Sugestão inicial: o que o Almoxarifado tem e, se faltar, o resto do local com
+// mais saldo. Ao salvar, o servidor cria uma linha por parte (rota /api/admin/pedido/dividir-item).
+function abrirDivisaoDeItem(item, dados, destino, aoConcluir) {
+  const sku = item.sku_produto;
+  const pedida = Number(item.quantidade_solicitada || 0);
+  const locais = [{ id: "", nome: "Almoxarifado" }, ...(dados.pdvs || []).filter((p) => String(p.id) !== String(destino))];
+  const saldo = (id) => Number(dados.saldos?.[sku]?.[id ? String(id) : "ALMOX"] || 0);
+  const noAlmox = Math.max(0, Math.min(saldo(""), pedida));
+  const melhorPdv = locais.slice(1).sort((a, b) => saldo(b.id) - saldo(a.id))[0];
+  const partes = noAlmox > 0 && noAlmox < pedida && melhorPdv
+    ? [{ quantidade: noAlmox, origem: "" }, { quantidade: pedida - noAlmox, origem: String(melhorPdv.id) }]
+    : [{ quantidade: pedida, origem: "" }, { quantidade: 0, origem: melhorPdv ? String(melhorPdv.id) : "" }];
+
+  const modal = document.createElement("div");
+  modal.className = "photo-viewer";
+  const fechar = () => modal.remove();
+  modal.innerHTML = `
+    <div class="photo-viewer-dialog relatorio-estoque-dialog" role="dialog" aria-modal="true" aria-label="Dividir item entre origens">
+      <div class="photo-viewer-head">
+        <div><p class="eyebrow">Dividir item</p><h3>${esc(item.produto || sku)}</h3></div>
+        <button class="icon-action fechar-divisao" type="button" aria-label="Fechar">&times;</button>
+      </div>
+      <div class="photo-viewer-body relatorio-estoque-body">
+        <p class="text-sm text-slate-600">O PDV pediu <strong>${pedida}</strong>. Saldo por local:
+          ${locais.map((local) => `${esc(local.nome)} <strong>${saldo(local.id)}</strong>`).join(" · ")}</p>
+        <div class="divisao-partes"></div>
+        <button class="btn secondary divisao-adicionar" type="button">+ Parte</button>
+        <p class="divisao-soma text-sm font-bold"></p>
+      </div>
+      <div class="form-actions">
+        <button class="btn secondary fechar-divisao" type="button">Cancelar</button>
+        <button class="btn divisao-salvar" type="button">Dividir</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  modal.querySelectorAll(".fechar-divisao").forEach((botao) => botao.addEventListener("click", fechar));
+
+  const render = () => {
+    modal.querySelector(".divisao-partes").innerHTML = partes.map((parte, indice) => `
+      <div class="divisao-parte">
+        <input type="number" min="1" step="1" value="${parte.quantidade}" data-indice="${indice}" class="divisao-qtd" aria-label="Quantidade da parte ${indice + 1}" />
+        <select data-indice="${indice}" class="divisao-origem" aria-label="Origem da parte ${indice + 1}">
+          ${locais.map((local) => `<option value="${esc(local.id)}" ${String(local.id) === parte.origem ? "selected" : ""}>${esc(local.nome)} (${saldo(local.id)})</option>`).join("")}
+        </select>
+        ${partes.length > 2 ? `<button class="icon-action danger divisao-remover" type="button" data-indice="${indice}" aria-label="Remover parte">&times;</button>` : ""}
+      </div>`).join("");
+    modal.querySelectorAll(".divisao-qtd").forEach((campo) => campo.addEventListener("input", () => {
+      partes[Number(campo.dataset.indice)].quantidade = Number(campo.value);
+      validar();
+    }));
+    modal.querySelectorAll(".divisao-origem").forEach((sel) => sel.addEventListener("change", () => {
+      partes[Number(sel.dataset.indice)].origem = sel.value;
+      validar();
+    }));
+    modal.querySelectorAll(".divisao-remover").forEach((botao) => botao.addEventListener("click", () => {
+      partes.splice(Number(botao.dataset.indice), 1);
+      render();
+    }));
+    modal.querySelector(".divisao-adicionar").disabled = partes.length >= 5;
+    validar();
+  };
+  // A soma tem que bater com o pedido, cada parte inteira > 0 e origens diferentes
+  const validar = () => {
+    const soma = partes.reduce((total, parte) => total + (Number(parte.quantidade) || 0), 0);
+    const inteiras = partes.every((parte) => Number.isInteger(Number(parte.quantidade)) && Number(parte.quantidade) > 0);
+    const distintas = new Set(partes.map((parte) => parte.origem)).size === partes.length;
+    const aviso = !inteiras ? "Cada parte precisa de uma quantidade inteira maior que zero."
+      : !distintas ? "Cada parte precisa de uma origem diferente."
+        : soma !== pedida ? `A soma das partes é ${soma}; precisa ser ${pedida}.` : `Soma ${soma} de ${pedida}.`;
+    const ok = inteiras && distintas && soma === pedida;
+    const campo = modal.querySelector(".divisao-soma");
+    campo.textContent = aviso;
+    campo.classList.toggle("text-red-700", !ok);
+    modal.querySelector(".divisao-salvar").disabled = !ok;
+    return ok;
+  };
+  modal.querySelector(".divisao-adicionar").addEventListener("click", () => {
+    const usada = new Set(partes.map((parte) => parte.origem));
+    const livre = locais.find((local) => !usada.has(String(local.id)));
+    partes.push({ quantidade: 0, origem: livre ? String(livre.id) : "" });
+    render();
+  });
+  modal.querySelector(".divisao-salvar").addEventListener("click", async (event) => {
+    if (!validar()) return;
+    const botao = event.currentTarget;
+    botao.disabled = true;
+    try {
+      await request("/api/admin/pedido/dividir-item", {
+        method: "POST",
+        body: JSON.stringify({
+          codigo_pedido: item.codigo_pedido,
+          id: item.id,
+          partes: partes.map((parte) => ({ quantidade: Number(parte.quantidade), local_origem_pdv_id: parte.origem || null }))
+        })
+      });
+      toast(`${sku} dividido em ${partes.length} partes.`);
+      fechar();
+      await aoConcluir();
+    } catch (error) {
+      toast(error.message || "Não foi possível dividir o item.", "error");
+      botao.disabled = false;
+    }
+  });
+  render();
+}
+
 function bindReleasePanel(overlay, group = [], context = {}) {
   const panel = overlay?.querySelector(".order-panel");
   if (!panel) return;
@@ -8180,33 +8377,81 @@ function bindReleasePanel(overlay, group = [], context = {}) {
     openReleaseTimelineModal(orderCode);
   });
 
-  // Local de origem: completa as opções com os PDVs que podem ser origem (não administrativos,
-  // e nunca o próprio destino) e grava na troca. Finalizado fica travado.
+  // Origem: um carregamento só traz os locais possíveis e o saldo de cada produto em cada um,
+  // e preenche o padrão do cabeçalho e o seletor de cada item ("PARK (12)"). O destino nunca
+  // aparece como origem. Finalizado fica travado (sem seletor).
   const origemSel = panel.querySelector(".order-panel-origem");
-  if (origemSel && !origemSel.disabled) {
-    request("/api/admin/pdvs", { silentLoading: true }).then((r) => {
-      const atual = origemSel.dataset.origemAtual;
-      const destino = String(group[0]?.pdv_id ?? "");
-      const opcoes = (r.pdvs || []).filter((p) => p.administrativo !== true && String(p.id) !== destino);
-      origemSel.innerHTML = `<option value="">Almoxarifado</option>`
-        + opcoes.map((p) => `<option value="${p.id}" ${String(p.id) === atual ? "selected" : ""}>${esc(p.nome)}</option>`).join("");
-    }).catch(() => {});
-    origemSel.addEventListener("change", async () => {
-      const anterior = origemSel.dataset.origemAtual;
-      try {
-        await request("/api/admin/orders/origem", {
-          method: "POST",
-          body: JSON.stringify({ codigo_pedido: orderCode, local_origem_pdv_id: origemSel.value || null })
-        });
-        origemSel.dataset.origemAtual = origemSel.value;
-        toast(`Local de origem: ${origemSel.selectedOptions[0]?.textContent || "Almoxarifado"}.`);
-        await reloadReleasePanel(overlay, orderCode, context);
-      } catch (error) {
-        origemSel.value = anterior;
-        toast(error.message || "Não foi possível mudar o local de origem.", "error");
-      }
-    });
+  const seletoresDeItem = [...panel.querySelectorAll(".item-origem")];
+  let dadosDeOrigem = { pdvs: [], saldos: {} };
+  const destino = String(group[0]?.pdv_id ?? "");
+  const nomeDaOrigem = (valor) => (valor ? dadosDeOrigem.pdvs.find((p) => String(p.id) === String(valor))?.nome || "PDV" : "Almoxarifado");
+  const saldoEm = (sku, valor) => Number(dadosDeOrigem.saldos[sku]?.[valor ? String(valor) : "ALMOX"] || 0);
+  const opcoesDeOrigem = (atual, sku) => {
+    const locais = [{ id: "", nome: "Almoxarifado" }, ...dadosDeOrigem.pdvs.filter((p) => String(p.id) !== destino)];
+    return locais.map((local) => {
+      const rotulo = sku ? `${local.nome} (${saldoEm(sku, local.id)})` : local.nome;
+      return `<option value="${esc(local.id)}" ${String(local.id) === String(atual) ? "selected" : ""}>${esc(rotulo)}</option>`;
+    }).join("");
+  };
+  if (origemSel || seletoresDeItem.length) {
+    const skus = [...new Set(group.map((item) => item.sku_produto).filter(Boolean))];
+    request(`/api/admin/pedido/saldos-origem?skus=${encodeURIComponent(skus.join(","))}`, { silentLoading: true })
+      .then((r) => {
+        dadosDeOrigem = r;
+        if (origemSel && !origemSel.disabled) origemSel.innerHTML = opcoesDeOrigem(origemSel.dataset.origemAtual, "");
+        seletoresDeItem.forEach((sel) => { sel.innerHTML = opcoesDeOrigem(sel.dataset.atual, sel.dataset.sku); });
+      })
+      .catch(() => {});
   }
+  // "Aplicar a todos": muda só os itens que seguem o padrão; os ajustados um a um ficam
+  panel.querySelector(".order-panel-aplicar-origem")?.addEventListener("click", async () => {
+    try {
+      const r = await request("/api/admin/orders/origem", {
+        method: "POST",
+        body: JSON.stringify({ codigo_pedido: orderCode, local_origem_pdv_id: origemSel?.value || null })
+      });
+      toast(`Origem ${nomeDaOrigem(origemSel?.value)} aplicada a ${r.itens_alterados} item(ns).`);
+      await reloadReleasePanel(overlay, orderCode, context);
+    } catch (error) {
+      toast(error.message || "Não foi possível aplicar a origem.", "error");
+    }
+  });
+  // Origem de um item só
+  seletoresDeItem.forEach((sel) => sel.addEventListener("change", async () => {
+    try {
+      await request("/api/admin/orders/origem", {
+        method: "POST",
+        body: JSON.stringify({ codigo_pedido: orderCode, itens: [{ id: Number(sel.dataset.id), local_origem_pdv_id: sel.value || null }] })
+      });
+      toast(`${sel.dataset.sku}: sai de ${nomeDaOrigem(sel.value)}.`);
+      await reloadReleasePanel(overlay, orderCode, context);
+    } catch (error) {
+      sel.value = sel.dataset.atual;
+      toast(error.message || "Não foi possível mudar a origem do item.", "error");
+    }
+  }));
+  panel.querySelectorAll(".dividir-item").forEach((botao) => botao.addEventListener("click", () => {
+    const item = group.find((linha) => String(linha.id) === botao.dataset.id);
+    if (item) abrirDivisaoDeItem(item, dadosDeOrigem, destino, async () => reloadReleasePanel(overlay, orderCode, context));
+  }));
+  panel.querySelectorAll(".juntar-item").forEach((botao) => botao.addEventListener("click", async () => {
+    const confirmado = await confirmSystem({
+      title: "Desfazer divisão?",
+      message: `As partes de ${botao.dataset.sku} voltam a ser um item só, com a soma das quantidades e a origem padrão do pedido.`,
+      confirmLabel: "Desfazer divisão"
+    });
+    if (!confirmado) return;
+    try {
+      await request("/api/admin/pedido/juntar-item", {
+        method: "POST",
+        body: JSON.stringify({ codigo_pedido: orderCode, sku: botao.dataset.sku })
+      });
+      toast("Divisão desfeita.");
+      await reloadReleasePanel(overlay, orderCode, context);
+    } catch (error) {
+      toast(error.message || "Não foi possível desfazer a divisão.", "error");
+    }
+  }));
 
   const setSaving = (saving) => {
     panel.classList.toggle("is-saving", saving);
@@ -9048,7 +9293,7 @@ function orderCard(group) {
           const fatorNaoEditavel = Number(o.fator_conversao);
           const fatorNaoEditavelValido = o.fator_status !== "INVALIDO" && Number.isSafeInteger(fatorNaoEditavel) && fatorNaoEditavel > 1;
           return `
-        <tr data-id="${o.id}" data-version="${o.version || 1}" data-requested="${o.quantidade_solicitada}" data-released="${o.quantidade_liberada || 0}" data-sku="${esc(o.sku_produto || "")}" ${fatorNaoEditavelValido ? `data-fator="${fatorNaoEditavel}" data-embalagem="${esc(o.embalagem || "")}"` : ""}>
+        <tr data-id="${o.id}" data-version="${o.version || 1}" data-requested="${o.quantidade_solicitada}" data-released="${o.quantidade_liberada || 0}" data-sku="${esc(o.sku_produto || "")}" data-origem-nome="${esc(o.local_origem || "Almoxarifado")}" ${fatorNaoEditavelValido ? `data-fator="${fatorNaoEditavel}" data-embalagem="${esc(o.embalagem || "")}"` : ""}>
           <td>${esc(o.produto)} ${o.item_origem === "ALMOX" ? `<span class="order-source-badge">Almox</span>` : ""}</td>
           <td class="release-number-cell">${centralStockValue(o)}</td>
           <td class="release-number-cell">${stockValue(o.estoque_pdv)}</td>
@@ -9084,7 +9329,7 @@ function orderCard(group) {
         const saldoLabel = saldo < 0 ? "Saldo negativo" : saldo === 0 ? "Saldo zerado" : "Saldo disponível";
         const canBulkDeleteItem = canRemoveProducts;
         return `
-        <tr data-id="${o.id}" data-version="${o.version || 1}" data-requested="${o.quantidade_solicitada}" data-product="${esc(o.produto)}" data-sku="${esc(o.sku_produto || "")}" data-released="${esc(releasedQty)}" ${fatorKanbanValido ? `data-fator="${fatorKanban}" data-embalagem="${esc(o.embalagem || "")}"` : ""} class="release-item-row ${rowState} ${isRemoved ? "is-marked-remove" : ""} ${hiddenCompleted ? "hidden" : ""}">
+        <tr data-id="${o.id}" data-version="${o.version || 1}" data-requested="${o.quantidade_solicitada}" data-origem-nome="${esc(o.local_origem || "Almoxarifado")}" data-product="${esc(o.produto)}" data-sku="${esc(o.sku_produto || "")}" data-released="${esc(releasedQty)}" ${fatorKanbanValido ? `data-fator="${fatorKanban}" data-embalagem="${esc(o.embalagem || "")}"` : ""} class="release-item-row ${rowState} ${isRemoved ? "is-marked-remove" : ""} ${hiddenCompleted ? "hidden" : ""}">
           <td class="release-remove-cell">
             <label class="release-select-control" title="${canBulkDeleteItem ? "Selecionar produto para exclusão" : "Produto bloqueado para exclusão"}">
               <input class="bulk-order-item" type="checkbox" value="${esc(o.id)}" ${canBulkDeleteItem ? "" : "disabled"} aria-label="Selecionar ${esc(o.produto)} para exclusão">
@@ -9206,8 +9451,12 @@ async function printOrder(card, options = {}) {
     const fator = Number(row.dataset.fator);
     const fatorValido = row.dataset.fator && Number.isSafeInteger(fator) && fator > 1;
     const emb = fatorValido ? formatarEmbalagensImpressaoPedido(quantidadeBruta, fator) : "—";
-    return { product, emb, qtd: quantidadeBruta };
+    return { product, emb, qtd: quantidadeBruta, origem: row.dataset.origemNome || "" };
   }).filter((item) => item.product && item.product !== "Nenhum registro encontrado.");
+  // Mais de uma origem no pedido (item dividido ou origem por item): cada linha diz de onde sai
+  if (new Set(rows.map((item) => item.origem)).size > 1) {
+    rows.forEach((item) => { item.product = `${item.product} (de ${item.origem || "Almoxarifado"})`; });
+  }
 
   // Sem isso o cupom herdava o @page A4 global e imprimia como folha cheia, não como recibo estreito
   const printStyle = document.createElement("style");
@@ -9261,9 +9510,16 @@ async function printOrder(card, options = {}) {
   return { method: "Navegador", printer: "Navegador" };
 }
 
+// Com mais de uma origem no pedido, o comprovante diz de onde saiu cada linha (o mesmo
+// produto pode aparecer duas vezes, uma por parte)
+function comOrigemQuandoMisturado(itens = []) {
+  if (new Set(itens.map((item) => item.origem || "")).size <= 1) return itens;
+  return itens.map((item) => ({ ...item, produto: `${item.produto} (de ${item.origem || "Almoxarifado"})` }));
+}
+
 // Extrai os itens de retirada a partir do card do pedido
 function orderWithdrawalItemsFromCard(card) {
-  return [...card.querySelectorAll("tbody tr:not(.hidden)")].map((row) => {
+  return comOrigemQuandoMisturado([...card.querySelectorAll("tbody tr:not(.hidden)")].map((row) => {
     const cells = row.querySelectorAll("td");
     const releasedCandidates = [
       row.querySelector(".liberada")?.value,
@@ -9275,17 +9531,19 @@ function orderWithdrawalItemsFromCard(card) {
       .find((value) => Number.isFinite(value) && value > 0) || 0;
     return {
       produto: row.querySelector(".release-product-name")?.textContent?.trim() || cells[0]?.textContent?.trim() || cells[1]?.textContent?.trim() || "",
-      liberada: releasedQty
+      liberada: releasedQty,
+      origem: row.dataset.origemNome || ""
     };
-  }).filter((item) => item.produto && item.produto !== "Nenhum registro encontrado." && Number(item.liberada || 0) > 0);
+  }).filter((item) => item.produto && item.produto !== "Nenhum registro encontrado." && Number(item.liberada || 0) > 0));
 }
 
 // Extrai os itens de retirada a partir do grupo do pedido
 function orderWithdrawalItemsFromGroup(group = []) {
-  return orderReleasedItems(group).map((item) => ({
+  return comOrigemQuandoMisturado(orderReleasedItems(group).map((item) => ({
     produto: item.produto,
-    liberada: item.quantidade_liberada || 0
-  })).filter((item) => item.produto);
+    liberada: item.quantidade_liberada || 0,
+    origem: item.local_origem || "Almoxarifado"
+  })).filter((item) => item.produto));
 }
 
 // Serializa os itens de retirada para um atributo HTML
