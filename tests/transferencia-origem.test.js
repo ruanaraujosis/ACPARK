@@ -110,3 +110,10 @@ test("transferência rápida usa as mesmas peças do Novo pedido (sem HTML copia
   assert.match(transf, /Number\.isInteger\(qtd\)/);
   assert.match(transf, /\(state\.products \|\| \[\]\)\.filter\(\(p\) => p\.ativo !== false\)/);
 });
+
+test("retirada e transferência avisam em diálogo quando a OMIE foi ignorada", () => {
+  assert.match(app, /async function avisarSeOmieIgnorada\(integracao\)/);
+  assert.match(app, /title: "Estoque não lançado na OMIE"/);
+  assert.match(app, /await avisarSeOmieIgnorada\(r\.integracao\);/);
+  assert.match(app, /await avisarSeOmieIgnorada\(resultado\?\.integracao\);/);
+});

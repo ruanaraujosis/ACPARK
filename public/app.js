@@ -15,7 +15,7 @@ import {
   stopOrderAlerts
 } from "./js/services/order-alerts.js";
 import { stopAllOrderAlerts, testOrderAlert } from "./js/services/audio-alert-manager.js";
-import { definirPreferenciasDoPdv, limparAlertasDoPdv, mostrarBotaoDeAtivacaoPdv, mostrarPedidoProntoParaRetirada } from "./js/services/pdv-order-alerts.js?v=20260924-estoque-pdv-filtros";
+import { definirPreferenciasDoPdv, limparAlertasDoPdv, mostrarBotaoDeAtivacaoPdv, mostrarPedidoProntoParaRetirada } from "./js/services/pdv-order-alerts.js?v=20260924-aviso-omie-ignorada";
 
 let damageDraftItems = [];
 let renderDamageDraftItems;
@@ -6806,6 +6806,7 @@ async function abrirTransferenciaRapida() {
         })
       });
       toast(`Transferência ${r.codigo_pedido} concluída.`);
+      await avisarSeOmieIgnorada(r.integracao);
       const negativos = r.saldos_negativos || [];
       if (negativos.length) {
         toast(`Saldo negativo em ${negativos[0].local || "origem"}: ${negativos[0].nome || negativos[0].sku} = ${negativos[0].saldo}${negativos.length > 1 ? ` (e mais ${negativos.length - 1})` : ""}.`, "error");
@@ -8881,6 +8882,25 @@ async function reloadReleasePanel(overlay, orderCode = "", context = {}) {
   }
 }
 
+// Retirada/transferência concluiu, mas algum item NÃO foi lançado na OMIE (ex.: PDV sem local
+// de estoque vinculado). Não pode passar calado: a sincronização do estoque central substitui o
+// saldo pelo da OMIE e desfaz a baixa (visto em 24/09/2026 com a COZINHA DECK). Diálogo, não
+// toast, para a pessoa ler e agir.
+async function avisarSeOmieIgnorada(integracao) {
+  if (!integracao || typeof integracao !== "object") return;
+  const ignorados = Number(integracao.ignorados || 0);
+  const registrados = Number(integracao.registrados || 0);
+  if (!ignorados && (registrados || !integracao.motivo)) return;
+  await confirmSystem({
+    title: "Estoque não lançado na OMIE",
+    message: `${integracao.motivo || "Parte dos itens não foi lançada na OMIE."}${ignorados ? ` (${ignorados} item(ns) ignorado(s))` : ""}`,
+    consequence: "No MyEstoque a movimentação foi feita, mas a próxima sincronização com a OMIE vai desfazer a baixa do estoque central. Vincule o PDV a um local de estoque em Integrações.",
+    confirmLabel: "Entendi",
+    cancelLabel: "Fechar",
+    danger: true
+  });
+}
+
 // Deixa a tabela de produtos do pedido com a altura de 5 produtos (cabeçalho + 5 linhas),
 // rolando por dentro. Medido, e não fixo no CSS: a linha cresce quando o nome do produto quebra.
 function ajustarAlturaDaTabelaDoPedido(overlay) {
@@ -10170,6 +10190,7 @@ function openOrderWithdrawalModal(card, { from, to, pdvId = "", onSuccess, onClo
         toast(`Estoque central negativo em ${negativos.length} produto${negativos.length === 1 ? "" : "s"} (ex: ${negativos[0].nome || negativos[0].sku} = ${negativos[0].saldo}).`, "error");
       }
       close();
+      await avisarSeOmieIgnorada(resultado?.integracao);
       if (typeof onSuccess === "function") {
         await onSuccess();
       } else {
