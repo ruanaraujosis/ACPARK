@@ -14,7 +14,8 @@ import {
   startOrderAlerts,
   stopOrderAlerts
 } from "./js/services/order-alerts.js";
-import { limparAlertasDoPdv, mostrarBotaoDeAtivacaoPdv, mostrarPedidoProntoParaRetirada } from "./js/services/pdv-order-alerts.js?v=20260924-pdv-origem-nome";
+import { stopAllOrderAlerts, testOrderAlert } from "./js/services/audio-alert-manager.js";
+import { definirPreferenciasDoPdv, limparAlertasDoPdv, mostrarBotaoDeAtivacaoPdv, mostrarPedidoProntoParaRetirada } from "./js/services/pdv-order-alerts.js?v=20260924-alerta-pdv-config";
 
 let damageDraftItems = [];
 let renderDamageDraftItems;
@@ -7911,6 +7912,86 @@ function formatarSolicitadoEmbalagem(unidadesLiberadas, fator) {
   return `${valor.toFixed(2).replace(".", ",")} EMB`;
 }
 
+// ===== Configuração do alerta dos PDVs (Configurações > Alertas, só o Almoxarifado) =====
+// Uma configuração só, para todos os PDVs: som, repetição, intervalo e volume do alerta
+// "Pedido pronto para retirada". Cada PDV lê ao conectar (/api/pdv/alert-preferences).
+const MODOS_DE_REPETICAO_DO_PDV = [
+  ["once", "Tocar uma vez"],
+  ["two_times", "Tocar 2 vezes"],
+  ["three_times", "Tocar 3 vezes"],
+  ["thirty_seconds", "Repetir por 30 segundos"],
+  ["until_viewed", "Repetir até visualizar ou silenciar"]
+];
+
+async function montarConfiguracaoAlertaDosPdvs() {
+  const alvo = document.querySelector("#pdv-alert-settings");
+  if (!alvo) return;
+  let dados;
+  try {
+    dados = await request("/api/admin/pdv-alert-preferences", { silentLoading: true });
+  } catch (error) {
+    alvo.innerHTML = `<div class="card"><p class="text-sm text-slate-500">Não foi possível carregar a configuração do alerta dos PDVs.</p></div>`;
+    return;
+  }
+  const p = dados.preferences || {};
+  alvo.innerHTML = `
+    <form id="pdv-alert-settings-form" class="card grid gap-4">
+      <div>
+        <p class="eyebrow">Alerta dos PDVs</p>
+        <h3 class="text-xl font-black">Pedido pronto para retirada</h3>
+        <p class="text-sm text-slate-500">Vale para todos os PDVs. Toca quando um pedido do PDV entra em Aguardando Retirada e para quando o PDV clica em Visualizar ou Silenciar.</p>
+      </div>
+      <label class="alert-toggle-row">
+        <input name="enabled" type="checkbox" ${p.enabled !== false ? "checked" : ""} />
+        <span>Ativar alerta sonoro nos PDVs</span>
+      </label>
+      <div class="alert-settings-grid">
+        <label class="grid gap-1 text-sm font-bold">Toque
+          <select name="soundId">${(dados.sounds || []).map((som) => `<option value="${esc(som.id)}" ${som.id === p.soundId ? "selected" : ""}>${esc(som.displayName)}</option>`).join("")}</select>
+        </label>
+        <label class="grid gap-1 text-sm font-bold">Repetição
+          <select name="repeatMode">${MODOS_DE_REPETICAO_DO_PDV.map(([valor, rotulo]) => `<option value="${valor}" ${valor === p.repeatMode ? "selected" : ""}>${rotulo}</option>`).join("")}</select>
+        </label>
+        <label class="grid gap-1 text-sm font-bold">Intervalo
+          <select name="repeatIntervalSeconds">${[3, 5, 10, 15, 30].map((s) => `<option value="${s}" ${Number(p.repeatIntervalSeconds) === s ? "selected" : ""}>${s} segundos</option>`).join("")}</select>
+        </label>
+      </div>
+      <label class="grid gap-2 text-sm font-bold">Volume
+        <div class="alert-volume-row">
+          <input name="volume" type="range" min="0" max="100" value="${Number(p.volume ?? 70)}" />
+          <strong id="pdv-alert-volume-label">${Number(p.volume ?? 70)}%</strong>
+        </div>
+      </label>
+      <p class="text-sm text-slate-500">"Repetir até visualizar" toca por no máximo 5 minutos (ou 30 toques), para o som nunca ficar ligado para sempre num PDV sem ninguém.</p>
+      <div class="order-card-actions">
+        <button class="btn secondary" id="test-pdv-alert-sound" type="button">Testar alerta</button>
+        <button class="btn secondary" id="stop-pdv-alert-sound" type="button">Parar teste</button>
+        <button class="btn" type="submit">Salvar alerta dos PDVs</button>
+      </div>
+    </form>`;
+  const form = alvo.querySelector("#pdv-alert-settings-form");
+  const lerFormulario = () => ({
+    enabled: form.enabled.checked,
+    soundId: form.soundId.value,
+    repeatMode: form.repeatMode.value,
+    repeatIntervalSeconds: Number(form.repeatIntervalSeconds.value),
+    volume: Number(form.volume.value),
+    visualNotifications: true
+  });
+  form.volume.addEventListener("input", () => { alvo.querySelector("#pdv-alert-volume-label").textContent = `${form.volume.value}%`; });
+  form.querySelector("#test-pdv-alert-sound").addEventListener("click", () => testOrderAlert(lerFormulario()));
+  form.querySelector("#stop-pdv-alert-sound").addEventListener("click", () => stopAllOrderAlerts());
+  form.addEventListener("submit", async (evento) => {
+    evento.preventDefault();
+    try {
+      await request("/api/admin/pdv-alert-preferences", { method: "PUT", body: JSON.stringify(lerFormulario()) });
+      toast("Alerta dos PDVs salvo. Vale a partir da próxima vez que cada PDV abrir o sistema.");
+    } catch (error) {
+      toast(error.message || "Não foi possível salvar o alerta dos PDVs.", "error");
+    }
+  });
+}
+
 // ===== Seletor de local de estoque (Almoxarifado / PDVs) =====
 //
 // O menu nativo do <select> não aceita estilo. Este componente desenha o botão e a lista por
@@ -10933,6 +11014,7 @@ async function viewConfigV2() {
 
         <section class="config-panel hidden" data-config-panel="alerts" role="tabpanel">
           ${renderOrderAlertSettings()}
+          <div id="pdv-alert-settings" class="mt-4"></div>
         </section>
 
         <section class="config-panel hidden" data-config-panel="security" role="tabpanel">
@@ -10976,6 +11058,7 @@ async function viewConfigV2() {
   document.querySelectorAll("[data-config-tab]").forEach((button) => button.addEventListener("click", () => setConfigTab(button.dataset.configTab)));
   document.querySelector("#open-integrations-center")?.addEventListener("click", () => route("integrations"));
   bindOrderAlertSettings();
+  montarConfiguracaoAlertaDosPdvs();
 
   const categoryPickers = {};
   const setupCategoryPicker = (id, initial = []) => {
@@ -12481,6 +12564,10 @@ let eventosDoPdv = null;
 function conectarEventosDoPdv() {
   if (state.user?.role !== "pdv" || eventosDoPdv || !window.EventSource) return;
   eventosDoPdv = new EventSource("/api/pdv/inventario/eventos");
+  // Configuração do alerta definida pelo Almoxarifado; sem ela vale o padrão (até visualizar)
+  request("/api/pdv/alert-preferences", { silentLoading: true })
+    .then((r) => definirPreferenciasDoPdv(r.preferences))
+    .catch((erro) => console.warn("Configuração do alerta do PDV indisponível; usando o padrão.", erro?.message));
   eventosDoPdv.addEventListener("INVENTARIO_ASSINATURA_SOLICITADA", async () => {
     toast("O Almoxarifado confirmou sua contagem. Assine para concluir o inventário.");
     // Só troca de tela se o PDV não estiver no meio de outra coisa

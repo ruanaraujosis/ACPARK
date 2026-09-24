@@ -5,14 +5,22 @@ import {
   stopAllOrderAlerts
 } from "./audio-alert-manager.js";
 
-// Padrão fixo do PDV: mesmo som repetitivo do Almoxarifado, sem tela de preferências
-const preferenciasDoPdv = {
+// Configuração do alerta dos PDVs: definida pelo Almoxarifado (Configurações > Alertas) e lida
+// do servidor ao conectar. Enquanto não chega, vale o padrão: repetir até o PDV visualizar ou
+// silenciar (o antigo "3 vezes" parava antes de o PDV perceber).
+let preferenciasDoPdv = {
   enabled: true,
   soundId: "repetitive-alert",
   volume: 70,
-  repeatMode: "three_times",
+  visualNotifications: true,
+  repeatMode: "until_viewed",
   repeatIntervalSeconds: 5
 };
+
+// Recebe a configuração vinda do servidor (/api/pdv/alert-preferences)
+export function definirPreferenciasDoPdv(preferencias) {
+  if (preferencias && typeof preferencias === "object") preferenciasDoPdv = { ...preferenciasDoPdv, ...preferencias };
+}
 
 // Pedidos já avisados nesta aba (o mesmo pedido não repete o cartão enquanto ele está na tela)
 const cartoesAtivos = new Set();

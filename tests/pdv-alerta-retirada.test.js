@@ -111,3 +111,21 @@ test("comportamento: PDV Administrativo e PDV comum conectados, cada um recebe s
   administrativo.fechar();
   comum.fechar();
 });
+
+test("o alerta dos PDVs tem configuração do Almoxarifado e é persistente por padrão", () => {
+  const rotas = fs.readFileSync(new URL("../server/modules/order-alerts/order-alerts.routes.js", import.meta.url), "utf8");
+  // Uma configuração para todos os PDVs; só o Almoxarifado edita, o PDV só lê
+  assert.match(rotas, /const CHAVE_ALERTA_DOS_PDVS = "pdvs:todos";/);
+  assert.match(rotas, /if \(doAdmin && user\.role !== "admin"\) return send\(res, 403/);
+  assert.match(rotas, /if \(!doAdmin && user\.role !== "pdv"\) return send\(res, 403/);
+  assert.match(rotas, /if \(method === "PUT" && doAdmin\)/);
+  // Padrão persistente: o antigo "3 vezes" parava no terceiro toque
+  assert.match(rotas, /const padraoDoPdv = \{ \.\.\.defaultPreferences, repeatMode: "until_viewed" \};/);
+  assert.match(alertaPdv, /repeatMode: "until_viewed",/);
+  assert.doesNotMatch(alertaPdv, /repeatMode: "three_times"/);
+  assert.match(alertaPdv, /export function definirPreferenciasDoPdv\(preferencias\)/);
+  // O PDV carrega ao conectar; a tela de Configurações > Alertas tem a seção dos PDVs
+  assert.match(app, /request\("\/api\/pdv\/alert-preferences", \{ silentLoading: true \}\)\s*\.then\(\(r\) => definirPreferenciasDoPdv\(r\.preferences\)\)/);
+  assert.match(app, /<div id="pdv-alert-settings" class="mt-4"><\/div>/);
+  assert.match(app, /async function montarConfiguracaoAlertaDosPdvs\(\)/);
+});
