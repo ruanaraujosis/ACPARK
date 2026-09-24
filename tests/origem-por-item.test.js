@@ -94,7 +94,8 @@ test("produto dividido conta uma vez; PDV vê somado; cupom e comprovante dizem 
   assert.match(app, /return new Set\(group\.map\(\(item\) => item\.sku_produto \|\| item\.sku \|\| item\.id\)\)\.size;/);
   assert.doesNotMatch(app, /const totalItems = group\.length;/);
   assert.match(app, /const itensSomados = somarPartesDoMesmoProduto\(visibleItems\);/);
-  assert.match(app, /if \(new Set\(rows\.map\(\(item\) => item\.origem\)\)\.size > 1\)/);
+  // Cupom impresso não mostra a origem (pedido do usuário, 24/09/2026)
+  assert.doesNotMatch(app, /if \(new Set\(rows\.map\(\(item\) => item\.origem\)\)\.size > 1\)/);
   assert.match(app, /function comOrigemQuandoMisturado\(itens = \[\]\)/);
 });
 

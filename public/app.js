@@ -14,7 +14,7 @@ import {
   startOrderAlerts,
   stopOrderAlerts
 } from "./js/services/order-alerts.js";
-import { limparAlertasDoPdv, mostrarBotaoDeAtivacaoPdv, mostrarPedidoProntoParaRetirada } from "./js/services/pdv-order-alerts.js?v=20260924-sem-selo-de-origem";
+import { limparAlertasDoPdv, mostrarBotaoDeAtivacaoPdv, mostrarPedidoProntoParaRetirada } from "./js/services/pdv-order-alerts.js?v=20260924-cupom-sem-origem";
 
 let damageDraftItems = [];
 let renderDamageDraftItems;
@@ -9713,10 +9713,6 @@ async function printOrder(card, options = {}) {
     const emb = fatorValido ? formatarEmbalagensImpressaoPedido(quantidadeBruta, fator) : "—";
     return { product, emb, qtd: quantidadeBruta, origem: row.dataset.origemNome || "" };
   }).filter((item) => item.product && item.product !== "Nenhum registro encontrado.");
-  // Mais de uma origem no pedido (item dividido ou origem por item): cada linha diz de onde sai
-  if (new Set(rows.map((item) => item.origem)).size > 1) {
-    rows.forEach((item) => { item.product = `${item.product} (de ${item.origem || "Almoxarifado"})`; });
-  }
 
   // Sem isso o cupom herdava o @page A4 global e imprimia como folha cheia, não como recibo estreito
   const printStyle = document.createElement("style");
