@@ -8,6 +8,7 @@ import {
 } from "../../services/integrations/core/stock-launches.service.js";
 import { converterQuantidadeDoPedido, obterFatoresEmLote } from "../../services/integrations/core/fator-conversao.repository.js";
 import { publishOrderAlert, publishOrderStatusChange } from "../../services/order-alerts/order-alerts.events.js";
+import { publicarEventoDoPdv } from "../../services/inventarios/inventario.events.js";
 import { normalizeOrderStatus, orderStatuses } from "./pedidos.service.js";
 
 // Janela em que um novo envio do mesmo PDV entra no pedido anterior em vez de abrir outro card.
@@ -131,6 +132,26 @@ function statusFromRequest(value) {
 }
 
 // Roteador do módulo de pedidos (solicitação, liberação e histórico)
+// Avisa SÓ o PDV dono do pedido (canal por PDV) que ele entrou em "Aguardando Retirada".
+// Nunca usa o canal do Almoxarifado: aquele transmite tudo a todos e entregaria pedidos de um
+// ponto aos outros. Só é chamado na transição de ENTRADA no status, nunca em recarga de tela
+// nem na migração de legado (que muda status direto no SQL, sem passar por aqui).
+async function avisarPdvPedidoAguardandoRetirada(codigoPedido) {
+  if (!codigoPedido) return;
+  try {
+    const linhas = await query(
+      "SELECT DISTINCT pdv_id FROM pedidos WHERE codigo_pedido = $1 AND pdv_id IS NOT NULL",
+      [codigoPedido]
+    );
+    for (const { pdv_id: pdvId } of linhas) {
+      publicarEventoDoPdv("PEDIDO_AGUARDANDO_RETIRADA", pdvId, { codigoPedido });
+    }
+  } catch (error) {
+    // O alerta é um extra em tempo real; falhar aqui nunca pode derrubar a mudança de status
+    console.error("Falha ao avisar o PDV do pedido aguardando retirada:", error.message);
+  }
+}
+
 export async function handlePedidosRoutes(req, res, context) {
   const { method, requireUser, url, user } = context;
 
@@ -689,6 +710,9 @@ export async function handlePedidosRoutes(req, res, context) {
       usuario: user.name || "Almoxarifado",
       origem: "kanban"
     });
+    if (nextStatus === "Aguardando Retirada" && expectedStatus !== "Aguardando Retirada") {
+      await avisarPdvPedidoAguardandoRetirada(orderCode);
+    }
     send(res, 200, { ok: true, ...result });
     return true;
   }
@@ -1500,6 +1524,9 @@ export async function handlePedidosRoutes(req, res, context) {
       usuario: user.name || "Almoxarifado",
       origem: "painel"
     });
+    if (nextStatus === "Aguardando Retirada" && currentStatusFilter !== "Aguardando Retirada") {
+      await avisarPdvPedidoAguardandoRetirada(orderCode || items[0]?.codigo_pedido);
+    }
     send(res, 200, { ok: true, excedentes });
     return true;
   }

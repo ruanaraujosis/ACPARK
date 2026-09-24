@@ -14,6 +14,7 @@ import {
   startOrderAlerts,
   stopOrderAlerts
 } from "./js/services/order-alerts.js";
+import { mostrarBotaoDeAtivacaoPdv, mostrarPedidoProntoParaRetirada } from "./js/services/pdv-order-alerts.js";
 
 let damageDraftItems = [];
 let renderDamageDraftItems;
@@ -436,6 +437,8 @@ async function route(view) {
       stopOrderAlerts();
       // Canal so do PDV: o de alertas de pedido e do Almoxarifado e transmite tudo a todos
       conectarEventosDoPdv();
+      // O PDV também recebe alerta sonoro; o navegador só libera o som depois de um clique
+      mostrarBotaoDeAtivacaoPdv();
     }
   } catch (error) {
     console.error(`Erro ao carregar a tela ${view}:`, error);
@@ -11687,6 +11690,13 @@ function conectarEventosDoPdv() {
     // Só troca de tela se o PDV não estiver no meio de outra coisa
     if (["inventario", "mine", "my-stock"].includes(state.currentView)) await route("inventario");
     else marcarAvisoDeAssinatura();
+  });
+  // Pedido do PRÓPRIO PDV entrou em Aguardando Retirada (o servidor só entrega ao dono)
+  eventosDoPdv.addEventListener("PEDIDO_AGUARDANDO_RETIRADA", (evento) => {
+    let dados = {};
+    try { dados = JSON.parse(evento.data); } catch {}
+    mostrarPedidoProntoParaRetirada(dados, { abrirMeusPedidos: () => route("mine") });
+    if (state.currentView === "mine") route("mine");
   });
   // Revisão do Almoxarifado: o pedido de assinatura some, para o PDV não assinar algo que
   // voltou para conferência (o servidor também recusaria a assinatura)
