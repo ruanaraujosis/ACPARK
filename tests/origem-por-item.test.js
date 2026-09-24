@@ -149,3 +149,9 @@ test("tabela de produtos do pedido mostra 5 produtos por rolagem", () => {
   assert.match(css, /\.order-panel-content:has\(> \.order-panel-table\) \{\s*overflow-y: auto;/);
   assert.match(css, /\.order-panel-content > \.table-wrap\.order-panel-table\.tem-altura-fixa \{\s*flex: 0 0 auto;/);
 });
+
+test("o diálogo de divisão não lista o saldo por local (fica só na escolha da origem de cada parte)", () => {
+  const dialogo = app.slice(app.indexOf("function abrirDivisaoDeItem"), app.indexOf("function abrirDivisaoDeItem") + 3000);
+  assert.doesNotMatch(dialogo, /Saldo por local:/);
+  assert.match(dialogo, /O PDV pediu <strong>\$\{pedida\}<\/strong>\.<\/p>/);
+});

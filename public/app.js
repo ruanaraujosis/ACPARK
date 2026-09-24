@@ -14,7 +14,7 @@ import {
   startOrderAlerts,
   stopOrderAlerts
 } from "./js/services/order-alerts.js";
-import { limparAlertasDoPdv, mostrarBotaoDeAtivacaoPdv, mostrarPedidoProntoParaRetirada } from "./js/services/pdv-order-alerts.js?v=20260924-tabela-5-produtos";
+import { limparAlertasDoPdv, mostrarBotaoDeAtivacaoPdv, mostrarPedidoProntoParaRetirada } from "./js/services/pdv-order-alerts.js?v=20260924-divisao-sem-saldo-linha";
 
 let damageDraftItems = [];
 let renderDamageDraftItems;
@@ -8477,8 +8477,7 @@ function abrirDivisaoDeItem(item, dados, destino, aoConcluir) {
         <button class="icon-action fechar-divisao" type="button" aria-label="Fechar">&times;</button>
       </div>
       <div class="photo-viewer-body relatorio-estoque-body">
-        <p class="text-sm text-slate-600">O PDV pediu <strong>${pedida}</strong>. Saldo por local:
-          ${locais.map((local) => `${esc(local.nome)} <strong>${saldoTexto(local.id)}</strong>`).join(" · ")}</p>
+        <p class="text-sm text-slate-600">O PDV pediu <strong>${pedida}</strong>.</p>
         <div class="divisao-partes"></div>
         <button class="btn secondary divisao-adicionar" type="button">+ Parte</button>
         <p class="divisao-soma text-sm font-bold"></p>
