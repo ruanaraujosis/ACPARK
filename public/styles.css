@@ -7742,3 +7742,15 @@ html .inventario-so-pendentes input[type="checkbox"] {
     display: none;
   }
 }
+
+/* Busca e categoria da lista de Estoque PDVs (mesmo visual das telas de inventário) */
+.stock-filtros {
+  grid-template-columns: minmax(12rem, 1fr) minmax(10rem, 18rem);
+  margin-top: 0.6rem;
+}
+
+@media (max-width: 720px) {
+  .stock-filtros {
+    grid-template-columns: 1fr;
+  }
+}

@@ -170,3 +170,12 @@ test("cartão do PDV mostra só o nome do local na etiqueta, sem 'de'", () => {
   assert.match(app, /is-origem">\$\{esc\(o\.local_origem \|\| "Almoxarifado"\)\}<\/span>/);
   assert.doesNotMatch(app, /is-origem">de /);
 });
+
+test("Estoque PDVs tem busca e filtro de categoria que só escondem linhas", () => {
+  const tela = app.slice(app.indexOf("async function viewStock"), app.indexOf("async function printStockPdv"));
+  assert.match(tela, /id="stock-busca"/);
+  assert.match(tela, /id="stock-categoria"/);
+  assert.match(tela, /linha\.classList\.toggle\("hidden", !casaBusca \|\| !casaCategoria\)/);
+  // O salvar lê todas as linhas, inclusive as escondidas pelo filtro
+  assert.match(tela, /document\.querySelectorAll\("#stock-table tbody tr"\)/);
+});

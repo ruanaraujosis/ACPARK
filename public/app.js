@@ -15,7 +15,7 @@ import {
   stopOrderAlerts
 } from "./js/services/order-alerts.js";
 import { stopAllOrderAlerts, testOrderAlert } from "./js/services/audio-alert-manager.js";
-import { definirPreferenciasDoPdv, limparAlertasDoPdv, mostrarBotaoDeAtivacaoPdv, mostrarPedidoProntoParaRetirada } from "./js/services/pdv-order-alerts.js?v=20260924-linhas-alinhadas";
+import { definirPreferenciasDoPdv, limparAlertasDoPdv, mostrarBotaoDeAtivacaoPdv, mostrarPedidoProntoParaRetirada } from "./js/services/pdv-order-alerts.js?v=20260924-estoque-pdv-filtros";
 
 let damageDraftItems = [];
 let renderDamageDraftItems;
@@ -6502,6 +6502,10 @@ async function viewStock() {
         <button class="config-tab" type="button" data-stock-view="categories">Categorias permitidas</button>
       </div>
       <div class="stock-category-note"></div>
+      <div class="inventario-filtros stock-filtros" id="stock-filtros">
+        <input id="stock-busca" type="search" placeholder="Buscar por nome ou SKU" aria-label="Buscar produto" />
+        <select id="stock-categoria" aria-label="Filtrar por categoria"><option value="">Todas as categorias</option></select>
+      </div>
       <div id="stock-table"></div>
     </section>`);
 
@@ -6516,6 +6520,8 @@ async function viewStock() {
       : currentCategories
         ? `Mostrando somente produtos com quantidade no estoque do PDV. Categorias permitidas: <strong>${esc(currentCategories)}</strong>`
         : "Este PDV ainda não possui categorias permitidas.";
+    // Busca e categoria só fazem sentido na lista de produtos
+    document.querySelector("#stock-filtros").classList.toggle("hidden", stockView === "categories");
     if (stockView === "categories") {
       document.querySelector("#stock-table").innerHTML = payload.pdv?.categorias?.length
         ? `<div class="category-picker-list">${payload.pdv.categorias.map((category) => `<span class="category-chip selected-chip">${esc(category)}</span>`).join("")}</div>`
@@ -6523,8 +6529,14 @@ async function viewStock() {
       return;
     }
     const stocked = stock.filter((s) => Number(s.quantidade) > 0);
+    // Opções de categoria: só as dos produtos que estão na lista; mantém a escolhida se ainda existir
+    const seletorCategoria = document.querySelector("#stock-categoria");
+    const escolhida = seletorCategoria.value;
+    const categorias = [...new Set(stocked.flatMap(categoriasDoProduto))].sort((a, b) => a.localeCompare(b, "pt-BR"));
+    seletorCategoria.innerHTML = `<option value="">Todas as categorias</option>${categorias.map((c) => `<option value="${esc(c.toLowerCase())}">${esc(c)}</option>`).join("")}`;
+    seletorCategoria.value = categorias.some((c) => c.toLowerCase() === escolhida) ? escolhida : "";
     document.querySelector("#stock-table").innerHTML = table(["Produto", "Categoria", "Estoque central", "Atual manual", "Saldo OMIE", "Reservado", "Disponível", "Sincronização", "Min", "Max"], stocked.map((s) => `
-      <tr data-sku="${esc(s.sku)}">
+      <tr data-sku="${esc(s.sku)}" class="stock-linha" data-search="${esc(buscaDoProduto(s))}" data-categories="${esc(categoriasDoProduto(s).map((c) => c.toLowerCase()).join("|"))}">
         <td>${esc(s.nome)}</td>
         <td>${esc(s.categoria || "-")}</td>
         <td class="release-number-cell">${centralStockValue(s)}</td>
@@ -6537,16 +6549,30 @@ async function viewStock() {
         <td><input class="maximo" type="number" value="${s.estoque_maximo}"></td>
       </tr>`));
   };
+  // Filtro só esconde a linha (classe hidden): o salvar continua lendo a tabela inteira
+  const aplicarFiltroDoEstoque = () => {
+    const termo = String(document.querySelector("#stock-busca")?.value || "").trim().toLowerCase();
+    const categoria = String(document.querySelector("#stock-categoria")?.value || "");
+    document.querySelectorAll("#stock-table .stock-linha").forEach((linha) => {
+      const casaBusca = !termo || linha.dataset.search.includes(termo);
+      const casaCategoria = !categoria || String(linha.dataset.categories || "").split("|").includes(categoria);
+      linha.classList.toggle("hidden", !casaBusca || !casaCategoria);
+    });
+  };
+  document.querySelector("#stock-busca").addEventListener("input", aplicarFiltroDoEstoque);
+  document.querySelector("#stock-categoria").addEventListener("change", aplicarFiltroDoEstoque);
   render(data);
   document.querySelectorAll("[data-stock-view]").forEach((button) => button.addEventListener("click", () => {
     stockView = button.dataset.stockView;
     document.querySelectorAll("[data-stock-view]").forEach((tab) => tab.classList.toggle("is-active", tab.dataset.stockView === stockView));
     document.querySelector("#save-stock").classList.toggle("hidden", stockView !== "stock");
     render(currentPayload);
+    aplicarFiltroDoEstoque();
   }));
   document.querySelector("#stock-pdv").addEventListener("change", async (event) => {
     const fresh = await request(`/api/admin/stock?pdvId=${event.target.value}`);
     render(fresh);
+    aplicarFiltroDoEstoque();
   });
   document.querySelector("#save-stock").addEventListener("click", async () => {
     const items = [...document.querySelectorAll("#stock-table tbody tr")].map((tr) => ({
