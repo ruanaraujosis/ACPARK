@@ -14,7 +14,7 @@ import {
   startOrderAlerts,
   stopOrderAlerts
 } from "./js/services/order-alerts.js";
-import { limparAlertasDoPdv, mostrarBotaoDeAtivacaoPdv, mostrarPedidoProntoParaRetirada } from "./js/services/pdv-order-alerts.js?v=20260924-seletor-compacto2";
+import { limparAlertasDoPdv, mostrarBotaoDeAtivacaoPdv, mostrarPedidoProntoParaRetirada } from "./js/services/pdv-order-alerts.js?v=20260924-tabela-5-produtos";
 
 let damageDraftItems = [];
 let renderDamageDraftItems;
@@ -8774,10 +8774,46 @@ async function reloadReleasePanel(overlay, orderCode = "", context = {}) {
   }
 }
 
+// Deixa a tabela de produtos do pedido com a altura de 5 produtos (cabeçalho + 5 linhas),
+// rolando por dentro. Medido, e não fixo no CSS: a linha cresce quando o nome do produto quebra.
+// Com 5 produtos ou menos, a tabela fica do tamanho do conteúdo.
+function ajustarAlturaDaTabelaDoPedido(overlay) {
+  const tabela = overlay?.querySelector(".order-panel .order-panel-table");
+  if (!tabela) return;
+  const linhas = [...tabela.querySelectorAll("tbody tr")].filter((linha) => !linha.classList.contains("hidden"));
+  if (linhas.length <= 5) {
+    tabela.style.height = "";
+    tabela.classList.remove("tem-altura-fixa");
+    return;
+  }
+  const cabecalho = tabela.querySelector("thead")?.getBoundingClientRect().height || 0;
+  const cinco = linhas.slice(0, 5).reduce((soma, linha) => soma + linha.getBoundingClientRect().height, 0);
+  // + a barra de rolagem horizontal, quando a tabela for mais larga que o painel (celular)
+  const barra = tabela.offsetHeight - tabela.clientHeight;
+  tabela.style.height = `${Math.ceil(cabecalho + cinco + barra + 2)}px`;
+  tabela.classList.add("tem-altura-fixa");
+}
+
+// Uma medição por quadro ao redimensionar (girar o celular, mudar a janela)
+let ajusteDeAlturaPendente = false;
+window.addEventListener("resize", () => {
+  if (ajusteDeAlturaPendente) return;
+  ajusteDeAlturaPendente = true;
+  requestAnimationFrame(() => {
+    ajusteDeAlturaPendente = false;
+    const overlay = document.querySelector(".order-panel")?.parentElement;
+    if (overlay) {
+      overlay.querySelector(".order-panel-table")?.style.removeProperty("height");
+      ajustarAlturaDaTabelaDoPedido(overlay);
+    }
+  });
+});
+
 // Renderiza o painel e devolve o foco para onde o trabalho continua
 function renderReleasePanel(overlay, group = [], context = {}) {
   overlay.innerHTML = releasePanelHtml(group);
   bindReleasePanel(overlay, group, context);
+  ajustarAlturaDaTabelaDoPedido(overlay);
   const firstInput = overlay.querySelector(".liberada");
   if (firstInput) {
     firstInput.focus();

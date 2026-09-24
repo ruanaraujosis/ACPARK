@@ -4118,6 +4118,18 @@ body.has-order-panel {
   overscroll-behavior: contain;
 }
 
+/* Tabela de produtos do pedido: altura de 5 produtos (medida pelo JS em ajustarAlturaDaTabelaDoPedido,
+   porque a linha muda de altura com o nome do produto), rolando por dentro. Sem ela a tabela
+   ficava com o que sobrava do painel -- às vezes só o cabeçalho. O corpo do painel rola se a
+   tela for baixa demais para cabeçalho + 5 produtos. */
+.order-panel-content:has(> .order-panel-table) {
+  overflow-y: auto;
+}
+
+.order-panel-content > .table-wrap.order-panel-table.tem-altura-fixa {
+  flex: 0 0 auto;
+}
+
 /* A tabela do inventário pode ter milhares de linhas (o Almoxarifado sozinho tem 4.500+
    produtos): mesmo com alertas e filtros acima disputando espaço, ela nunca pode encolher a
    ponto de sumir -- uma altura mínima garante que sempre sobra algo para rolar. */

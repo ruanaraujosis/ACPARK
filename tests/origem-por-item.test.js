@@ -138,3 +138,14 @@ test("na linha do produto o seletor mostra só o selo; nome e saldo no título e
   const css = fs.readFileSync(new URL("../public/styles.css", import.meta.url), "utf8");
   assert.match(css, /\.local-picker\.is-compacto \{\s*justify-content: center;\s*width: 38px;/);
 });
+
+test("tabela de produtos do pedido mostra 5 produtos por rolagem", () => {
+  // Sem altura própria a tabela ficava com o que sobrava do painel (às vezes só o cabeçalho)
+  assert.match(app, /function ajustarAlturaDaTabelaDoPedido\(overlay\)/);
+  assert.match(app, /const cinco = linhas\.slice\(0, 5\)\.reduce/);
+  assert.match(app, /if \(linhas\.length <= 5\) \{/);
+  assert.match(app, /bindReleasePanel\(overlay, group, context\);\s*ajustarAlturaDaTabelaDoPedido\(overlay\);/);
+  const css = fs.readFileSync(new URL("../public/styles.css", import.meta.url), "utf8");
+  assert.match(css, /\.order-panel-content:has\(> \.order-panel-table\) \{\s*overflow-y: auto;/);
+  assert.match(css, /\.order-panel-content > \.table-wrap\.order-panel-table\.tem-altura-fixa \{\s*flex: 0 0 auto;/);
+});
