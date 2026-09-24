@@ -155,3 +155,8 @@ test("o diálogo de divisão não lista o saldo por local (fica só na escolha d
   assert.doesNotMatch(dialogo, /Saldo por local:/);
   assert.match(dialogo, /O PDV pediu <strong>\$\{pedida\}<\/strong>\.<\/p>/);
 });
+
+test("a coluna Origem não repete o local num selo 'de ...' (o seletor já mostra as iniciais)", () => {
+  const celula = app.slice(app.indexOf("function celulaOrigemDoItem"), app.indexOf("function releasePanelItemsTable"));
+  assert.doesNotMatch(celula, /order-source-badge is-origem/);
+});

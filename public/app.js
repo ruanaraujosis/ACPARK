@@ -14,7 +14,7 @@ import {
   startOrderAlerts,
   stopOrderAlerts
 } from "./js/services/order-alerts.js";
-import { limparAlertasDoPdv, mostrarBotaoDeAtivacaoPdv, mostrarPedidoProntoParaRetirada } from "./js/services/pdv-order-alerts.js?v=20260924-tabela-altura-sempre";
+import { limparAlertasDoPdv, mostrarBotaoDeAtivacaoPdv, mostrarPedidoProntoParaRetirada } from "./js/services/pdv-order-alerts.js?v=20260924-sem-selo-de-origem";
 
 let damageDraftItems = [];
 let renderDamageDraftItems;
@@ -8137,7 +8137,7 @@ function ordenarPartesJuntas(group = []) {
   return [...group].sort((a, b) => (ordem.get(a.sku_produto || a.sku || "") - ordem.get(b.sku_produto || b.sku || "")) || (a.id - b.id));
 }
 
-// Célula "Origem": seletor por item (antes de finalizar), selo quando difere do padrão e as
+// Célula "Origem": seletor por item (antes de finalizar; o local aparece no selo com as iniciais) e as
 // ações de dividir/desfazer (só Em andamento, a mesma janela das rotas)
 function celulaOrigemDoItem(item, contexto, editable) {
   const sku = item.sku_produto || item.sku || "";
@@ -8151,12 +8151,11 @@ function celulaOrigemDoItem(item, contexto, editable) {
         ${atual ? `<option value="${esc(atual)}" selected>${esc(nome)}</option>` : ""}
       </select>`
     : `<span>${esc(nome)}</span>`;
-  const selo = atual !== contexto.padrao ? `<span class="order-source-badge is-origem">de ${esc(nome)}</span>` : "";
   const acao = !editable ? ""
     : partes.length > 1
       ? (partes[0] === item.id ? `<button class="link-action juntar-item" type="button" data-sku="${esc(sku)}">Desfazer divisão</button>` : "")
       : `<button class="link-action dividir-item" type="button" data-id="${esc(item.id)}">Dividir</button>`;
-  return `<td class="order-panel-origem-cell">${seletor}${selo}${acao}</td>`;
+  return `<td class="order-panel-origem-cell">${seletor}${acao}</td>`;
 }
 
 function releasePanelItemsTable(group = [], editable = false) {
