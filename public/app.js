@@ -14,7 +14,7 @@ import {
   startOrderAlerts,
   stopOrderAlerts
 } from "./js/services/order-alerts.js";
-import { limparAlertasDoPdv, mostrarBotaoDeAtivacaoPdv, mostrarPedidoProntoParaRetirada } from "./js/services/pdv-order-alerts.js?v=20260924-divisao-sem-saldo-linha";
+import { limparAlertasDoPdv, mostrarBotaoDeAtivacaoPdv, mostrarPedidoProntoParaRetirada } from "./js/services/pdv-order-alerts.js?v=20260924-tabela-altura-sempre";
 
 let damageDraftItems = [];
 let renderDamageDraftItems;
@@ -8775,16 +8775,13 @@ async function reloadReleasePanel(overlay, orderCode = "", context = {}) {
 
 // Deixa a tabela de produtos do pedido com a altura de 5 produtos (cabeçalho + 5 linhas),
 // rolando por dentro. Medido, e não fixo no CSS: a linha cresce quando o nome do produto quebra.
-// Com 5 produtos ou menos, a tabela fica do tamanho do conteúdo.
 function ajustarAlturaDaTabelaDoPedido(overlay) {
   const tabela = overlay?.querySelector(".order-panel .order-panel-table");
   if (!tabela) return;
   const linhas = [...tabela.querySelectorAll("tbody tr")].filter((linha) => !linha.classList.contains("hidden"));
-  if (linhas.length <= 5) {
-    tabela.style.height = "";
-    tabela.classList.remove("tem-altura-fixa");
-    return;
-  }
+  // Com menos de 5 produtos a altura é a de todos eles: deixar automático fazia o painel
+  // espremer a tabela até sobrar só o cabeçalho (visto com um pedido de 3 produtos)
+  if (!linhas.length) return;
   const cabecalho = tabela.querySelector("thead")?.getBoundingClientRect().height || 0;
   const cinco = linhas.slice(0, 5).reduce((soma, linha) => soma + linha.getBoundingClientRect().height, 0);
   // + a barra de rolagem horizontal, quando a tabela for mais larga que o painel (celular)
