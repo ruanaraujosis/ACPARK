@@ -35,6 +35,16 @@ async function localDoPdv(client, integrationId, pdvId) {
   return resultado.rows[0]?.omie_location_id || null;
 }
 
+// Local externo de onde a mercadoria SAI: o do almoxarifado (origem NULL) ou o do PDV de
+// origem numa transferencia entre PDVs. Sem vinculo devolve null -- quem chama ignora e avisa,
+// nunca adivinha, porque um lancamento no local errado move estoque de verdade.
+async function localDeOrigem(client, integracao, origemPdvId) {
+  if (origemPdvId === null || origemPdvId === undefined) {
+    return String(integracao.configuracao?.local_almoxarifado || "").trim() || null;
+  }
+  return localDoPdv(client, integracao.id, origemPdvId);
+}
+
 // Registra os lancamentos de transferencia de uma retirada confirmada e enfileira o envio.
 //
 // Devolve um resumo para a rota informar a tela, mas nunca lanca: se qualquer coisa der
@@ -50,16 +60,20 @@ export async function registrarTransferenciasDaRetirada(client, { codigoPedido, 
     }
 
     const { integracao, capacidade } = alvo;
-    const localAlmoxarifado = String(integracao.configuracao?.local_almoxarifado || "").trim();
-    if (!localAlmoxarifado) {
-      resumo.motivo = "Local do almoxarifado nao configurado; nada foi enfileirado.";
-      return resumo;
-    }
 
     for (const item of itens) {
       const quantidade = Number(item.quantidade) || 0;
       if (quantidade <= 0) {
         resumo.ignorados += 1;
+        continue;
+      }
+
+      const localOrigem = await localDeOrigem(client, integracao, item.origemPdvId);
+      if (!localOrigem) {
+        resumo.ignorados += 1;
+        resumo.motivo = item.origemPdvId
+          ? "Ha PDV de origem sem local de estoque vinculado; a transferencia dele nao foi enfileirada."
+          : "Local do almoxarifado nao configurado; nada foi enfileirado.";
         continue;
       }
 
@@ -79,7 +93,7 @@ export async function registrarTransferenciasDaRetirada(client, { codigoPedido, 
         sku: item.sku,
         pdvId: item.pdvId,
         quantidade,
-        localOrigem: localAlmoxarifado,
+        localOrigem,
         localDestino,
         evento: lancamentos.EVENTOS.RETIRADA,
         modo: modoDeEscrita(integracao.configuracao)
@@ -151,10 +165,11 @@ export async function registrarCompensacaoDaReabertura(client, { codigoPedido, i
       }
 
       const localDestino = await localDoPdv(client, integracao.id, item.pdvId);
-      const localAlmoxarifado = String(integracao.configuracao?.local_almoxarifado || "").trim();
-      if (!localDestino || !localAlmoxarifado) continue;
+      // Volta para o MESMO local de onde saiu: almoxarifado ou o PDV de origem
+      const localRetorno = await localDeOrigem(client, integracao, item.origemPdvId);
+      if (!localDestino || !localRetorno) continue;
 
-      // Locais invertidos: volta do PDV para o almoxarifado
+      // Locais invertidos: volta do PDV para o local de origem
       await lancamentos.registrarLancamento(client, {
         integrationId: integracao.id,
         codigoPedido,
@@ -163,7 +178,7 @@ export async function registrarCompensacaoDaReabertura(client, { codigoPedido, i
         pdvId: item.pdvId,
         quantidade,
         localOrigem: localDestino,
-        localDestino: localAlmoxarifado,
+        localDestino: localRetorno,
         evento: lancamentos.EVENTOS.COMPENSACAO,
         modo: modoDeEscrita(integracao.configuracao)
       });
@@ -222,16 +237,18 @@ export async function registrarConsumoAdministrativo(client, { codigoPedido, ite
     }
 
     const { integracao, capacidade } = alvo;
-    const localAlmoxarifado = String(integracao.configuracao?.local_almoxarifado || "").trim();
-    if (!localAlmoxarifado) {
-      resumo.motivo = "Local do almoxarifado nao configurado; nada foi enfileirado.";
-      return resumo;
-    }
 
     for (const item of itens) {
       const quantidade = Number(item.quantidade) || 0;
       if (quantidade <= 0) {
         resumo.ignorados += 1;
+        continue;
+      }
+      // Consumo sai do local de onde a mercadoria saiu (almoxarifado ou PDV de origem)
+      const localOrigem = await localDeOrigem(client, integracao, item.origemPdvId);
+      if (!localOrigem) {
+        resumo.ignorados += 1;
+        resumo.motivo = "Local de origem sem vinculo externo; a saida dele nao foi enfileirada.";
         continue;
       }
       await lancamentos.registrarLancamento(client, {
@@ -241,7 +258,7 @@ export async function registrarConsumoAdministrativo(client, { codigoPedido, ite
         sku: item.sku,
         pdvId: item.pdvId,
         quantidade,
-        localOrigem: localAlmoxarifado,
+        localOrigem,
         // Sem destino de proposito: consumo nao e mudanca de lugar.
         localDestino: null,
         evento: lancamentos.EVENTOS.CONSUMO_ADMINISTRATIVO,

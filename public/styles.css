@@ -2531,6 +2531,8 @@ body.sheet-manager-open {
   padding-top: 0.2rem;
 }
 
+/* Mesmo carrinho na Transferência rápida (#transfer-cart) */
+.order-cart-list #transfer-cart,
 .order-cart-list #cart {
   min-height: 64px;
   overflow-x: auto;
@@ -4192,6 +4194,80 @@ body.has-order-panel {
   text-transform: uppercase;
   opacity: 0.75;
 }
+
+/* Local de origem (editável) e de destino do pedido, lado a lado */
+.order-panel-locais {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: 0.6rem;
+  flex-shrink: 0;
+}
+
+.order-panel-local {
+  display: grid;
+  gap: 0.25rem;
+  margin: 0;
+  color: var(--ac-teal-dark);
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.order-panel-local strong {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 0.85rem;
+  border: 1px solid rgba(0, 123, 135, 0.16);
+  border-radius: 16px;
+  background: rgba(16, 182, 199, 0.05);
+  color: var(--ac-ink);
+  font-size: 0.95rem;
+  text-transform: none;
+}
+
+.order-panel-local select {
+  text-transform: none;
+  font-size: 0.95rem;
+}
+
+/* Transferência rápida (aba da Liberação): o resto do layout é o mesmo do Novo pedido */
+/* Carrinho da transferência: 3 colunas, sem a largura mínima global de 760px das tabelas */
+.transfer-cart-table table {
+  min-width: 0;
+}
+
+.transfer-cart-table th:nth-child(2),
+.transfer-cart-table td:nth-child(2) {
+  width: 8rem;
+}
+
+.transfer-cart-table th:nth-child(3),
+.transfer-cart-table td:nth-child(3) {
+  width: 3.5rem;
+  text-align: center;
+}
+
+@media (max-width: 720px) {
+  .transfer-cart-table th:nth-child(2),
+  .transfer-cart-table td:nth-child(2) {
+    width: 5.5rem;
+  }
+}
+
+.transfer-cart-sku {
+  display: block;
+  color: #64748b;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.transfer-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  gap: 0.75rem;
+}
+
 
 .order-panel-table {
   border: 1px solid rgba(0, 123, 135, 0.16);

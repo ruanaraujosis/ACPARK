@@ -17,12 +17,13 @@ const preferenciasDoPdv = {
 // Pedidos já avisados nesta aba (o mesmo pedido não repete o cartão enquanto ele está na tela)
 const cartoesAtivos = new Set();
 
-// Cria (uma vez) o container dos cartões, o mesmo usado pelo alerta do Almoxarifado
+// Container próprio (mesmo visual do Almoxarifado): o #order-alert-root é removido por
+// stopOrderAlerts(), e o cartão do PDV não pode sumir numa troca de tela
 function garantirContainer() {
-  let root = document.querySelector("#order-alert-root");
+  let root = document.querySelector("#pdv-order-alert-root");
   if (!root) {
     root = document.createElement("div");
-    root.id = "order-alert-root";
+    root.id = "pdv-order-alert-root";
     root.className = "order-alert-container";
     root.setAttribute("aria-live", "polite");
     root.setAttribute("aria-atomic", "false");
@@ -42,6 +43,13 @@ function fecharCartao(codigoPedido) {
   stopAllOrderAlerts();
   document.querySelector(`[data-pdv-order-alert="${CSS.escape(codigoPedido)}"]`)?.remove();
   cartoesAtivos.delete(codigoPedido);
+}
+
+// Logout/troca de usuário: para o som e tira os cartões, que são do PDV que saiu
+export function limparAlertasDoPdv() {
+  stopAllOrderAlerts();
+  document.querySelector("#pdv-order-alert-root")?.remove();
+  cartoesAtivos.clear();
 }
 
 // Cartão "Pedido pronto para retirada", com Visualizar e Silenciar (mesmo visual do Almoxarifado)

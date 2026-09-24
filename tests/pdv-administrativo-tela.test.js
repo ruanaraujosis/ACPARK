@@ -27,7 +27,8 @@ test("os dois formulários de PDV têm o campo do perfil", () => {
   assert.match(view, /const campoPdvAdministrativo = \(marcado\) =>/);
   assert.match(
     view,
-    /\$\{campoPdvAdministrativo\(false\)\}\s*\n\s*\$\{categorySelect\("edit-pdv-category"\)\}/,
+    // Desde 23/09/2026 o "Local de estoque padrão" fica entre o perfil e as categorias
+    /\$\{campoPdvAdministrativo\(false\)\}\s*\n\s*<label class="grid gap-1 text-sm font-bold">Local de estoque padrão[\s\S]*?<\/label>\s*\n\s*\$\{categorySelect\("edit-pdv-category"\)\}/,
   );
   assert.match(
     view,

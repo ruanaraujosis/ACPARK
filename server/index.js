@@ -1,4 +1,5 @@
 ﻿import "./env.js";
+import { origemInformada, validarOrigem } from "./services/pedidos/origem-estoque.service.js";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
@@ -134,9 +135,13 @@ async function runAutoOrders() {
       // Evita duplicar pedido automático já pendente/em andamento para o mesmo produto no PDV
       await client.query(
         `INSERT INTO pedidos
-          (codigo_pedido, solicitante, pdv_id, sku_produto, quantidade_solicitada, quantidade_liberada, status, observacao)
-         VALUES ($1, 'AUTO PEDIDO', $2, $3, $4, 0, 'Pendente', 'Gerado automaticamente por estoque minimo')`,
-        [code("AUTO"), item.pdv_id, item.sku_produto, item.estoque_maximo - item.quantidade]
+          (codigo_pedido, solicitante, pdv_id, sku_produto, quantidade_solicitada, quantidade_liberada, status, observacao,
+           local_origem_pdv_id)
+         VALUES ($1, 'AUTO PEDIDO', $2, $3, $4, 0, 'Pendente', 'Gerado automaticamente por estoque minimo',
+                 (SELECT local_estoque_padrao_pdv_id FROM pdvs WHERE id = $2))`,
+        // Math.ceil: estoque_pdv.quantidade é NUMERIC (saldo fracionário) e quantidade_solicitada
+        // é inteira -- 10 - 2,5 = 7,5 seria recusado pelo banco; pede o suficiente para chegar ao máximo
+        [code("AUTO"), item.pdv_id, item.sku_produto, Math.ceil(Number(item.estoque_maximo) - Number(item.quantidade))]
       );
     }
   });
@@ -477,6 +482,7 @@ async function api(req, res) {
       await ensurePdvAdministrativoColumn();
       return send(res, 200, { pdvs: await query(`
         SELECT p.id, p.nome, p.codigo_orion, p.is_cozinha, p.administrativo, p.categoria,
+               p.local_estoque_padrao_pdv_id,
                COALESCE(ARRAY(
                  SELECT pc.categoria
                  FROM pdv_categorias pc
@@ -556,6 +562,18 @@ async function api(req, res) {
             error: `Este PDV ainda tem ${Number(saldo[0].total)} unidade(s) em estoque. A regra de baixa do saldo ao virar administrativo está em definição — zere o estoque por inventário antes de trocar o perfil.`
           });
         }
+      }
+
+      // Local de estoque padrão: de onde saem os pedidos NOVOS deste PDV (NULL = Almoxarifado).
+      // Só é tocado quando vem no corpo -- uma tela antiga sem o campo não apaga o padrão.
+      if (body.local_estoque_padrao_pdv_id !== undefined) {
+        const padrao = origemInformada(body.local_estoque_padrao_pdv_id);
+        try {
+          await tx((client) => validarOrigem(client, { origemPdvId: padrao, destinoPdvId: pdvId }));
+        } catch (error) {
+          return send(res, error.statusCode || 400, { error: error.message });
+        }
+        await query("UPDATE pdvs SET local_estoque_padrao_pdv_id = $2 WHERE id = $1", [pdvId, padrao]);
       }
 
       await query("UPDATE pdvs SET nome = $2, codigo_orion = $3, is_cozinha = $4, administrativo = $5, categoria = $6 WHERE id = $1", [

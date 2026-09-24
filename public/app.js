@@ -14,7 +14,7 @@ import {
   startOrderAlerts,
   stopOrderAlerts
 } from "./js/services/order-alerts.js";
-import { mostrarBotaoDeAtivacaoPdv, mostrarPedidoProntoParaRetirada } from "./js/services/pdv-order-alerts.js";
+import { limparAlertasDoPdv, mostrarBotaoDeAtivacaoPdv, mostrarPedidoProntoParaRetirada } from "./js/services/pdv-order-alerts.js?v=20260924-transferencia-origem5";
 
 let damageDraftItems = [];
 let renderDamageDraftItems;
@@ -434,7 +434,8 @@ async function route(view) {
         }
       });
     } else {
-      stopOrderAlerts();
+      // Sem stopOrderAlerts() aqui: ele parava o som e apagava o cartão do PDV a cada troca de
+      // tela. O alerta do Almoxarifado já é desligado no logout, único jeito de virar PDV na aba.
       // Canal so do PDV: o de alertas de pedido e do Almoxarifado e transmite tudo a todos
       conectarEventosDoPdv();
       // O PDV também recebe alerta sonoro; o navegador só libera o som depois de um clique
@@ -451,6 +452,126 @@ async function route(view) {
 }
 
 // View de criação/edição de pedidos (PDV)
+// ===== Peças compartilhadas entre "Novo pedido" (PDV) e "Transferência rápida" (Almoxarifado) =====
+// As duas telas montam carrinho, busca de produto e lista de disponíveis do mesmo jeito; o HTML
+// mora aqui para elas não divergirem de novo. Os ids levam um prefixo por tela.
+
+// Categorias de um produto ("A, B" -> ["A", "B"])
+function categoriasDoProduto(produto) {
+  return String(produto.categoria || "").split(",").map((c) => c.trim()).filter(Boolean);
+}
+const rotuloDoProduto = (produto) => `${produto.sku} - ${produto.nome}`;
+const buscaDoProduto = (produto) => `${produto.sku} ${produto.nome} ${produto.categoria || ""}`.toLowerCase();
+
+// Painel "Adicionar produto": busca por nome/SKU com sugestões, quantidade e botão Adicionar
+function htmlPainelAdicionarProduto({ prefixo, titulo, produtos, detalheDoProduto, vazio, passo = "" }) {
+  return `
+    <section class="category-settings order-add-panel">
+      <div>
+        <p class="eyebrow">Adicionar produto</p>
+        <h4>${esc(titulo)}</h4>
+      </div>
+      <div class="category-product-tools order-product-tools">
+        <div class="category-product-picker">
+          <label class="category-add-label" for="${prefixo}-product-search">Produto</label>
+          <input id="${prefixo}-product-search" class="category-add-product-search" type="search" placeholder="Digite o nome ou SKU do produto" autocomplete="off" />
+          <input id="${prefixo}-product-sku" type="hidden" />
+          <div class="category-product-suggestions hidden" id="${prefixo}-product-suggestions">
+            ${produtos.map((produto) => `
+              <button class="category-product-suggestion ${prefixo}-product-suggestion" type="button" data-sku="${esc(produto.sku)}" data-label="${esc(rotuloDoProduto(produto))}" data-search="${esc(buscaDoProduto(produto))}">
+                <strong>${esc(produto.nome)}</strong>
+                <span>${detalheDoProduto(produto)}</span>
+              </button>`).join("") || `<p class="text-sm text-slate-500">${esc(vazio)}</p>`}
+          </div>
+        </div>
+        <input id="${prefixo}-product-quantity" type="number" min="1" ${passo ? `step="${passo}"` : ""} value="1" aria-label="Quantidade" />
+        <button class="btn secondary" id="add-${prefixo}-product" type="button">Adicionar</button>
+      </div>
+    </section>`;
+}
+
+// Cartão do carrinho: lista, ações secundárias e o botão principal de largura total
+function htmlCartaoCarrinho({ idLista, extraCabecalho = "", acoes, botaoPrincipal }) {
+  return `
+    <div class="category-product-list order-cart-list">
+      <div class="category-product-list-head">
+        <strong>Carrinho</strong>
+        ${extraCabecalho}
+      </div>
+      <div id="${idLista}"></div>
+      <div class="order-draft-actions">${acoes}</div>
+      ${botaoPrincipal}
+    </div>`;
+}
+
+// Cartão "Produtos disponíveis": busca, filtro de categoria e a tabela
+function htmlCartaoProdutosDisponiveis({ prefixo, categorias }) {
+  return `
+    <section class="card category-product-list order-available-card">
+      <div class="category-product-list-head">
+        <strong>Produtos disponíveis</strong>
+        <div class="order-available-filters">
+          <input class="category-product-search" id="${prefixo}-product-search" type="search" placeholder="Pesquisar produto" />
+          <select id="${prefixo}-category-filter" aria-label="Filtrar por categoria">
+            <option value="">Todas as categorias</option>
+            ${categorias.map((categoria) => `<option value="${esc(categoria.toLowerCase())}">${esc(categoria)}</option>`).join("")}
+          </select>
+        </div>
+      </div>
+      <div class="category-product-table" id="${prefixo}-products"></div>
+    </section>`;
+}
+
+// Liga a busca com sugestões do painel "Adicionar produto"; chama aoAdicionar(sku, quantidade)
+function ligarSeletorDeProduto(prefixo, aoAdicionar) {
+  const campo = document.querySelector(`#${prefixo}-product-search`);
+  const sku = document.querySelector(`#${prefixo}-product-sku`);
+  const sugestoes = document.querySelector(`#${prefixo}-product-suggestions`);
+  const quantidade = document.querySelector(`#${prefixo}-product-quantity`);
+  if (!campo || !sku || !sugestoes) return;
+  campo.addEventListener("input", () => {
+    const termo = String(campo.value || "").trim().toLowerCase();
+    let visiveis = 0;
+    if (campo.dataset.selectedLabel !== campo.value) sku.value = "";
+    document.querySelectorAll(`.${prefixo}-product-suggestion`).forEach((item) => {
+      const mostrar = termo.length > 0 && item.dataset.search.includes(termo);
+      item.classList.toggle("hidden", !mostrar);
+      if (mostrar) visiveis += 1;
+    });
+    sugestoes.classList.toggle("hidden", termo.length === 0 || visiveis === 0);
+    if (!termo) sku.value = "";
+  });
+  document.querySelectorAll(`.${prefixo}-product-suggestion`).forEach((item) => item.addEventListener("click", () => {
+    campo.value = item.dataset.label || "";
+    campo.dataset.selectedLabel = campo.value;
+    sku.value = item.dataset.sku || "";
+    sugestoes.classList.add("hidden");
+  }));
+  document.querySelector(`#add-${prefixo}-product`)?.addEventListener("click", () => {
+    aoAdicionar(sku.value, quantidade?.value);
+    campo.value = "";
+    campo.dataset.selectedLabel = "";
+    sku.value = "";
+    if (quantidade) quantidade.value = 1;
+    sugestoes.classList.add("hidden");
+  });
+}
+
+// Liga a busca e o filtro de categoria da lista de produtos disponíveis
+function ligarFiltroProdutosDisponiveis(prefixo, classeLinha) {
+  const aplicar = () => {
+    const termo = String(document.querySelector(`#${prefixo}-product-search`)?.value || "").trim().toLowerCase();
+    const categoria = String(document.querySelector(`#${prefixo}-category-filter`)?.value || "").trim().toLowerCase();
+    document.querySelectorAll(`.${classeLinha}`).forEach((linha) => {
+      const casaBusca = !termo || linha.dataset.search.includes(termo);
+      const casaCategoria = !categoria || String(linha.dataset.categories || "").split("|").filter(Boolean).includes(categoria);
+      linha.classList.toggle("hidden", !casaBusca || !casaCategoria);
+    });
+  };
+  document.querySelector(`#${prefixo}-product-search`)?.addEventListener("input", aplicar);
+  document.querySelector(`#${prefixo}-category-filter`)?.addEventListener("change", aplicar);
+}
+
 async function viewOrder(options = {}) {
   const data = await request("/api/pdv/products", { silentLoading: Boolean(options.auto) });
   const draftPayload = options.skipDraftRestore
@@ -476,13 +597,7 @@ async function viewOrder(options = {}) {
       }))
       .filter((item) => item.sku && item.quantidade > 0);
   }
-  const productCategories = (product) => String(product.categoria || "")
-    .split(",")
-    .map((category) => category.trim())
-    .filter(Boolean);
-  const availableCategories = [...new Set(data.products.flatMap(productCategories))].sort((a, b) => a.localeCompare(b, "pt-BR"));
-  const productLabel = (product) => `${product.sku} - ${product.nome}`;
-  const productSearch = (product) => `${product.sku} ${product.nome} ${product.categoria || ""}`.toLowerCase();
+  const availableCategories = [...new Set(data.products.flatMap(categoriasDoProduto))].sort((a, b) => a.localeCompare(b, "pt-BR"));
   shell(`
     <section class="order-screen">
       <section class="card order-main-card">
@@ -498,58 +613,27 @@ async function viewOrder(options = {}) {
               <label class="grid gap-1 text-sm font-bold">Observação <textarea name="observacao" id="observacao" rows="3">${esc(savedDraft?.observacao || "")}</textarea></label>
             </div>
 
-            <section class="category-settings order-add-panel">
-              <div>
-                <p class="eyebrow">Adicionar produto</p>
-                <h4>Adicionar ao pedido</h4>
-              </div>
-              <div class="category-product-tools order-product-tools">
-                <div class="category-product-picker">
-                  <label class="category-add-label" for="order-product-search">Produto</label>
-                  <input id="order-product-search" class="category-add-product-search" type="search" placeholder="Digite o nome ou SKU do produto" autocomplete="off" />
-                  <input id="order-product-sku" type="hidden" />
-                  <div class="category-product-suggestions hidden" id="order-product-suggestions">
-                    ${data.products.map((product) => `
-                      <button class="category-product-suggestion order-product-suggestion" type="button" data-sku="${esc(product.sku)}" data-label="${esc(productLabel(product))}" data-search="${esc(productSearch(product))}">
-                        <strong>${esc(product.nome)}</strong>
-                        <span>${esc(product.sku)} | ${esc(product.categoria || "-")} | atual ${product.quantidade} | max ${product.estoque_maximo}</span>
-                      </button>`).join("") || `<p class="text-sm text-slate-500">Nenhum produto liberado para este PDV.</p>`}
-                  </div>
-                </div>
-                <input id="order-product-quantity" type="number" min="1" value="1" aria-label="Quantidade" />
-                <button class="btn secondary" id="add-order-product" type="button">Adicionar</button>
-              </div>
-            </section>
+            ${htmlPainelAdicionarProduto({
+              prefixo: "order",
+              titulo: "Adicionar ao pedido",
+              produtos: data.products,
+              detalheDoProduto: (product) => `${esc(product.sku)} | ${esc(product.categoria || "-")} | atual ${product.quantidade} | max ${product.estoque_maximo}`,
+              vazio: "Nenhum produto liberado para este PDV."
+            })}
 
-            <div class="category-product-list order-cart-list">
-              <div class="category-product-list-head">
-                <strong>Carrinho</strong>
-                ${savedDraft?.atualizado_em ? `<span class="text-sm text-slate-500">Rascunho salvo em ${moneyDate(savedDraft.atualizado_em)}</span>` : ""}
-              </div>
-              <div id="cart"></div>
-              <div class="order-draft-actions">
+            ${htmlCartaoCarrinho({
+              idLista: "cart",
+              extraCabecalho: savedDraft?.atualizado_em ? `<span class="text-sm text-slate-500">Rascunho salvo em ${moneyDate(savedDraft.atualizado_em)}</span>` : "",
+              acoes: `
                 <button class="btn secondary" id="save-order-draft" type="button">Salvar rascunho</button>
-                <button class="btn secondary" id="clear-order-draft" type="button">Limpar rascunho</button>
-              </div>
-              <button class="btn mt-3 w-full" id="send-order" type="button">Enviar pedido</button>
-            </div>
+                <button class="btn secondary" id="clear-order-draft" type="button">Limpar rascunho</button>`,
+              botaoPrincipal: `<button class="btn mt-3 w-full" id="send-order" type="button">Enviar pedido</button>`
+            })}
           </div>
         </div>
       </section>
 
-      <section class="card category-product-list order-available-card">
-        <div class="category-product-list-head">
-          <strong>Produtos disponíveis</strong>
-          <div class="order-available-filters">
-            <input class="category-product-search" id="available-product-search" type="search" placeholder="Pesquisar produto" />
-            <select id="available-category-filter" aria-label="Filtrar por categoria">
-              <option value="">Todas as categorias</option>
-              ${availableCategories.map((category) => `<option value="${esc(category.toLowerCase())}">${esc(category)}</option>`).join("")}
-            </select>
-          </div>
-        </div>
-        <div class="category-product-table" id="available-products"></div>
-      </section>
+      ${htmlCartaoProdutosDisponiveis({ prefixo: "available", categorias: availableCategories })}
     </section>`);
 
   const addProductToCart = (sku, quantidade = 1) => {
@@ -662,7 +746,7 @@ async function viewOrder(options = {}) {
   const renderAvailableProducts = () => {
     document.querySelector("#available-products").innerHTML = data.products.length
       ? table(["SKU", "Produto", "Categoria", "Embalagem", "Estoque central", "Atual", "Máx.", "Ação"], data.products.map((product) => `
-        <tr class="available-product-row" data-search="${esc(productSearch(product))}" data-categories="${esc(productCategories(product).map((category) => category.toLowerCase()).join("|"))}">
+        <tr class="available-product-row" data-search="${esc(buscaDoProduto(product))}" data-categories="${esc(categoriasDoProduto(product).map((category) => category.toLowerCase()).join("|"))}">
           <td>${esc(product.sku)}</td>
           <td>${esc(product.nome)}</td>
           <td>${esc(product.categoria || "-")}</td>
@@ -736,50 +820,9 @@ async function viewOrder(options = {}) {
   renderCart();
   document.querySelector("#clear-order-draft").onclick = handleClearOrderDraft;
 
-  const applyAvailableFilters = () => {
-    const term = String(document.querySelector("#available-product-search")?.value || "").trim().toLowerCase();
-    const category = String(document.querySelector("#available-category-filter")?.value || "").trim().toLowerCase();
-    document.querySelectorAll(".available-product-row").forEach((row) => {
-      const matchesSearch = !term || row.dataset.search.includes(term);
-      const rowCategories = String(row.dataset.categories || "").split("|").filter(Boolean);
-      const matchesCategory = !category || rowCategories.includes(category);
-      row.classList.toggle("hidden", !matchesSearch || !matchesCategory);
-    });
-  };
-  document.querySelector("#available-product-search").addEventListener("input", applyAvailableFilters);
-  document.querySelector("#available-category-filter").addEventListener("change", applyAvailableFilters);
-
-  const orderProductSearch = document.querySelector("#order-product-search");
-  const orderProductSku = document.querySelector("#order-product-sku");
-  const orderSuggestions = document.querySelector("#order-product-suggestions");
-  const filterOrderSuggestions = () => {
-    const term = String(orderProductSearch.value || "").trim().toLowerCase();
-    let visible = 0;
-    if (orderProductSearch.dataset.selectedLabel !== orderProductSearch.value) {
-      orderProductSku.value = "";
-    }
-    document.querySelectorAll(".order-product-suggestion").forEach((item) => {
-      const show = term.length > 0 && item.dataset.search.includes(term);
-      item.classList.toggle("hidden", !show);
-      if (show) visible += 1;
-    });
-    orderSuggestions.classList.toggle("hidden", term.length === 0 || visible === 0);
-    if (!term) orderProductSku.value = "";
-  };
-  orderProductSearch.addEventListener("input", filterOrderSuggestions);
-  document.querySelectorAll(".order-product-suggestion").forEach((item) => item.addEventListener("click", () => {
-    orderProductSearch.value = item.dataset.label || "";
-    orderProductSearch.dataset.selectedLabel = orderProductSearch.value;
-    orderProductSku.value = item.dataset.sku || "";
-    orderSuggestions.classList.add("hidden");
-  }));
-  document.querySelector("#add-order-product").addEventListener("click", () => {
-    addProductToCart(orderProductSku.value, document.querySelector("#order-product-quantity").value);
-    orderProductSearch.value = "";
-    orderProductSearch.dataset.selectedLabel = "";
-    orderProductSku.value = "";
-    document.querySelector("#order-product-quantity").value = 1;
-    orderSuggestions.classList.add("hidden");
+  ligarFiltroProdutosDisponiveis("available", "available-product-row");
+  ligarSeletorDeProduto("order", (sku, quantidade) => {
+    addProductToCart(sku, quantidade);
     renderCart();
   });
 
@@ -6542,6 +6585,184 @@ async function printStockPdv(payload = {}) {
 }
 
 // View de liberação de pedidos (Kanban)
+// Transferência rápida: o Almoxarifado leva mercadoria de um local (Almoxarifado ou outro PDV)
+// para um PDV e conclui na hora, sem assinatura do PDV (decisão do usuário, 23/09/2026). Vira um
+// pedido comum finalizado, com a mesma baixa, aviso de saldo negativo e lançamento na OMIE.
+async function abrirTransferenciaRapida() {
+  const alvo = document.querySelector("#release-kanban-board, #release-finalized-view, #release-transfer-view");
+  if (!alvo) return;
+  const pdvs = await request("/api/admin/pdvs", { silentLoading: true }).then((r) => r.pdvs || []).catch(() => state.pdvs || []);
+  const origens = pdvs.filter((p) => p.administrativo !== true);
+  // Catálogo do sistema inteiro (produtos ativos), não o liberado para um PDV
+  const produtos = (state.products || []).filter((p) => p.ativo !== false);
+  const categorias = [...new Set(produtos.flatMap(categoriasDoProduto))].sort((a, b) => a.localeCompare(b, "pt-BR"));
+  const carrinho = [];
+
+  const secao = document.createElement("section");
+  secao.className = "order-screen release-transfer-view";
+  secao.id = "release-transfer-view";
+  secao.innerHTML = `
+    <section class="card order-main-card">
+      <div class="mb-3">
+        <p class="eyebrow">Transferência rápida</p>
+        <h3 class="section-title text-xl font-black">Enviar mercadoria para um PDV</h3>
+        <p class="text-sm text-slate-600">Conclui na hora, sem assinatura do PDV. A baixa sai do local de origem e o saldo entra no PDV de destino.</p>
+      </div>
+
+      <div class="order-top-grid">
+        <div class="order-form-area">
+          <div class="transfer-grid">
+            <label class="grid gap-1 text-sm font-bold">Local de origem
+              <select id="transfer-origem">
+                <option value="">Almoxarifado</option>
+                ${origens.map((p) => `<option value="${p.id}">${esc(p.nome)}</option>`).join("")}
+              </select>
+            </label>
+            <label class="grid gap-1 text-sm font-bold">PDV de destino
+              <select id="transfer-destino">
+                <option value="">Escolha o PDV</option>
+                ${pdvs.map((p) => `<option value="${p.id}">${esc(p.nome)}</option>`).join("")}
+              </select>
+            </label>
+          </div>
+          <label class="grid gap-1 text-sm font-bold">Observação <textarea id="transfer-obs" rows="2" maxlength="500"></textarea></label>
+
+          ${htmlPainelAdicionarProduto({
+            prefixo: "transfer",
+            titulo: "Adicionar à transferência",
+            produtos,
+            detalheDoProduto: (p) => `${esc(p.sku)} | ${esc(p.categoria || "-")}`,
+            vazio: "Nenhum produto ativo cadastrado.",
+            passo: "1"
+          })}
+
+          ${htmlCartaoCarrinho({
+            idLista: "transfer-cart",
+            acoes: `<button class="btn secondary" id="transfer-limpar" type="button">Limpar</button>`,
+            botaoPrincipal: `<button class="btn mt-3 w-full" id="transfer-concluir" type="button">Concluir transferência</button>`
+          })}
+        </div>
+      </div>
+    </section>
+
+    ${htmlCartaoProdutosDisponiveis({ prefixo: "transfer-available", categorias })}`;
+  alvo.replaceWith(secao);
+
+  const origemSel = secao.querySelector("#transfer-origem");
+  const destinoSel = secao.querySelector("#transfer-destino");
+  // Origem e destino não podem ser o mesmo PDV: some a opção igual à do outro campo
+  const sincronizarOpcoes = () => {
+    origemSel.querySelectorAll("option").forEach((o) => { o.hidden = Boolean(o.value) && o.value === destinoSel.value; });
+    destinoSel.querySelectorAll("option").forEach((o) => { o.hidden = Boolean(o.value) && o.value === origemSel.value; });
+  };
+  origemSel.addEventListener("change", sincronizarOpcoes);
+  destinoSel.addEventListener("change", sincronizarOpcoes);
+
+  // Quantidade é inteira: quantidade_solicitada é integer no banco
+  const adicionar = (sku, quantidade) => {
+    const produto = produtos.find((p) => p.sku === sku);
+    const qtd = Number(quantidade);
+    if (!produto) return toast("Escolha um produto da lista.", "error");
+    if (!Number.isInteger(qtd) || qtd <= 0) return toast("Informe uma quantidade inteira maior que zero.", "error");
+    const existente = carrinho.find((item) => item.sku === sku);
+    if (existente) existente.quantidade += qtd;
+    else carrinho.push({ sku, nome: produto.nome, quantidade: qtd });
+    renderCarrinho();
+  };
+
+  const renderCarrinho = () => {
+    secao.querySelector("#transfer-cart").innerHTML = carrinho.length
+      ? table(["Produto", "Qtd (un)", "Ação"], carrinho.map((item, indice) => `
+          <tr class="order-cart-row">
+            <td>${esc(item.nome)}<span class="transfer-cart-sku">${esc(item.sku)}</span></td>
+            <td><input class="transfer-cart-qty" type="number" min="1" step="1" value="${item.quantidade}" data-index="${indice}" aria-label="Quantidade de ${esc(item.nome)}" /></td>
+            <td><button class="icon-action danger transfer-remove" type="button" data-index="${indice}" title="Remover produto" aria-label="Remover produto">&times;</button></td>
+          </tr>`)).replace("table-wrap", "table-wrap transfer-cart-table")
+      : `<p class="text-sm text-slate-500">Nenhum produto adicionado ainda.</p>`;
+    secao.querySelectorAll(".transfer-cart-qty").forEach((campo) => campo.addEventListener("change", () => {
+      const qtd = Number(campo.value);
+      if (Number.isInteger(qtd) && qtd > 0) carrinho[Number(campo.dataset.index)].quantidade = qtd;
+      renderCarrinho();
+    }));
+    secao.querySelectorAll(".transfer-remove").forEach((botao) => botao.addEventListener("click", () => {
+      carrinho.splice(Number(botao.dataset.index), 1);
+      renderCarrinho();
+    }));
+  };
+
+  // Tabela de disponíveis: SKU / Produto / Categoria, com o + que põe 1 un no carrinho
+  secao.querySelector("#transfer-available-products").innerHTML = produtos.length
+    ? table(["SKU", "Produto", "Categoria", "Ação"], produtos.map((p) => `
+        <tr class="transfer-available-row" data-search="${esc(buscaDoProduto(p))}" data-categories="${esc(categoriasDoProduto(p).map((c) => c.toLowerCase()).join("|"))}">
+          <td>${esc(p.sku)}</td>
+          <td>${esc(p.nome)}</td>
+          <td>${esc(p.categoria || "-")}</td>
+          <td><button class="icon-action transfer-add-available" type="button" data-sku="${esc(p.sku)}" title="Adicionar produto" aria-label="Adicionar produto">+</button></td>
+        </tr>`))
+    : `<p class="text-sm text-slate-500">Nenhum produto ativo cadastrado.</p>`;
+  secao.querySelectorAll(".transfer-add-available").forEach((botao) => botao.addEventListener("click", () => adicionar(botao.dataset.sku, 1)));
+
+  ligarFiltroProdutosDisponiveis("transfer-available", "transfer-available-row");
+  ligarSeletorDeProduto("transfer", adicionar);
+  renderCarrinho();
+
+  secao.querySelector("#transfer-limpar").addEventListener("click", async () => {
+    if (!carrinho.length) return;
+    const confirmado = await confirmSystem({
+      title: "Limpar transferência?",
+      message: "Todos os produtos e quantidades desta transferência serão removidos.",
+      confirmLabel: "Limpar",
+      danger: true
+    });
+    if (!confirmado) return;
+    carrinho.splice(0, carrinho.length);
+    secao.querySelector("#transfer-obs").value = "";
+    renderCarrinho();
+  });
+
+  secao.querySelector("#transfer-concluir").addEventListener("click", async (event) => {
+    const botao = event.currentTarget;
+    if (botao.disabled) return;
+    if (!destinoSel.value) return toast("Escolha o PDV de destino.", "error");
+    if (!carrinho.length) return toast("Adicione ao menos um produto.", "error");
+    const origemNome = origemSel.selectedOptions[0]?.textContent || "Almoxarifado";
+    const destinoNome = destinoSel.selectedOptions[0]?.textContent || "";
+    const confirmado = await confirmSystem({
+      title: "Concluir transferência?",
+      message: `${carrinho.length} produto(s) de ${origemNome} para ${destinoNome}.`,
+      consequence: "O estoque é movimentado na hora, sem assinatura do PDV.",
+      confirmLabel: "Concluir transferência"
+    });
+    if (!confirmado) return;
+    botao.disabled = true;
+    botao.textContent = "Transferindo...";
+    try {
+      const r = await request("/api/admin/transferencia-rapida", {
+        method: "POST",
+        body: JSON.stringify({
+          pdv_destino_id: Number(destinoSel.value),
+          local_origem_pdv_id: origemSel.value || null,
+          itens: carrinho.map((item) => ({ sku: item.sku, quantidade: item.quantidade })),
+          observacao: secao.querySelector("#transfer-obs").value
+        })
+      });
+      toast(`Transferência ${r.codigo_pedido} concluída.`);
+      const negativos = r.saldos_negativos || [];
+      if (negativos.length) {
+        toast(`Saldo negativo em ${negativos[0].local || "origem"}: ${negativos[0].nome || negativos[0].sku} = ${negativos[0].saldo}${negativos.length > 1 ? ` (e mais ${negativos.length - 1})` : ""}.`, "error");
+      }
+      carrinho.splice(0, carrinho.length);
+      secao.querySelector("#transfer-obs").value = "";
+      renderCarrinho();
+    } catch (error) {
+      toast(error.message || "Não foi possível concluir a transferência.", "error");
+    } finally {
+      botao.disabled = false;
+      botao.textContent = "Concluir transferência";
+    }
+  });
+}
+
 async function viewRelease(filters = {}) {
   let from = filters.from || weekAgo();
   let to = filters.to || today();
@@ -6638,6 +6859,7 @@ async function viewRelease(filters = {}) {
         <div class="config-tabs release-tabs release-mode-tabs" role="tablist" aria-label="Visualização da liberação">
           <button class="config-tab ${releaseMode === "active" ? "is-active" : ""}" data-release-view-mode="active" type="button">Pedidos ativos</button>
           <button class="config-tab ${releaseMode === "finalized" ? "is-active" : ""}" data-release-view-mode="finalized" type="button">Finalizados</button>
+          <button class="config-tab" id="release-transfer-tab" type="button">Transferência rápida</button>
         </div>
         <button class="btn secondary release-refresh" id="refresh-release" type="button">Atualizar solicitações</button>
       </div>
@@ -6696,6 +6918,12 @@ async function viewRelease(filters = {}) {
   });
   document.querySelector("#back-release-active")?.addEventListener("click", async () => {
     await viewRelease({ from, to, pdvId: selectedPdvId, q: searchCode, mode: "active" });
+  });
+  // Aba de transferência rápida: só troca o conteúdo na tela (não recarrega pedidos); voltar para
+  // "Pedidos ativos"/"Finalizados" usa o caminho normal, que recarrega o quadro
+  document.querySelector("#release-transfer-tab")?.addEventListener("click", (event) => {
+    document.querySelectorAll(".release-mode-tabs .config-tab").forEach((tab) => tab.classList.toggle("is-active", tab === event.currentTarget));
+    abrirTransferenciaRapida();
   });
   document.querySelector(".load-more-finalized")?.addEventListener("click", async (event) => {
     const button = event.currentTarget;
@@ -7766,6 +7994,16 @@ function releasePanelHtml(group = []) {
           </div>
           <p class="order-panel-hint">${esc(releasePanelStepHint(status))}</p>
         </div>
+        <div class="order-panel-locais">
+          <label class="order-panel-local">Local atual (origem)
+            <select class="order-panel-origem" ${status === "Finalizado" ? "disabled" : ""}
+              data-origem-atual="${esc(first.local_origem_pdv_id ?? "")}" aria-label="Local de origem do pedido">
+              <option value="" ${first.local_origem_pdv_id ? "" : "selected"}>Almoxarifado</option>
+              ${first.local_origem_pdv_id ? `<option value="${esc(first.local_origem_pdv_id)}" selected>${esc(first.local_origem || "PDV")}</option>` : ""}
+            </select>
+          </label>
+          <p class="order-panel-local">Local de destino<strong>${esc(first.pdv || "PDV")}</strong></p>
+        </div>
         ${first.observacao ? `<p class="order-panel-note"><strong>Observação do PDV</strong>${esc(first.observacao)}</p>` : ""}
         ${releasePanelItemsTable(group, editable)}
       </div>
@@ -7941,6 +8179,34 @@ function bindReleasePanel(overlay, group = [], context = {}) {
   panel.querySelector(".order-panel-timeline-open")?.addEventListener("click", () => {
     openReleaseTimelineModal(orderCode);
   });
+
+  // Local de origem: completa as opções com os PDVs que podem ser origem (não administrativos,
+  // e nunca o próprio destino) e grava na troca. Finalizado fica travado.
+  const origemSel = panel.querySelector(".order-panel-origem");
+  if (origemSel && !origemSel.disabled) {
+    request("/api/admin/pdvs", { silentLoading: true }).then((r) => {
+      const atual = origemSel.dataset.origemAtual;
+      const destino = String(group[0]?.pdv_id ?? "");
+      const opcoes = (r.pdvs || []).filter((p) => p.administrativo !== true && String(p.id) !== destino);
+      origemSel.innerHTML = `<option value="">Almoxarifado</option>`
+        + opcoes.map((p) => `<option value="${p.id}" ${String(p.id) === atual ? "selected" : ""}>${esc(p.nome)}</option>`).join("");
+    }).catch(() => {});
+    origemSel.addEventListener("change", async () => {
+      const anterior = origemSel.dataset.origemAtual;
+      try {
+        await request("/api/admin/orders/origem", {
+          method: "POST",
+          body: JSON.stringify({ codigo_pedido: orderCode, local_origem_pdv_id: origemSel.value || null })
+        });
+        origemSel.dataset.origemAtual = origemSel.value;
+        toast(`Local de origem: ${origemSel.selectedOptions[0]?.textContent || "Almoxarifado"}.`);
+        await reloadReleasePanel(overlay, orderCode, context);
+      } catch (error) {
+        origemSel.value = anterior;
+        toast(error.message || "Não foi possível mudar o local de origem.", "error");
+      }
+    });
+  }
 
   const setSaving = (saving) => {
     panel.classList.toggle("is-saving", saving);
@@ -10032,11 +10298,14 @@ async function viewConfigV2() {
   // derrubou o login de todo mundo em 29/08 e a rota tem comentario proibindo. A rota admin
   // garante a coluna antes de consultar, e esta tela ja e exclusiva do Almoxarifado.
   // Se a chamada falhar, a tela ainda abre -- so sem a informacao de perfil.
-  const perfilPorPdv = new Map(
-    await request("/api/admin/pdvs", { silentLoading: true })
-      .then((r) => (r.pdvs || []).map((p) => [String(p.id), p.administrativo === true]))
-      .catch(() => [])
-  );
+  const pdvsAdmin = await request("/api/admin/pdvs", { silentLoading: true })
+    .then((r) => r.pdvs || [])
+    .catch(() => []);
+  const perfilPorPdv = new Map(pdvsAdmin.map((p) => [String(p.id), p.administrativo === true]));
+  // Local de estoque padrão por PDV (NULL = Almoxarifado): de onde saem os pedidos NOVOS dele
+  const localPadraoPorPdv = new Map(pdvsAdmin.map((p) => [String(p.id), p.local_estoque_padrao_pdv_id ?? null]));
+  // Só PDV que não é administrativo pode ser origem (o administrativo não tem saldo de revenda)
+  const pdvsQuePodemSerOrigem = pdvsAdmin.filter((p) => p.administrativo !== true);
   const categorySelect = (id) => `
     <div class="category-picker">
       <p class="text-sm font-bold">Categorias permitidas para este PDV</p>
@@ -10105,6 +10374,13 @@ async function viewConfigV2() {
             <input name="nome" placeholder="Nome do PDV" required />
             <input name="senha" type="password" placeholder="Nova senha (opcional)" />
             ${campoPdvAdministrativo(false)}
+            <label class="grid gap-1 text-sm font-bold">Local de estoque padrão
+              <select name="local_estoque_padrao_pdv_id" id="pdv-local-padrao">
+                <option value="">Almoxarifado</option>
+                ${pdvsQuePodemSerOrigem.map((p) => `<option value="${p.id}">${esc(p.nome)}</option>`).join("")}
+              </select>
+              <small class="text-slate-500 font-normal">De onde sai a mercadoria dos pedidos novos deste PDV. O Almoxarifado pode trocar em cada pedido.</small>
+            </label>
             ${categorySelect("edit-pdv-category")}
             <div class="form-actions">
               <button class="btn secondary" id="cancel-pdv-edit" type="button">Cancelar edição</button>
@@ -10316,6 +10592,10 @@ async function viewConfigV2() {
     pdvEditForm.querySelector('[name="senha"]').value = "";
     // O formulario e reusado entre PDVs: sem esta linha o checkbox guardaria o perfil do anterior
     pdvEditForm.querySelector('[name="administrativo"]').checked = perfilPorPdv.get(String(pdv.id)) === true;
+    // Um PDV não pode ser origem dele mesmo: esconde a própria opção
+    const localPadrao = pdvEditForm.querySelector('[name="local_estoque_padrao_pdv_id"]');
+    localPadrao.querySelectorAll("option").forEach((opcao) => { opcao.hidden = opcao.value === String(pdv.id); });
+    localPadrao.value = String(localPadraoPorPdv.get(String(pdv.id)) ?? "");
     document.querySelector("#pdv-edit-title").textContent = `Editar PDV: ${pdv.nome}`;
     categoryPickers["edit-pdv-category"].set(pdv.categorias || []);
     setConfigTab("manage");
@@ -11713,6 +11993,7 @@ function conectarEventosDoPdv() {
 function desconectarEventosDoPdv() {
   eventosDoPdv?.close();
   eventosDoPdv = null;
+  limparAlertasDoPdv();
 }
 
 // Marca visualmente que há assinatura pendente, para quem está em outra tela
