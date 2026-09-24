@@ -165,3 +165,8 @@ test("a coluna Origem não repete o local num selo 'de ...' (o seletor já mostr
 test("comprovante de retirada mostra só o nome do local, sem 'de'", () => {
   assert.match(app, /produto: `\$\{item\.produto\} \(\$\{item\.origem \|\| "Almoxarifado"\}\)`/);
 });
+
+test("cartão do PDV mostra só o nome do local na etiqueta, sem 'de'", () => {
+  assert.match(app, /is-origem">\$\{esc\(o\.local_origem \|\| "Almoxarifado"\)\}<\/span>/);
+  assert.doesNotMatch(app, /is-origem">de /);
+});

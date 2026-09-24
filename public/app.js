@@ -14,7 +14,7 @@ import {
   startOrderAlerts,
   stopOrderAlerts
 } from "./js/services/order-alerts.js";
-import { limparAlertasDoPdv, mostrarBotaoDeAtivacaoPdv, mostrarPedidoProntoParaRetirada } from "./js/services/pdv-order-alerts.js?v=20260924-comprovante-origem-nome";
+import { limparAlertasDoPdv, mostrarBotaoDeAtivacaoPdv, mostrarPedidoProntoParaRetirada } from "./js/services/pdv-order-alerts.js?v=20260924-pdv-origem-nome";
 
 let damageDraftItems = [];
 let renderDamageDraftItems;
@@ -1483,7 +1483,7 @@ function pdvOrderCard(group) {
   const origensMisturadas = new Set(visibleItems.map((o) => o.local_origem || "")).size > 1;
   const skusDivididos = new Set(visibleItems.filter((o, i, todos) => todos.findIndex((x) => x.sku_produto === o.sku_produto) !== i).map((o) => o.sku_produto));
   const seloDaLinha = (o) => origensMisturadas
-    ? ` <span class="order-source-badge is-origem">de ${esc(o.local_origem || "Almoxarifado")}</span>`
+    ? ` <span class="order-source-badge is-origem">${esc(o.local_origem || "Almoxarifado")}</span>`
     : o.item_origem === "ALMOX" && !skusDivididos.has(o.sku_produto) ? ` <span class="order-source-badge">Almox</span>` : "";
   const isWithdrawalStatus = first.status === "Aguardando Retirada";
   const statusTime = first.status === "Pendente"
