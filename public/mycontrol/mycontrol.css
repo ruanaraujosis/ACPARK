@@ -198,11 +198,11 @@ html textarea {
 }
 
 /* Na tabela do desktop a coluna de permissões pode crescer; ações e data não quebram à toa */
-.mc-usuarios .mc-col-permissoes {
+.mc-lista .mc-col-permissoes {
   min-width: 14rem;
 }
 
-.mc-usuarios .mc-col-acoes .mc-acoes {
+.mc-lista .mc-col-acoes .mc-acoes {
   flex-wrap: nowrap;
 }
 
@@ -365,30 +365,263 @@ body.mc-modal-aberto {
   text-decoration: underline;
 }
 
-/* Tablet ou janela estreita: a lista de usuários vira cartões em duas colunas (a tabela
+/* ===== Fase 2: cadastros, cargos e campos ===== */
+
+/* Atalhos da tela inicial: quebram de linha, nunca saem da tela */
+.mc-atalhos {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.mc-atalho {
+  min-height: 44px;
+}
+
+/* Abas de Configurações logo acima do cartão */
+.mc-abas {
+  margin-bottom: 0.75rem;
+}
+
+.mc-abas .config-tab {
+  min-height: 44px;
+}
+
+/* Aviso em destaque dentro de formulário (ex.: abreviação do cargo) */
+.mc-aviso {
+  padding: 0.75rem 0.9rem;
+  border: 1px solid rgba(180, 83, 9, 0.3);
+  border-radius: 14px;
+  background: rgba(251, 191, 36, 0.12);
+  color: #7c2d12;
+  font-size: 0.9rem;
+}
+
+/* Seletor de cadastro na tela de Campos (vira linha própria e quebra se precisar) */
+.mc-segmentado {
+  display: flex;
+  flex: 1 1 100%;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+/* Os três lado a lado, dividindo a linha; quebram só se não couberem */
+.mc-segmentado .btn {
+  flex: 1 1 6rem;
+  min-height: 44px;
+  padding-inline: 0.75rem;
+}
+
+.mc-selo.is-obrigatorio {
+  background: #fff7ed;
+  color: #9a3412;
+}
+
+.mc-selo.is-pendente {
+  background: #fef3c7;
+  color: #92400e;
+  white-space: normal;
+}
+
+.mc-obrigatorio {
+  color: #b42318;
+}
+
+/* Botão só com seta (subir/descer campo): quadrado de 44px */
+.mc-acao-icone {
+  width: 44px;
+  padding: 0;
+  font-size: 1.1rem;
+}
+
+.mc-acao:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Miniatura da lista: toque abre a foto grande */
+.mc-miniatura {
+  display: inline-flex;
+  width: 48px;
+  height: 48px;
+  flex: 0 0 auto;
+  overflow: hidden;
+  padding: 0;
+  border: 1px solid rgba(0, 123, 135, 0.16);
+  border-radius: 12px;
+  background: rgba(0, 123, 135, 0.06);
+  box-shadow: none;
+}
+
+.mc-miniatura img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.mc-miniatura.is-vazia {
+  display: inline-block;
+}
+
+.mc-lista .mc-col-foto {
+  width: 64px;
+}
+
+/* Filtros da lista de cadastro: busca ocupa o espaço, situação ao lado; quebram no celular */
+.mc-filtros {
+  display: flex;
+  flex: 1 1 100%;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.mc-filtro-busca {
+  flex: 1 1 16rem;
+}
+
+.mc-filtros .mc-campo:not(.mc-filtro-busca) {
+  flex: 0 1 12rem;
+}
+
+.mc-contagem {
+  margin-top: 0.75rem;
+}
+
+#mc-carregar-mais {
+  margin-top: 0.5rem;
+}
+
+/* Formulário de cadastro: foto, assinatura e texto longo ocupam a largura toda */
+.mc-form-grade > [data-foto-campo],
+.mc-form-grade > [data-assinatura-campo],
+.mc-form-grade > .mc-campo:has(textarea) {
+  grid-column: 1 / -1;
+}
+
+.mc-matricula {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: baseline;
+  min-height: 44px;
+  padding-top: 0.4rem;
+  font-weight: 800;
+}
+
+.mc-matricula small {
+  color: #64748b;
+  font-weight: 500;
+}
+
+/* Campo de foto: prévia e botões (o input de arquivo fica por cima do botão, invisível) */
+.mc-foto-campo {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.mc-foto-previa {
+  width: 96px;
+  height: 96px;
+  border: 1px solid rgba(0, 123, 135, 0.16);
+  border-radius: 14px;
+  object-fit: cover;
+}
+
+/* <label> com cara de botão: o raio arredondado global do styles.css só vale para <button> */
+.mc-botao-arquivo {
+  border-radius: 999px;
+  font-weight: 700;
+  text-align: center;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+html .mc-botao-arquivo input[type="file"] {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  padding: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+/* Assinatura: quadro em largura total (o canvas já tem touch-action: none no styles.css) */
+.mc-assinatura-quadro {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.mc-assinatura-atual {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.mc-assinatura-atual img {
+  max-width: min(100%, 20rem);
+  border: 1px dashed rgba(0, 123, 135, 0.38);
+  border-radius: 12px;
+  background: #fff;
+}
+
+/* Foto grande por cima da tela */
+.mc-foto-grande-caixa {
+  position: relative;
+  display: grid;
+  gap: 0.5rem;
+  max-width: min(100%, 60rem);
+  max-height: calc(100dvh - 2rem);
+  margin: 0;
+  padding: 0.75rem;
+  border-radius: 18px;
+  background: #fff;
+}
+
+.mc-foto-grande-caixa img {
+  max-width: 100%;
+  max-height: calc(100dvh - 7rem);
+  object-fit: contain;
+}
+
+.mc-foto-grande-caixa .mc-modal-fechar {
+  position: absolute;
+  top: 0.75rem;
+  right: 0.75rem;
+}
+
+/* Tablet ou janela estreita: as listas (usuários, cargos, campos, cadastros) viram cartões em duas colunas (a tabela
    empurraria as ações para fora da tela); nome em destaque, login e situação abaixo, ações no
    rodapé do cartão */
 @media (max-width: 1024px) {
-  .mc-usuarios .table-wrap {
+  .mc-lista .table-wrap {
     overflow: visible;
     border: none;
   }
 
-  .mc-usuarios table {
+  .mc-lista table {
     min-width: 0;
   }
 
-  .mc-usuarios thead {
+  .mc-lista thead {
     display: none;
   }
 
-  .mc-usuarios tbody {
+  .mc-lista tbody {
     display: grid;
     gap: 0.75rem;
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .mc-usuarios tr {
+  .mc-lista tr {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
     grid-auto-rows: min-content;
@@ -399,7 +632,7 @@ body.mc-modal-aberto {
     background: #fff;
   }
 
-  .mc-usuarios td {
+  .mc-lista td {
     display: block;
     min-width: 0;
     padding: 0;
@@ -407,31 +640,31 @@ body.mc-modal-aberto {
     overflow: visible;
   }
 
-  .mc-usuarios .mc-col-nome {
+  .mc-lista .mc-col-nome {
     grid-column: 1 / -1;
     font-size: 1.05rem;
   }
 
-  .mc-usuarios .mc-col-login {
+  .mc-lista .mc-col-login {
     grid-column: 1;
     align-self: center;
     color: #475569;
   }
 
-  .mc-usuarios .mc-col-situacao {
+  .mc-lista .mc-col-situacao {
     grid-column: 2;
     grid-row: 2;
     justify-self: end;
   }
 
-  .mc-usuarios .mc-col-permissoes,
-  .mc-usuarios .mc-col-acesso,
-  .mc-usuarios .mc-col-acoes {
+  .mc-lista .mc-col-permissoes,
+  .mc-lista .mc-col-acesso,
+  .mc-lista .mc-col-acoes {
     grid-column: 1 / -1;
     min-width: 0;
   }
 
-  .mc-usuarios .mc-col-acesso {
+  .mc-lista .mc-col-acesso {
     color: #475569;
     font-size: 0.85rem;
   }
@@ -442,15 +675,41 @@ body.mc-modal-aberto {
     font-weight: 700;
   }
 
+  /* Cartão com foto: miniatura à esquerda do nome e do dado principal */
+  .mc-lista-com-foto tr {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .mc-lista-com-foto .mc-col-foto {
+    width: auto;
+    grid-column: 1;
+    grid-row: 1 / span 2;
+  }
+
+  .mc-lista-com-foto .mc-col-nome {
+    grid-column: 2 / -1;
+    grid-row: 1;
+  }
+
+  .mc-lista-com-foto .mc-col-login {
+    grid-column: 2;
+    grid-row: 2;
+  }
+
+  .mc-lista-com-foto .mc-col-situacao {
+    grid-column: 3;
+    grid-row: 2;
+  }
+
   /* Rodapé do cartão com as ações; fica sempre embaixo, mesmo em cartões de alturas diferentes */
-  .mc-usuarios .mc-col-acoes {
+  .mc-lista .mc-col-acoes {
     align-self: end;
     margin-top: 0.35rem;
     padding-top: 0.75rem;
     border-top: 1px solid rgba(0, 123, 135, 0.12);
   }
 
-  .mc-usuarios .mc-col-acoes .mc-acoes {
+  .mc-lista .mc-col-acoes .mc-acoes {
     flex-wrap: wrap;
   }
 
@@ -504,8 +763,8 @@ body.mc-modal-aberto {
     display: inline;
   }
 
-  /* Cartões de usuário em uma coluna */
-  .mc-usuarios tbody {
+  /* Cartões em uma coluna */
+  .mc-lista tbody {
     grid-template-columns: minmax(0, 1fr);
   }
 }

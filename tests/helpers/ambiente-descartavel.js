@@ -8,6 +8,7 @@
 import "../../server/env.js";
 import fs from "node:fs";
 import net from "node:net";
+import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 import pg from "pg";
@@ -85,7 +86,8 @@ async function esperarServidor(base, processo, saida) {
 }
 
 // Cria o banco descartável, restaura a estrutura e sobe o servidor. Devolve { base, sql, encerrar }.
-export async function criarAmbienteDescartavel({ jwtSecret = crypto.randomBytes(24).toString("hex") } = {}) {
+// `env` acrescenta variáveis ao servidor de teste (ex.: limite de upload menor).
+export async function criarAmbienteDescartavel({ jwtSecret = crypto.randomBytes(24).toString("hex"), env = {} } = {}) {
   const conexao = lerConexao();
   const banco = `${PREFIXO_BANCO}${Date.now()}_${crypto.randomBytes(3).toString("hex")}`;
   // Trava de segurança: o banco de teste nunca pode ser o da aplicação
@@ -96,6 +98,8 @@ export async function criarAmbienteDescartavel({ jwtSecret = crypto.randomBytes(
 
   let processo = null;
   let cliente = null;
+  // Fotos enviadas nos testes vão para uma pasta temporária, nunca para o .storage da produção
+  const pastaStorage = fs.mkdtempSync(path.join(os.tmpdir(), "myestoque-teste-storage-"));
   // Limpeza que roda aconteça o que acontecer (também se a subida falhar no meio)
   const encerrar = async () => {
     if (processo && processo.exitCode === null) {
@@ -108,6 +112,7 @@ export async function criarAmbienteDescartavel({ jwtSecret = crypto.randomBytes(
       .query("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()", [banco])
       .catch(() => {});
     await admin.query(`DROP DATABASE IF EXISTS ${banco}`).catch(() => {});
+    fs.rmSync(pastaStorage, { recursive: true, force: true });
     await admin.end().catch(() => {});
   };
 
@@ -133,7 +138,10 @@ export async function criarAmbienteDescartavel({ jwtSecret = crypto.randomBytes(
         NODE_ENV: "test",
         INTEGRATIONS_SCHEDULER_ENABLED: "false",
         OMIE_SCHEDULER_ENABLED: "false",
-        FORCE_SECURE_COOKIES: "false"
+        FORCE_SECURE_COOKIES: "false",
+        STORAGE_DRIVER: "local",
+        STORAGE_LOCAL_ROOT: pastaStorage,
+        ...env
       },
       stdio: ["ignore", "pipe", "pipe"]
     });
@@ -143,7 +151,7 @@ export async function criarAmbienteDescartavel({ jwtSecret = crypto.randomBytes(
     await esperarServidor(base, processo, saida);
 
     cliente = await conectar(conexao, banco);
-    return { base, banco, databaseUrl: urlTeste.toString(), jwtSecret, sql: (texto, params) => cliente.query(texto, params), saida, encerrar };
+    return { base, banco, pastaStorage, databaseUrl: urlTeste.toString(), jwtSecret, sql: (texto, params) => cliente.query(texto, params), saida, encerrar };
   } catch (erro) {
     await encerrar();
     throw erro;

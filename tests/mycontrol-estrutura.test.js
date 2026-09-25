@@ -37,8 +37,10 @@ test("o token do MyControl usa segredo derivado, audience própria e só HS256",
 test("requireMcUser consulta o banco a cada requisição (não confia no token)", () => {
   const trecho = sessao.slice(sessao.indexOf("export async function requireMcUser"));
   assert.match(trecho, /await usuarioDaSessaoMc\(req\)/);
-  assert.match(sessao, /SELECT id, usuario, nome, permissoes, ativo FROM mc_usuarios WHERE id = \$1/);
+  assert.match(sessao, /SELECT id, usuario, nome, permissoes, ativo, senha_alterada_em FROM mc_usuarios WHERE id = \$1/);
   assert.match(trecho, /!usuario\.ativo/);
+  // Token anterior à última troca de senha não vale (Fase 2)
+  assert.match(sessao, /tokenRevogadoPelaSenha\(token\.emitidoEm, usuario\.senha_alterada_em\)/);
 });
 
 test("tabelas mc_ são criadas em runtime, registradas no restore e com datas TIMESTAMPTZ", () => {
@@ -57,6 +59,8 @@ test("assets do MyControl usam uma única versão própria (?v=)", () => {
   assert.match(htmlMc, /<script type="module" src="\/mycontrol\/app\.js\?v=/);
   // O comentário do próprio index.html diz qual é a versão vigente (ajuda a lembrar de trocar)
   assert.ok(htmlMc.includes(`(${versoes[0]})`), "o comentário do index.html deve citar a versão atual");
+  // Módulo compartilhado importado pelo MyControl segue a mesma versão (sem ?v= ficaria 1h em cache)
+  assert.ok(appMc.includes(`from "../js/ui/assinatura.js?v=${versoes[0]}"`), "o import da assinatura precisa da versão do MyControl");
 });
 
 test("links entre MyEstoque e MyControl abrem na mesma janela", () => {

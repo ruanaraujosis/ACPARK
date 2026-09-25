@@ -63,26 +63,38 @@ export function cookieLimparSessaoMc() {
   return serializeCookie(MC_COOKIE, "", { ...config().cookieOptions, maxAge: 0 });
 }
 
-// Lê e valida o token do cookie mc_session; devolve o id do usuário ou null
-export function idDaSessaoMc(req) {
+// Lê e valida o token do cookie mc_session; devolve { id, emitidoEm } (segundos) ou null
+export function tokenDaSessaoMc(req) {
   const { segredo } = config();
   const cookies = parseCookie(req.headers.cookie || "");
   if (!cookies[MC_COOKIE]) return null;
   try {
     const payload = jwt.verify(cookies[MC_COOKIE], segredo, { audience: MC_AUDIENCE, algorithms: ["HS256"] });
     const id = Number.parseInt(payload.sub, 10);
-    return Number.isInteger(id) && id > 0 ? id : null;
+    if (!Number.isInteger(id) || id <= 0 || !Number.isFinite(payload.iat)) return null;
+    return { id, emitidoEm: payload.iat };
   } catch {
     return null;
   }
 }
 
+// Token foi emitido antes da última redefinição de senha? Compara em segundos inteiros (o iat
+// do JWT não tem fração): um token emitido no mesmo segundo da troca continua valendo.
+export function tokenRevogadoPelaSenha(emitidoEm, senhaAlteradaEm) {
+  if (!senhaAlteradaEm) return false;
+  return emitidoEm < Math.floor(new Date(senhaAlteradaEm).getTime() / 1000);
+}
+
 // Carrega do banco o usuário da sessão atual (ativo ou não); null se não houver sessão válida
+// ou se o token for anterior à última redefinição de senha daquele usuário
 export async function usuarioDaSessaoMc(req) {
-  const id = idDaSessaoMc(req);
-  if (!id) return null;
-  const linhas = await query("SELECT id, usuario, nome, permissoes, ativo FROM mc_usuarios WHERE id = $1", [id]);
-  return linhas[0] || null;
+  const token = tokenDaSessaoMc(req);
+  if (!token) return null;
+  const linhas = await query("SELECT id, usuario, nome, permissoes, ativo, senha_alterada_em FROM mc_usuarios WHERE id = $1", [token.id]);
+  const usuario = linhas[0];
+  if (!usuario || tokenRevogadoPelaSenha(token.emitidoEm, usuario.senha_alterada_em)) return null;
+  delete usuario.senha_alterada_em;
+  return usuario;
 }
 
 // Exige usuário do MyControl logado, ativo e (opcionalmente) com a permissão pedida.
@@ -90,11 +102,13 @@ export async function usuarioDaSessaoMc(req) {
 export async function requireMcUser(req, res, permissao = null) {
   const usuario = await usuarioDaSessaoMc(req);
   if (!usuario || !usuario.ativo) {
-    // Sessão de usuário desativado (ou apagado) é descartada no navegador também
-    send(res, 401, { error: "Login necessario." }, usuario ? { "Set-Cookie": cookieLimparSessaoMc() } : {});
+    // Sessão inválida, revogada pela troca de senha ou de usuário desativado é descartada no navegador também
+    send(res, 401, { error: "Login necessario." }, { "Set-Cookie": cookieLimparSessaoMc() });
     return null;
   }
-  if (permissao && !(usuario.permissoes || []).includes(permissao)) {
+  // Aceita uma permissão ou uma lista (basta ter qualquer uma delas)
+  const exigidas = Array.isArray(permissao) ? permissao : permissao ? [permissao] : [];
+  if (exigidas.length && !exigidas.some((chave) => (usuario.permissoes || []).includes(chave))) {
     send(res, 403, { error: "Seu usuário não tem permissão para esta ação." });
     return null;
   }

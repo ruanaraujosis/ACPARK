@@ -15,7 +15,9 @@ import {
   stopOrderAlerts
 } from "./js/services/order-alerts.js";
 import { stopAllOrderAlerts, testOrderAlert } from "./js/services/audio-alert-manager.js";
-import { definirPreferenciasDoPdv, limparAlertasDoPdv, mostrarBotaoDeAtivacaoPdv, mostrarPedidoProntoParaRetirada } from "./js/services/pdv-order-alerts.js?v=20260925-mycontrol-cabecalho";
+// Versão na URL: módulo sem ?v= fica 1h em cache, e um export novo deixaria a tela em branco
+import { ligarQuadroDeAssinatura } from "./js/ui/assinatura.js?v=20260925-mycontrol-fase2";
+import { definirPreferenciasDoPdv, limparAlertasDoPdv, mostrarBotaoDeAtivacaoPdv, mostrarPedidoProntoParaRetirada } from "./js/services/pdv-order-alerts.js?v=20260925-mycontrol-fase2";
 
 let damageDraftItems = [];
 let renderDamageDraftItems;
@@ -4215,74 +4217,8 @@ function openDamagePhotoViewer(photos, initialIndex, product) {
   document.body.appendChild(modal);
 }
 
-// Núcleo do quadro de assinatura, compartilhado entre a devolução de avaria e o inventário.
-//
-// Só o desenho mora aqui: traço, limpeza, detecção de tinta e exportação em PNG. O que cada
-// tela faz com a assinatura (qual campo preenche, o que habilita) fica com ela. Antes deste
-// recorte o desenho existia num lugar só, amarrado ao formulário de avaria — a tela de
-// inventário precisaria copiar tudo para reaproveitar o traço.
-function ligarQuadroDeAssinatura(canvas, { aoDesenhar } = {}) {
-  const ctx = canvas.getContext("2d");
-  let desenhando = false;
-  let temTinta = false;
-
-  const limpar = () => {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.fillStyle = "#fff";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.strokeStyle = "#005f68";
-    // O canvas nasce em 720x220, mas quase sempre é exibido menor via CSS (width:100%) --
-    // reduzido, um traço de 4px de espessura própria fica fino demais na tela.
-    ctx.lineWidth = 7;
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
-    temTinta = false;
-    aoDesenhar?.(false);
-  };
-  // Converte a posição do ponteiro para a escala interna do canvas: o CSS pode exibi-lo com
-  // largura diferente da declarada, e sem essa conta o traço sai deslocado do cursor.
-  const ponto = (evento) => {
-    const area = canvas.getBoundingClientRect();
-    const fonte = evento.touches?.[0] || evento;
-    return {
-      x: ((fonte.clientX - area.left) / area.width) * canvas.width,
-      y: ((fonte.clientY - area.top) / area.height) * canvas.height
-    };
-  };
-  const comecar = (evento) => {
-    evento.preventDefault();
-    desenhando = true;
-    const p = ponto(evento);
-    ctx.beginPath();
-    ctx.moveTo(p.x, p.y);
-  };
-  const mover = (evento) => {
-    if (!desenhando) return;
-    evento.preventDefault();
-    const p = ponto(evento);
-    ctx.lineTo(p.x, p.y);
-    ctx.stroke();
-    temTinta = true;
-    aoDesenhar?.(true);
-  };
-  const terminar = () => {
-    desenhando = false;
-  };
-
-  limpar();
-  canvas.addEventListener("mousedown", comecar);
-  canvas.addEventListener("mousemove", mover);
-  window.addEventListener("mouseup", terminar);
-  canvas.addEventListener("touchstart", comecar, { passive: false });
-  canvas.addEventListener("touchmove", mover, { passive: false });
-  canvas.addEventListener("touchend", terminar);
-
-  return {
-    limpar,
-    temTinta: () => temTinta,
-    comoPng: () => canvas.toDataURL("image/png")
-  };
-}
+// O núcleo do quadro de assinatura (ligarQuadroDeAssinatura) mora em js/ui/assinatura.js,
+// compartilhado com o MyControl.
 
 // Liga os eventos de assinatura de avaria
 function bindDamageSignatures(root = document) {

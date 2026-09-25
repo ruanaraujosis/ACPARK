@@ -158,15 +158,33 @@ test("permissão retirada vale na próxima requisição", async () => {
 test("cada rota protegida recusa quem não tem a permissão dela (e quem não tem sessão)", async () => {
   const d = await criarELogar("usuario.d", ["dashboard.ver"]);
   const protegidas = rotas.filter((rota) => !rota.publica);
-  assert.ok(protegidas.length >= 5, "esperava as rotas de usuários na tabela");
+  assert.ok(protegidas.length >= 30, `esperava as rotas de usuários, campos, cargos, cadastros e arquivos (achei ${protegidas.length})`);
+  // PNG mínimo válido (1x1): as rotas de upload exigem corpo de imagem, não JSON
+  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAwS2OUAAAAABJRU5ErkJggg==", "base64");
   for (const rota of protegidas) {
     assert.ok(rota.permissao, `rota ${rota.caminho} sem permissão declarada`);
-    const caminho = rota.caminho.source.replace(/^\^/, "").replace(/\$$/, "").replace("(\\d{1,9})", String(d.id)).replace(/\\\//g, "/");
-    const corpo = rota.metodo === "GET" ? undefined : { nome: "X", usuario: "novo.x", senha: "123456", confirmarSenha: "123456", permissoes: ["dashboard.ver"], ativo: false };
-    const semPermissao = await chamar(amb.base, caminho, { method: rota.metodo, cookie: d.cookie, corpo });
+    const caminho = rota.caminho.source
+      .replace(/^\^/, "")
+      .replace(/\$$/, "")
+      .replace("(\\d{1,9})", String(d.id))
+      .replace(/\([a-z|]+\)/, "colaborador")
+      .replace(/\\\//g, "/");
+    const tentar = (cookie) => {
+      if (rota.corpo === "imagem") {
+        return fetch(`${amb.base}${caminho}`, { method: rota.metodo, headers: { "Content-Type": "image/png", ...(cookie ? { Cookie: cookie } : {}) }, body: png });
+      }
+      const corpo = rota.metodo === "GET" ? undefined : { nome: "X", usuario: "novo.x", senha: "123456", confirmarSenha: "123456", permissoes: ["dashboard.ver"], ativo: false, entidade: "colaborador", valores: { nome: "X" } };
+      return chamar(amb.base, caminho, { method: rota.metodo, cookie, corpo });
+    };
+    const semPermissao = await tentar(d.cookie);
     assert.equal(semPermissao.status, 403, `${rota.metodo} ${caminho} deveria recusar sem ${rota.permissao}`);
-    const semSessao = await chamar(amb.base, caminho, { method: rota.metodo, corpo });
+    const semSessao = await tentar(null);
     assert.equal(semSessao.status, 401, `${rota.metodo} ${caminho} deveria exigir sessão`);
+  }
+  // Nenhum arquivo nem cadastro nasceu das tentativas recusadas
+  for (const tabela of ["mc_arquivos", "mc_colaboradores", "mc_cargos"]) {
+    const { rows } = await amb.sql(`SELECT count(*)::int AS n FROM ${tabela}`);
+    assert.equal(rows[0].n, 0, `${tabela} deveria continuar vazia`);
   }
   // Nada foi criado nem alterado pelas tentativas recusadas
   const { rows } = await amb.sql("SELECT count(*)::int AS n FROM mc_usuarios WHERE usuario = 'novo.x'");

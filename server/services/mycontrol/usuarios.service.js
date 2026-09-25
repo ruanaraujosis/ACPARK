@@ -214,7 +214,8 @@ export async function editarUsuario(ator, id, dados) {
   });
 }
 
-// Redefine a senha de um usuário (a auditoria registra o fato, nunca o valor nem o hash)
+// Redefine a senha de um usuário e encerra as sessões abertas dele (a auditoria registra o
+// fato, nunca o valor nem o hash)
 export async function redefinirSenha(ator, id, dados) {
   const senha = validarSenha(dados.senha, dados.confirmarSenha);
   const hash = hashPassword(senha);
@@ -222,7 +223,8 @@ export async function redefinirSenha(ator, id, dados) {
     await travarUsuarios(client);
     const atorAtual = await confirmarAtor(client, ator);
     const alvo = await carregarAlvo(client, id);
-    await client.query("UPDATE mc_usuarios SET senha = $2 WHERE id = $1", [alvo.id, hash]);
+    // senha_alterada_em derruba todas as sessões abertas desse usuário (ver requireMcUser)
+    await client.query("UPDATE mc_usuarios SET senha = $2, senha_alterada_em = now() WHERE id = $1", [alvo.id, hash]);
     await registrarAuditoria(client, {
       ator: atorAtual,
       acao: "usuario.senha_redefinida",

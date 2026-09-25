@@ -8,11 +8,27 @@
 import { request } from "../js/api/api-client.js";
 import { toast } from "../js/ui/notifications.js";
 import { esc, table } from "../js/ui.js";
+// Mesmo núcleo de assinatura do MyEstoque (avaria e inventário); versão igual à dos assets daqui
+import { ligarQuadroDeAssinatura } from "../js/ui/assinatura.js?v=20260925-mycontrol-fase2b";
 
 const app = document.querySelector("#app");
 
 // Permissão que abre Configurações > Usuários (mesma chave do catálogo no servidor)
 const GERENCIAR_USUARIOS = "usuario.gerenciar";
+
+// Cadastros da Fase 2: caminho na tela, caminho na API e permissão (a mesma checada no servidor)
+const CADASTROS = {
+  colaborador: { caminho: "/mycontrol/colaboradores", api: "colaboradores", permissao: "colaborador.gerenciar", singular: "colaborador", plural: "Colaboradores", secundario: "matricula" },
+  ferramenta: { caminho: "/mycontrol/ferramentas", api: "ferramentas", permissao: "ferramenta.gerenciar", singular: "ferramenta", plural: "Ferramentas", secundario: "identificador" },
+  veiculo: { caminho: "/mycontrol/veiculos", api: "veiculos", permissao: "veiculo.gerenciar", singular: "veículo", plural: "Veículos", secundario: "placa" }
+};
+
+// Abas de Configurações, cada uma visível só com a própria permissão
+const ABAS_CONFIGURACAO = [
+  { id: "usuarios", caminho: "/mycontrol/configuracoes/usuarios", titulo: "Usuários", permissao: GERENCIAR_USUARIOS },
+  { id: "cargos", caminho: "/mycontrol/configuracoes/cargos", titulo: "Cargos", permissao: "cargo.gerenciar" },
+  { id: "campos", caminho: "/mycontrol/configuracoes/campos", titulo: "Campos", permissao: "campos.configurar" }
+];
 
 // Estado da página: usuário logado, catálogo de permissões e lista da tela de usuários
 const estado = {
@@ -22,11 +38,21 @@ const estado = {
   usuarios: []
 };
 
-// Telas por caminho. Só existem as da Fase 1 -- nada de tela vazia para o que ainda não foi feito.
+// Telas por caminho. Só existem as telas já feitas -- nada de tela vazia para fases futuras.
 const TELAS = {
   "/mycontrol": { id: "inicio", titulo: "Início" },
-  "/mycontrol/configuracoes/usuarios": { id: "usuarios", titulo: "Configurações", permissao: GERENCIAR_USUARIOS }
+  ...Object.fromEntries(Object.entries(CADASTROS).map(([entidade, c]) => [c.caminho, { id: "cadastro", entidade, titulo: c.plural, permissao: c.permissao }])),
+  ...Object.fromEntries(ABAS_CONFIGURACAO.map((aba) => [aba.caminho, { id: "configuracao", aba: aba.id, titulo: "Configurações", permissao: aba.permissao }]))
 };
+
+// Itens do menu lateral: início, cadastros permitidos e Configurações (primeira aba permitida)
+function itensDoMenu() {
+  const itens = [["/mycontrol", "Início"]];
+  for (const cadastro of Object.values(CADASTROS)) if (pode(cadastro.permissao)) itens.push([cadastro.caminho, cadastro.plural]);
+  const primeiraAba = ABAS_CONFIGURACAO.find((aba) => pode(aba.permissao));
+  if (primeiraAba) itens.push([primeiraAba.caminho, "Configurações"]);
+  return itens;
+}
 
 // Datas de colunas TIMESTAMPTZ, sempre no horário de Brasília: completa no desktop, curta no celular
 const formatoLongo = new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Sao_Paulo", dateStyle: "short", timeStyle: "short" });
@@ -216,7 +242,7 @@ function renderLogin() {
 // Casca das telas logadas: barra do topo e menu lateral no mesmo padrão do MyEstoque.
 // O botão "MyEstoque" fica no cabeçalho, ao lado das 3 barras, e abre na mesma janela.
 function casca(conteudo) {
-  const itens = Object.entries(TELAS).filter(([, tela]) => !tela.permissao || pode(tela.permissao));
+  const itens = itensDoMenu();
   app.innerHTML = `
     <div class="app-shell min-h-screen">
       <nav class="site-topbar sticky top-0 z-30">
@@ -252,7 +278,7 @@ function casca(conteudo) {
           <strong class="mc-nome">${esc(estado.usuario.nome)}</strong>
         </div>
         <div class="side-menu-list">
-          ${itens.map(([caminho, tela]) => `<button class="side-link nav-btn" type="button" data-caminho="${caminho}">${esc(tela.titulo)}</button>`).join("")}
+          ${itens.map(([caminho, titulo]) => `<button class="side-link nav-btn" type="button" data-caminho="${caminho}">${esc(titulo)}</button>`).join("")}
         </div>
         <button class="btn danger side-logout" id="logout" type="button">Sair</button>
       </aside>
@@ -307,20 +333,21 @@ function selosDePermissao(permissoes) {
 
 // Tela inicial: quem está logado e o que o usuário pode fazer nesta versão
 function renderInicio() {
+  // Atalhos para as telas que a pessoa pode abrir (os mesmos itens do menu, menos o Início)
+  const atalhos = itensDoMenu().slice(1);
   casca(`
     <section class="card mc-cartao">
       <p class="eyebrow">Início</p>
       <h3 class="mc-nome text-xl font-black">Olá, ${esc(estado.usuario.nome)}</h3>
-      ${pode(GERENCIAR_USUARIOS)
-        ? `<p class="text-slate-600">Cadastre os usuários do MyControl e defina o que cada um pode fazer em Configurações.</p>
-           <div><button class="btn mc-botao-cheio-celular" type="button" id="mc-ir-usuarios">Abrir Configurações &rsaquo; Usuários</button></div>`
+      ${atalhos.length
+        ? `<div class="mc-atalhos">${atalhos.map(([caminho, titulo]) => `<button class="btn secondary mc-atalho" type="button" data-atalho="${caminho}">${esc(titulo)}</button>`).join("")}</div>`
         : `<p class="text-slate-600">As telas liberadas pelas suas permissões aparecerão no menu conforme forem disponibilizadas.</p>`}
       <div>
         <p class="text-sm font-bold text-slate-600">Suas permissões</p>
         <div class="mc-selos mt-2">${estado.usuario.permissoes.map((chave) => `<span class="mc-selo">${esc(rotuloDaPermissao(chave))}</span>`).join("")}</div>
       </div>
     </section>`);
-  document.querySelector("#mc-ir-usuarios")?.addEventListener("click", () => navegar("/mycontrol/configuracoes/usuarios"));
+  document.querySelectorAll("[data-atalho]").forEach((botao) => botao.addEventListener("click", () => navegar(botao.dataset.atalho)));
 }
 
 // ===== Modal (criar usuário, editar, redefinir senha) =====
@@ -592,7 +619,8 @@ async function renderUsuarios() {
   }
 
   casca(`
-    <section class="card mc-cartao mc-usuarios">
+    ${abasDeConfiguracao("usuarios")}
+    <section class="card mc-cartao mc-lista">
       <div class="mc-barra">
         <div class="mc-barra-titulo">
           <p class="eyebrow">Configurações</p>
@@ -618,6 +646,7 @@ async function renderUsuarios() {
     const usuario = acharUsuario(botao.dataset.ativo);
     if (usuario) alternarAtivo(usuario, botao.dataset.valor === "true");
   }));
+  ligarAbasDeConfiguracao();
 }
 
 // Troca de tela pela URL (/mycontrol/...), sem recarregar a página
@@ -637,8 +666,685 @@ function renderizarRota() {
     history.replaceState(null, "", "/mycontrol");
     return renderInicio();
   }
-  if (tela.id === "usuarios") return renderUsuarios();
+  if (tela.id === "cadastro") return renderCadastro(tela.entidade);
+  if (tela.id === "configuracao" && tela.aba === "usuarios") return renderUsuarios();
+  if (tela.id === "configuracao" && tela.aba === "cargos") return renderCargos();
+  if (tela.id === "configuracao" && tela.aba === "campos") return renderCampos();
   return renderInicio();
+}
+
+// ===== Configurações: abas =====
+
+// Abas de Configurações (só as permitidas), com a atual marcada
+function abasDeConfiguracao(atual) {
+  const visiveis = ABAS_CONFIGURACAO.filter((aba) => pode(aba.permissao));
+  return `
+    <nav class="config-tabs mc-abas" aria-label="Configurações do MyControl">
+      ${visiveis.map((aba) => `<button class="config-tab ${aba.id === atual ? "is-active" : ""}" type="button" data-aba="${aba.caminho}" ${aba.id === atual ? 'aria-current="page"' : ""}>${esc(aba.titulo)}</button>`).join("")}
+    </nav>`;
+}
+
+// Liga os cliques das abas (cada aba é uma URL própria)
+function ligarAbasDeConfiguracao() {
+  document.querySelectorAll("[data-aba]").forEach((botao) => botao.addEventListener("click", () => navegar(botao.dataset.aba)));
+}
+
+// Confirmação antes de ações que mudam situação (desativar, excluir)
+function confirmar(pergunta) {
+  return window.confirm(pergunta);
+}
+
+// ===== Configurações > Cargos =====
+
+// Linha da lista de cargos (cartão no celular/tablet)
+function linhaCargo(cargo) {
+  const acoes = [`<button class="btn secondary mc-acao" type="button" data-cargo-editar="${cargo.id}">Editar</button>`];
+  if (cargo.ativo) acoes.push(`<button class="btn mc-acao mc-acao-perigo" type="button" data-cargo-ativo="${cargo.id}" data-valor="false">Desativar</button>`);
+  else acoes.push(`<button class="btn secondary mc-acao mc-acao-reativar" type="button" data-cargo-ativo="${cargo.id}" data-valor="true">Reativar</button>`);
+  // Excluir só aparece para cargo nunca usado (em uso, o servidor recusa e orienta a desativar)
+  if (!cargo.em_uso) acoes.push(`<button class="btn mc-acao mc-acao-perigo" type="button" data-cargo-excluir="${cargo.id}">Excluir</button>`);
+  return `
+    <tr>
+      <td class="mc-col-nome"><strong class="mc-nome">${esc(cargo.nome)}</strong></td>
+      <td class="mc-col-login"><span class="mc-rotulo-cartao">Abreviação</span> <span class="mc-login">${esc(cargo.abreviacao)}</span></td>
+      <td class="mc-col-situacao">${cargo.ativo ? '<span class="mc-chip">Ativo</span>' : '<span class="mc-chip is-inativo">Desativado</span>'}</td>
+      <td class="mc-col-acesso"><span class="mc-rotulo-cartao">Colaboradores</span> ${cargo.em_uso}</td>
+      <td class="mc-col-acoes"><div class="mc-acoes">${acoes.join("")}</div></td>
+    </tr>`;
+}
+
+// Modal de criar/editar cargo. Ao editar, avisa que as matrículas já geradas não mudam.
+function abrirCargo(cargo = null) {
+  abrirModal({
+    titulo: cargo ? `Editar cargo ${cargo.nome}` : "Novo cargo",
+    textoSalvar: cargo ? "Salvar alterações" : "Criar cargo",
+    corpo: `
+      <div class="mc-form">
+        ${campoTexto({ nome: "nome", rotulo: "Nome do cargo", extra: 'maxlength="60" autocomplete="off" autocapitalize="words"' })}
+        ${campoTexto({
+          nome: "abreviacao",
+          rotulo: "Abreviação (prefixo da matrícula)",
+          ajuda: "De 2 a 6 letras, sem acento nem número. Ex.: MOT gera matrículas MOT-000123.",
+          extra: 'maxlength="6" autocomplete="off" autocapitalize="characters" autocorrect="off" spellcheck="false"'
+        })}
+        ${cargo ? '<p class="mc-aviso">Trocar a abreviação vale só para colaboradores cadastrados daqui em diante. As matrículas já geradas não mudam.</p>' : ""}
+      </div>`,
+    aoAbrir: (form) => {
+      if (!cargo) return;
+      form.elements.nome.value = cargo.nome;
+      form.elements.abreviacao.value = cargo.abreviacao;
+    },
+    aoEnviar: async (form) => {
+      const corpo = JSON.stringify({ nome: form.elements.nome.value, abreviacao: form.elements.abreviacao.value });
+      const resposta = cargo
+        ? await api(`/api/mycontrol/cargos/${cargo.id}`, { method: "PATCH", body: corpo })
+        : await api("/api/mycontrol/cargos", { method: "POST", body: corpo });
+      toast(resposta.cargo?.abreviacao_mudou ? "Cargo salvo. As matrículas já geradas continuam como estavam." : "Cargo salvo.");
+      fecharModal();
+      renderCargos();
+      return true;
+    }
+  });
+}
+
+// Configurações > Cargos
+async function renderCargos() {
+  let cargos;
+  try {
+    cargos = (await api("/api/mycontrol/cargos")).cargos;
+  } catch (erro) {
+    avisarErro(erro);
+    return;
+  }
+  casca(`
+    ${abasDeConfiguracao("cargos")}
+    <section class="card mc-cartao mc-lista">
+      <div class="mc-barra">
+        <div class="mc-barra-titulo">
+          <p class="eyebrow">Configurações</p>
+          <h3 class="text-xl font-black">Cargos</h3>
+        </div>
+        <button class="btn mc-botao-cheio-celular" type="button" id="mc-novo-cargo">Novo cargo</button>
+        <p class="mc-barra-ajuda text-sm text-slate-500">A abreviação vira o prefixo da matrícula. Cargo em uso não é excluído: desative para ele não aparecer em colaboradores novos.</p>
+      </div>
+      ${table(["Nome", "Abreviação", "Situação", "Colaboradores", "Ações"], cargos.map(linhaCargo))}
+    </section>`);
+  ligarAbasDeConfiguracao();
+  const achar = (id) => cargos.find((cargo) => cargo.id === Number(id));
+  document.querySelector("#mc-novo-cargo").addEventListener("click", () => abrirCargo());
+  document.querySelectorAll("[data-cargo-editar]").forEach((botao) => botao.addEventListener("click", () => abrirCargo(achar(botao.dataset.cargoEditar))));
+  document.querySelectorAll("[data-cargo-ativo]").forEach((botao) => botao.addEventListener("click", async () => {
+    const cargo = achar(botao.dataset.cargoAtivo);
+    const ativar = botao.dataset.valor === "true";
+    if (!confirmar(ativar ? `Reativar o cargo ${cargo.nome}?` : `Desativar o cargo ${cargo.nome}? Ele deixa de aparecer para colaboradores novos; quem já está nele continua.`)) return;
+    try {
+      await api(`/api/mycontrol/cargos/${cargo.id}/ativo`, { method: "POST", body: JSON.stringify({ ativo: ativar }) });
+      toast(ativar ? "Cargo reativado." : "Cargo desativado.");
+      renderCargos();
+    } catch (erro) {
+      avisarErro(erro);
+    }
+  }));
+  document.querySelectorAll("[data-cargo-excluir]").forEach((botao) => botao.addEventListener("click", async () => {
+    const cargo = achar(botao.dataset.cargoExcluir);
+    if (!confirmar(`Excluir o cargo ${cargo.nome}? Esta ação não pode ser desfeita.`)) return;
+    try {
+      await api(`/api/mycontrol/cargos/${cargo.id}/excluir`, { method: "POST", body: "{}" });
+      toast("Cargo excluído.");
+      renderCargos();
+    } catch (erro) {
+      avisarErro(erro);
+    }
+  }));
+}
+
+// ===== Configurações > Campos =====
+
+// Entidade escolhida na tela de Campos (lembrada enquanto a página está aberta)
+let entidadeDosCampos = "colaborador";
+
+// Rótulo legível do tipo de um campo
+function rotuloDoTipo(tipos, tipo) {
+  const extras = { matricula: "Matrícula (automática)", cargo: "Cargo", placa: "Placa" };
+  return tipos.find((t) => t.tipo === tipo)?.rotulo || extras[tipo] || tipo;
+}
+
+// Linha da lista de campos, com subir/descer (alternativa por toque ao arrastar)
+function linhaCampo(campo, indice, total, tipos) {
+  const selos = [];
+  if (campo.obrigatorio) selos.push('<span class="mc-selo is-obrigatorio">Obrigatório</span>');
+  if (campo.travado) selos.push('<span class="mc-selo">Travado</span>');
+  else if (campo.sistema) selos.push('<span class="mc-selo">Do sistema</span>');
+  const acoes = [
+    `<button class="btn secondary mc-acao mc-acao-icone" type="button" data-campo-subir="${campo.id}" ${indice === 0 ? "disabled" : ""} aria-label="Subir ${esc(campo.rotulo)}" title="Subir">&uarr;</button>`,
+    `<button class="btn secondary mc-acao mc-acao-icone" type="button" data-campo-descer="${campo.id}" ${indice === total - 1 ? "disabled" : ""} aria-label="Descer ${esc(campo.rotulo)}" title="Descer">&darr;</button>`,
+    `<button class="btn secondary mc-acao" type="button" data-campo-editar="${campo.id}">Editar</button>`
+  ];
+  if (!campo.travado) {
+    acoes.push(campo.ativo
+      ? `<button class="btn mc-acao mc-acao-perigo" type="button" data-campo-ativo="${campo.id}" data-valor="false">Desativar</button>`
+      : `<button class="btn secondary mc-acao mc-acao-reativar" type="button" data-campo-ativo="${campo.id}" data-valor="true">Reativar</button>`);
+  }
+  if (!campo.sistema) acoes.push(`<button class="btn mc-acao mc-acao-perigo" type="button" data-campo-excluir="${campo.id}">Excluir</button>`);
+  return `
+    <tr>
+      <td class="mc-col-nome"><strong class="mc-nome">${esc(campo.rotulo)}</strong></td>
+      <td class="mc-col-login">${esc(rotuloDoTipo(tipos, campo.tipo))}</td>
+      <td class="mc-col-situacao">${campo.ativo ? '<span class="mc-chip">Ativo</span>' : '<span class="mc-chip is-inativo">Desativado</span>'}</td>
+      <td class="mc-col-permissoes"><div class="mc-selos">${selos.join("")}</div></td>
+      <td class="mc-col-acoes"><div class="mc-acoes">${acoes.join("")}</div></td>
+    </tr>`;
+}
+
+// Modal de criar/editar campo. O tipo só é escolhido na criação (depois não muda).
+function abrirCampo(tipos, campo = null) {
+  const opcoesTipo = tipos.map((t) => `<option value="${esc(t.tipo)}">${esc(t.rotulo)}</option>`).join("");
+  abrirModal({
+    titulo: campo ? `Editar campo ${campo.rotulo}` : "Novo campo",
+    textoSalvar: campo ? "Salvar alterações" : "Criar campo",
+    corpo: `
+      <div class="mc-form">
+        ${campoTexto({ nome: "rotulo", rotulo: "Nome do campo", extra: 'maxlength="60" autocomplete="off" autocapitalize="sentences"' })}
+        ${campo
+          ? `<p class="text-sm text-slate-600">Tipo: <strong>${esc(rotuloDoTipo(tipos, campo.tipo))}</strong> (o tipo não muda depois de criado)</p>`
+          : `<label class="mc-campo"><span class="mc-rotulo">Tipo</span><select name="tipo">${opcoesTipo}</select></label>`}
+        <label class="mc-campo" data-bloco-opcoes>
+          <span class="mc-rotulo">Opções da lista (uma por linha)</span>
+          <textarea name="opcoes" rows="5" autocapitalize="sentences"></textarea>
+        </label>
+        <label class="mc-marcar-todas"><input type="checkbox" name="obrigatorio" ${campo?.obrigatorio_fixo ? "disabled" : ""} /> <span>Obrigatório${campo?.obrigatorio_fixo ? " (sempre, campo do sistema)" : ""}</span></label>
+      </div>`,
+    aoAbrir: (form) => {
+      const blocoOpcoes = form.querySelector("[data-bloco-opcoes]");
+      // Opções só fazem sentido para "Lista de opções"
+      const atualizarOpcoes = () => blocoOpcoes.classList.toggle("hidden", (campo ? campo.tipo : form.elements.tipo.value) !== "selecao");
+      form.elements.tipo?.addEventListener("change", atualizarOpcoes);
+      if (campo) {
+        form.elements.rotulo.value = campo.rotulo;
+        form.elements.obrigatorio.checked = campo.obrigatorio;
+        form.elements.opcoes.value = (campo.opcoes || []).join("\n");
+      }
+      atualizarOpcoes();
+    },
+    aoEnviar: async (form) => {
+      const tipo = campo ? campo.tipo : form.elements.tipo.value;
+      const corpo = { rotulo: form.elements.rotulo.value };
+      if (!campo?.obrigatorio_fixo) corpo.obrigatorio = form.elements.obrigatorio.checked;
+      if (tipo === "selecao") corpo.opcoes = form.elements.opcoes.value.split("\n");
+      if (campo) await api(`/api/mycontrol/campos/${campo.id}`, { method: "PATCH", body: JSON.stringify(corpo) });
+      else await api("/api/mycontrol/campos", { method: "POST", body: JSON.stringify({ ...corpo, entidade: entidadeDosCampos, tipo }) });
+      toast("Campo salvo.");
+      fecharModal();
+      renderCampos();
+      return true;
+    }
+  });
+}
+
+// Configurações > Campos
+async function renderCampos() {
+  let dados;
+  try {
+    dados = await api(`/api/mycontrol/campos?entidade=${entidadeDosCampos}`);
+  } catch (erro) {
+    avisarErro(erro);
+    return;
+  }
+  const { campos, tipos, entidades } = dados;
+  casca(`
+    ${abasDeConfiguracao("campos")}
+    <section class="card mc-cartao mc-lista">
+      <div class="mc-barra">
+        <div class="mc-barra-titulo">
+          <p class="eyebrow">Configurações</p>
+          <h3 class="text-xl font-black">Campos dos cadastros</h3>
+        </div>
+        <button class="btn mc-botao-cheio-celular" type="button" id="mc-novo-campo">Novo campo</button>
+        <div class="mc-segmentado" role="group" aria-label="Cadastro">
+          ${Object.entries(entidades).map(([id, e]) => `<button class="btn ${id === entidadeDosCampos ? "" : "secondary"}" type="button" data-entidade="${id}" aria-pressed="${id === entidadeDosCampos}">${esc(e.plural)}</button>`).join("")}
+        </div>
+        <p class="mc-barra-ajuda text-sm text-slate-500">Campos travados são do sistema: podem mudar de nome e de posição, mas não saem do cadastro. Excluir um campo esconde o campo; os valores já gravados continuam guardados.</p>
+      </div>
+      ${table(["Campo", "Tipo", "Situação", "Regras", "Ações"], campos.map((campo, i) => linhaCampo(campo, i, campos.length, tipos)))}
+    </section>`);
+  ligarAbasDeConfiguracao();
+  const achar = (id) => campos.find((campo) => campo.id === Number(id));
+  document.querySelectorAll("[data-entidade]").forEach((botao) => botao.addEventListener("click", () => {
+    entidadeDosCampos = botao.dataset.entidade;
+    renderCampos();
+  }));
+  document.querySelector("#mc-novo-campo").addEventListener("click", () => abrirCampo(tipos));
+  document.querySelectorAll("[data-campo-editar]").forEach((botao) => botao.addEventListener("click", () => abrirCampo(tipos, achar(botao.dataset.campoEditar))));
+  // Subir/descer: troca o campo de posição com o vizinho e grava a lista inteira
+  const mover = async (id, passo) => {
+    const ids = campos.map((campo) => campo.id);
+    const de = ids.indexOf(Number(id));
+    const para = de + passo;
+    if (de < 0 || para < 0 || para >= ids.length) return;
+    [ids[de], ids[para]] = [ids[para], ids[de]];
+    try {
+      await api("/api/mycontrol/campos/ordem", { method: "POST", body: JSON.stringify({ entidade: entidadeDosCampos, ids }) });
+      renderCampos();
+    } catch (erro) {
+      avisarErro(erro);
+    }
+  };
+  document.querySelectorAll("[data-campo-subir]").forEach((botao) => botao.addEventListener("click", () => mover(botao.dataset.campoSubir, -1)));
+  document.querySelectorAll("[data-campo-descer]").forEach((botao) => botao.addEventListener("click", () => mover(botao.dataset.campoDescer, 1)));
+  document.querySelectorAll("[data-campo-ativo]").forEach((botao) => botao.addEventListener("click", async () => {
+    const campo = achar(botao.dataset.campoAtivo);
+    const ativar = botao.dataset.valor === "true";
+    if (!confirmar(ativar ? `Reativar o campo ${campo.rotulo}?` : `Desativar o campo ${campo.rotulo}? Ele some dos formulários; os valores já gravados ficam guardados.`)) return;
+    try {
+      await api(`/api/mycontrol/campos/${campo.id}/ativo`, { method: "POST", body: JSON.stringify({ ativo: ativar }) });
+      renderCampos();
+    } catch (erro) {
+      avisarErro(erro);
+    }
+  }));
+  document.querySelectorAll("[data-campo-excluir]").forEach((botao) => botao.addEventListener("click", async () => {
+    const campo = achar(botao.dataset.campoExcluir);
+    if (!confirmar(`Excluir o campo ${campo.rotulo}? Ele deixa de aparecer em todo lugar e não pode ser recuperado pela tela.`)) return;
+    try {
+      await api(`/api/mycontrol/campos/${campo.id}/excluir`, { method: "POST", body: "{}" });
+      toast("Campo excluído.");
+      renderCampos();
+    } catch (erro) {
+      avisarErro(erro);
+    }
+  }));
+}
+
+// ===== Fotos e assinaturas =====
+
+// Reduz a foto no navegador antes de enviar: lado maior até `lado` px em JPEG, baixando a
+// qualidade até caber no limite do servidor (UPLOAD_MAX_IMAGE_MB). Foto de celular chega a
+// 5-12 MB; comprimida fica com algumas centenas de KB e a qualidade continua boa para cadastro.
+async function comprimirImagem(arquivo, { lado = 1600, qualidade = 0.82, limite = 8 * 1024 * 1024 } = {}) {
+  let bitmap;
+  try {
+    bitmap = await createImageBitmap(arquivo, { imageOrientation: "from-image" });
+  } catch {
+    throw new Error("Não foi possível ler esta imagem neste navegador. Tire a foto de novo ou envie um JPG/PNG.");
+  }
+  const escala = Math.min(1, lado / Math.max(bitmap.width, bitmap.height));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(bitmap.width * escala));
+  canvas.height = Math.max(1, Math.round(bitmap.height * escala));
+  canvas.getContext("2d").drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  bitmap.close?.();
+  let q = qualidade;
+  let blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", q));
+  while (blob && blob.size > limite * 0.9 && q > 0.4) {
+    q -= 0.1;
+    blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", q));
+  }
+  if (!blob || blob.size > limite) throw new Error("A foto continua grande demais mesmo comprimida. Tente outra.");
+  return blob;
+}
+
+// Envia uma imagem ao storage e devolve o id do arquivo (foto ganha também a miniatura)
+async function enviarImagem(entidade, papel, blob, { original = null } = {}) {
+  const { arquivo } = await api(`/api/mycontrol/arquivos/${entidade}?papel=${papel}`, {
+    method: "POST",
+    body: blob,
+    headers: { "Content-Type": blob.type || "image/png" },
+    loadingMessage: papel === "foto" ? "Enviando foto..." : "Enviando assinatura..."
+  });
+  if (papel === "foto" && original) {
+    const miniatura = await comprimirImagem(original, { lado: 320, qualidade: 0.72, limite: 500 * 1024 });
+    await api(`/api/mycontrol/arquivos/${entidade}/${arquivo.id}/miniatura`, {
+      method: "POST",
+      body: miniatura,
+      headers: { "Content-Type": miniatura.type },
+      silentLoading: true
+    });
+  }
+  return arquivo.id;
+}
+
+// URL de um arquivo do MyControl (miniatura para listas; a foto grande só ao tocar)
+function urlArquivo(id, { miniatura = false } = {}) {
+  return `/api/mycontrol/arquivos/${id}${miniatura ? "?miniatura=1" : ""}`;
+}
+
+// Mostra a foto grande por cima da tela (fecha tocando no fundo, no X ou com Esc)
+function abrirFotoGrande(id, titulo) {
+  const fundo = document.createElement("div");
+  fundo.className = "mc-modal-fundo mc-foto-grande";
+  fundo.innerHTML = `
+    <figure class="mc-foto-grande-caixa">
+      <button class="mc-modal-fechar" type="button" aria-label="Fechar foto">&times;</button>
+      <img src="${urlArquivo(id)}" alt="${esc(titulo)}" />
+      <figcaption class="mc-nome">${esc(titulo)}</figcaption>
+    </figure>`;
+  const fechar = () => {
+    fundo.remove();
+    document.removeEventListener("keydown", tecla);
+  };
+  const tecla = (evento) => evento.key === "Escape" && fechar();
+  fundo.addEventListener("click", (evento) => (evento.target === fundo || evento.target.closest(".mc-modal-fechar")) && fechar());
+  document.addEventListener("keydown", tecla);
+  document.body.appendChild(fundo);
+}
+
+// ===== Cadastros (colaboradores, ferramentas, veículos) =====
+
+// Estado da tela de cadastro aberta
+const cadastro = { entidade: null, itens: [], campos: [], cargos: [], total: 0, pagina: 1, q: "", situacao: "ativos", limite: 8 * 1024 * 1024 };
+
+// Texto do valor secundário (matrícula, placa formatada ou identificador)
+function valorSecundario(entidade, item) {
+  if (entidade === "colaborador") return item.matricula;
+  if (entidade === "veiculo") return item.placa_formatada;
+  return item.valores.identificador;
+}
+
+// Linha da lista de cadastro: miniatura, nome, dado principal, pendências e ações
+function linhaCadastro(entidade, item) {
+  const nome = item.valores.nome || "—";
+  const foto = item.foto_id
+    ? `<button class="mc-miniatura" type="button" data-foto="${item.foto_id}" data-titulo="${esc(nome)}" aria-label="Ver foto de ${esc(nome)}"><img src="${urlArquivo(item.foto_id, { miniatura: true })}" alt="" loading="lazy" width="48" height="48" /></button>`
+    : '<span class="mc-miniatura is-vazia" aria-hidden="true"></span>';
+  const extra = entidade === "colaborador"
+    ? `<span class="mc-rotulo-cartao">Cargo</span> ${esc(item.cargo.nome)}${item.cargo.ativo ? "" : " (desativado)"}`
+    : entidade === "veiculo" ? `<span class="mc-rotulo-cartao">Chave</span> <span class="mc-login">${esc(item.valores.numero_chave)}</span>` : "";
+  const pendencia = item.pendencias.length ? `<span class="mc-selo is-pendente">Falta preencher: ${esc(item.pendencias.join(", "))}</span>` : "";
+  return `
+    <tr>
+      <td class="mc-col-foto">${foto}</td>
+      <td class="mc-col-nome"><strong class="mc-nome">${esc(nome)}</strong>${pendencia ? `<div class="mc-selos mt-1">${pendencia}</div>` : ""}</td>
+      <td class="mc-col-login"><span class="mc-login">${esc(valorSecundario(entidade, item) || "")}</span></td>
+      ${entidade === "ferramenta" ? "" : `<td class="mc-col-acesso">${extra}</td>`}
+      <td class="mc-col-situacao">${item.ativo ? '<span class="mc-chip">Ativo</span>' : '<span class="mc-chip is-inativo">Desativado</span>'}</td>
+      <td class="mc-col-acoes">
+        <div class="mc-acoes">
+          <button class="btn secondary mc-acao" type="button" data-item-editar="${item.id}">Editar</button>
+          ${item.ativo
+            ? `<button class="btn mc-acao mc-acao-perigo" type="button" data-item-ativo="${item.id}" data-valor="false">Desativar</button>`
+            : `<button class="btn secondary mc-acao mc-acao-reativar" type="button" data-item-ativo="${item.id}" data-valor="true">Reativar</button>`}
+        </div>
+      </td>
+    </tr>`;
+}
+
+// Campo do formulário de cadastro conforme o tipo (rótulo sempre acima; teclado certo no celular)
+function campoDoCadastro(campo, item) {
+  const valor = item ? item.valores[campo.chave] : null;
+  const rotulo = `${esc(campo.rotulo)}${campo.obrigatorio && !campo.gerado ? ' <span class="mc-obrigatorio" aria-label="obrigatório">*</span>' : ""}`;
+  const nome = `v_${campo.chave}`;
+  const abrir = `<label class="mc-campo"><span class="mc-rotulo">${rotulo}</span>`;
+  switch (campo.tipo) {
+    case "matricula":
+      return `<div class="mc-campo"><span class="mc-rotulo">${esc(campo.rotulo)}</span><p class="mc-matricula">${item ? `<span class="mc-login">${esc(item.matricula)}</span> <small>gerada pelo sistema, não muda</small>` : "<small>Gerada automaticamente ao salvar.</small>"}</p></div>`;
+    case "texto":
+      return `${abrir}<input name="${nome}" type="text" maxlength="${campo.max}" autocomplete="off" ${campo.maiusculo ? 'autocapitalize="characters" autocorrect="off" spellcheck="false"' : 'autocapitalize="sentences"'} /></label>`;
+    case "texto_longo":
+      return `${abrir}<textarea name="${nome}" rows="3" maxlength="${campo.max}" autocapitalize="sentences"></textarea></label>`;
+    case "numero":
+      return `${abrir}<input name="${nome}" type="text" inputmode="decimal" autocomplete="off" /></label>`;
+    case "data":
+      return `${abrir}<input name="${nome}" type="date" /></label>`;
+    case "telefone":
+      return `${abrir}<input name="${nome}" type="tel" inputmode="tel" autocomplete="off" placeholder="(62) 99999-0000" /></label>`;
+    case "placa":
+      return `${abrir}<input name="${nome}" type="text" maxlength="8" autocomplete="off" autocapitalize="characters" autocorrect="off" spellcheck="false" placeholder="ABC1D23" /></label>`;
+    case "selecao":
+      return `${abrir}<select name="${nome}"><option value="">Escolha...</option>${campo.opcoes.map((op) => `<option>${esc(op)}</option>`).join("")}${valor && !campo.opcoes.includes(valor) ? `<option>${esc(valor)}</option>` : ""}</select></label>`;
+    case "sim_nao":
+      return `${abrir}<select name="${nome}"><option value="">Escolha...</option><option value="sim">Sim</option><option value="nao">Não</option></select></label>`;
+    case "cargo": {
+      const opcoes = cadastro.cargos.filter((c) => c.ativo || c.id === valor);
+      return `${abrir}<select name="${nome}"><option value="">Escolha o cargo...</option>${opcoes.map((c) => `<option value="${c.id}">${esc(c.nome)} (${esc(c.abreviacao)})${c.ativo ? "" : " — desativado"}</option>`).join("")}</select></label>`;
+    }
+    case "foto":
+      return `
+        <div class="mc-campo" data-foto-campo="${campo.chave}">
+          <span class="mc-rotulo">${rotulo}</span>
+          <div class="mc-foto-campo">
+            <img class="mc-foto-previa ${valor ? "" : "hidden"}" alt="Prévia da foto" ${valor ? `src="${urlArquivo(valor, { miniatura: true })}"` : ""} />
+            <div class="mc-acoes">
+              <label class="btn secondary mc-acao mc-botao-arquivo">${valor ? "Trocar foto" : "Tirar ou escolher foto"}
+                <input type="file" accept="image/*" capture="environment" data-foto-entrada />
+              </label>
+              <button class="btn secondary mc-acao ${valor ? "" : "hidden"}" type="button" data-foto-remover>Remover</button>
+            </div>
+          </div>
+        </div>`;
+    case "assinatura":
+      return `
+        <div class="mc-campo" data-assinatura-campo="${campo.chave}">
+          <span class="mc-rotulo">${rotulo}</span>
+          ${valor ? `<div class="mc-assinatura-atual"><img src="${urlArquivo(valor)}" alt="Assinatura atual" /><button class="btn secondary mc-acao" type="button" data-assinar-denovo>Assinar de novo</button></div>` : ""}
+          <div class="mc-assinatura-quadro ${valor ? "hidden" : ""}">
+            <canvas class="signature-pad" width="720" height="220" aria-label="Área para assinar com o dedo ou o mouse"></canvas>
+            <div class="mc-acoes"><button class="btn secondary mc-acao" type="button" data-assinatura-limpar>Limpar assinatura</button></div>
+          </div>
+        </div>`;
+    default:
+      return "";
+  }
+}
+
+// Preenche os campos simples do formulário com os valores atuais
+function preencherFormulario(form, campos, item) {
+  if (!item) return;
+  for (const campo of campos) {
+    const entrada = form.elements[`v_${campo.chave}`];
+    const valor = item.valores[campo.chave];
+    if (!entrada || valor === null || valor === undefined) continue;
+    if (campo.tipo === "sim_nao") entrada.value = valor ? "sim" : "nao";
+    else if (campo.tipo === "placa") entrada.value = item.placa_formatada || valor;
+    else entrada.value = String(valor);
+  }
+}
+
+// Liga foto (prévia, troca, remoção) e assinatura (quadro compartilhado) do formulário.
+// Devolve uma função que, na hora de salvar, envia as imagens novas e diz o id de cada campo.
+function ligarMidias(form, entidade, item) {
+  const pendentes = {};
+  form.querySelectorAll("[data-foto-campo]").forEach((bloco) => {
+    const chave = bloco.dataset.fotoCampo;
+    const entrada = bloco.querySelector("[data-foto-entrada]");
+    const previa = bloco.querySelector(".mc-foto-previa");
+    const remover = bloco.querySelector("[data-foto-remover]");
+    let urlLocal = null;
+    entrada.addEventListener("change", async () => {
+      const arquivo = entrada.files?.[0];
+      if (!arquivo) return;
+      try {
+        const comprimida = await comprimirImagem(arquivo, { limite: cadastro.limite });
+        if (urlLocal) URL.revokeObjectURL(urlLocal);
+        urlLocal = URL.createObjectURL(comprimida);
+        previa.src = urlLocal;
+        previa.classList.remove("hidden");
+        remover.classList.remove("hidden");
+        pendentes[chave] = { tipo: "foto", blob: comprimida, original: arquivo };
+      } catch (erro) {
+        toast(erro.message, "error");
+      }
+      entrada.value = "";
+    });
+    remover.addEventListener("click", () => {
+      previa.classList.add("hidden");
+      previa.removeAttribute("src");
+      remover.classList.add("hidden");
+      pendentes[chave] = { tipo: "remover" };
+    });
+  });
+  form.querySelectorAll("[data-assinatura-campo]").forEach((bloco) => {
+    const chave = bloco.dataset.assinaturaCampo;
+    const quadroEl = bloco.querySelector(".mc-assinatura-quadro");
+    let quadro = null;
+    // O quadro só é ligado quando fica visível (o tamanho exibido entra na conversão de escala)
+    const ligar = () => {
+      quadroEl.classList.remove("hidden");
+      quadro ||= ligarQuadroDeAssinatura(quadroEl.querySelector("canvas"));
+      pendentes[chave] = { tipo: "assinatura", quadro: () => quadro };
+    };
+    bloco.querySelector("[data-assinar-denovo]")?.addEventListener("click", () => {
+      bloco.querySelector(".mc-assinatura-atual").classList.add("hidden");
+      ligar();
+    });
+    bloco.querySelector("[data-assinatura-limpar]").addEventListener("click", () => quadro?.limpar());
+    if (!item?.valores[chave]) ligar();
+  });
+  // Na hora de salvar: sobe o que mudou e devolve { chave: id | null }
+  return async () => {
+    const resultado = {};
+    for (const [chave, pendente] of Object.entries(pendentes)) {
+      if (pendente.tipo === "remover") resultado[chave] = null;
+      if (pendente.tipo === "foto") resultado[chave] = await enviarImagem(entidade, "foto", pendente.blob, { original: pendente.original });
+      if (pendente.tipo === "assinatura") {
+        const quadro = pendente.quadro();
+        if (quadro.temTinta()) resultado[chave] = await enviarImagem(entidade, "assinatura", await quadro.comoBlob());
+      }
+    }
+    return resultado;
+  };
+}
+
+// Lê os valores do formulário no formato que o servidor valida
+function lerFormulario(form, campos) {
+  const valores = {};
+  for (const campo of campos) {
+    if (campo.gerado || campo.tipo === "foto" || campo.tipo === "assinatura") continue;
+    const entrada = form.elements[`v_${campo.chave}`];
+    if (!entrada) continue;
+    const bruto = entrada.value;
+    if (campo.tipo === "sim_nao") valores[campo.chave] = bruto === "" ? null : bruto === "sim";
+    else if (campo.tipo === "cargo") valores[campo.chave] = bruto ? Number(bruto) : null;
+    else valores[campo.chave] = bruto.trim() === "" ? null : bruto;
+  }
+  return valores;
+}
+
+// Modal de criar/editar um cadastro, montado a partir dos campos ativos
+function abrirCadastro(entidade, item = null) {
+  const config = CADASTROS[entidade];
+  const campos = cadastro.campos.filter((campo) => campo.ativo);
+  let enviarMidias = null;
+  abrirModal({
+    titulo: item ? `Editar ${item.valores.nome || config.singular}` : `Novo ${config.singular}`.replace("Novo ferramenta", "Nova ferramenta"),
+    textoSalvar: item ? "Salvar alterações" : "Cadastrar",
+    corpo: `<div class="mc-form mc-form-grade">${campos.map((campo) => campoDoCadastro(campo, item)).join("")}</div>`,
+    aoAbrir: (form) => {
+      preencherFormulario(form, campos, item);
+      enviarMidias = ligarMidias(form, entidade, item);
+    },
+    aoEnviar: async (form) => {
+      const valores = { ...lerFormulario(form, campos), ...(await enviarMidias()) };
+      const caminho = item ? `/api/mycontrol/${config.api}/${item.id}` : `/api/mycontrol/${config.api}`;
+      const resposta = await api(caminho, { method: item ? "PATCH" : "POST", body: JSON.stringify({ valores }) });
+      toast(item ? "Cadastro atualizado." : entidade === "colaborador" ? `Colaborador cadastrado: matrícula ${resposta.item.matricula}.` : "Cadastro criado.");
+      fecharModal();
+      carregarCadastro({ reiniciar: true });
+      return true;
+    }
+  });
+}
+
+// Busca uma página da lista (reiniciar = volta à primeira página, com os filtros atuais)
+async function carregarCadastro({ reiniciar = false } = {}) {
+  const config = CADASTROS[cadastro.entidade];
+  const pagina = reiniciar ? 1 : cadastro.pagina + 1;
+  const parametros = new URLSearchParams({ situacao: cadastro.situacao, pagina: String(pagina) });
+  if (cadastro.q) parametros.set("q", cadastro.q);
+  let dados;
+  try {
+    dados = await api(`/api/mycontrol/${config.api}?${parametros}`);
+  } catch (erro) {
+    avisarErro(erro);
+    return;
+  }
+  cadastro.itens = reiniciar ? dados.itens : [...cadastro.itens, ...dados.itens];
+  cadastro.campos = dados.campos;
+  cadastro.cargos = dados.cargos || [];
+  cadastro.total = dados.total;
+  cadastro.pagina = dados.pagina;
+  cadastro.limite = dados.limite_imagem_bytes || cadastro.limite;
+  desenharListaDoCadastro();
+}
+
+// Redesenha só a lista (a busca não perde o foco nem o teclado do celular)
+function desenharListaDoCadastro() {
+  const entidade = cadastro.entidade;
+  const rotulo = (chave, padrao) => cadastro.campos.find((campo) => campo.chave === chave)?.rotulo || padrao;
+  const cabecalhos = ["", rotulo("nome", "Nome"), rotulo(CADASTROS[entidade].secundario, "")];
+  if (entidade === "colaborador") cabecalhos.push(rotulo("cargo", "Cargo"));
+  if (entidade === "veiculo") cabecalhos.push(rotulo("numero_chave", "Chave"));
+  cabecalhos.push("Situação", "Ações");
+  const alvo = document.querySelector("#mc-cadastro-lista");
+  if (!alvo) return;
+  alvo.innerHTML = `
+    ${table(cabecalhos, cadastro.itens.map((item) => linhaCadastro(entidade, item)))}
+    <p class="mc-contagem text-sm text-slate-500">${cadastro.itens.length} de ${cadastro.total}</p>
+    ${cadastro.itens.length < cadastro.total ? '<button class="btn secondary mc-botao-cheio" type="button" id="mc-carregar-mais">Carregar mais</button>' : ""}`;
+  const achar = (id) => cadastro.itens.find((item) => item.id === Number(id));
+  alvo.querySelector("#mc-carregar-mais")?.addEventListener("click", () => carregarCadastro());
+  alvo.querySelectorAll("[data-foto]").forEach((botao) => botao.addEventListener("click", () => abrirFotoGrande(botao.dataset.foto, botao.dataset.titulo)));
+  alvo.querySelectorAll("[data-item-editar]").forEach((botao) => botao.addEventListener("click", () => abrirCadastro(entidade, achar(botao.dataset.itemEditar))));
+  alvo.querySelectorAll("[data-item-ativo]").forEach((botao) => botao.addEventListener("click", async () => {
+    const item = achar(botao.dataset.itemAtivo);
+    const ativar = botao.dataset.valor === "true";
+    const nome = item.valores.nome || CADASTROS[entidade].singular;
+    if (!confirmar(ativar ? `Reativar ${nome}?` : `Desativar ${nome}? O cadastro continua guardado e pode ser reativado.`)) return;
+    try {
+      await api(`/api/mycontrol/${CADASTROS[entidade].api}/${item.id}/ativo`, { method: "POST", body: JSON.stringify({ ativo: ativar }) });
+      toast(ativar ? "Cadastro reativado." : "Cadastro desativado.");
+      carregarCadastro({ reiniciar: true });
+    } catch (erro) {
+      avisarErro(erro);
+    }
+  }));
+}
+
+// Tela de um cadastro: título, novo, busca, filtro de situação e lista paginada
+async function renderCadastro(entidade) {
+  const config = CADASTROS[entidade];
+  if (cadastro.entidade !== entidade) Object.assign(cadastro, { entidade, itens: [], q: "", situacao: "ativos", pagina: 1 });
+  casca(`
+    <section class="card mc-cartao mc-lista mc-lista-com-foto">
+      <div class="mc-barra">
+        <div class="mc-barra-titulo">
+          <p class="eyebrow">Cadastros</p>
+          <h3 class="text-xl font-black">${esc(config.plural)}</h3>
+        </div>
+        <button class="btn mc-botao-cheio-celular" type="button" id="mc-novo-item">${entidade === "ferramenta" ? "Nova ferramenta" : `Novo ${esc(config.singular)}`}</button>
+        <form class="mc-filtros" id="mc-filtros" role="search">
+          <label class="mc-campo mc-filtro-busca"><span class="mc-rotulo">Buscar</span>
+            <input name="q" type="search" enterkeyhint="search" autocomplete="off" value="${esc(cadastro.q)}" placeholder="Nome ou ${entidade === "colaborador" ? "matrícula" : entidade === "veiculo" ? "placa ou chave" : "identificador"}" />
+          </label>
+          <label class="mc-campo"><span class="mc-rotulo">Situação</span>
+            <select name="situacao">
+              <option value="ativos" ${cadastro.situacao === "ativos" ? "selected" : ""}>Ativos</option>
+              <option value="inativos" ${cadastro.situacao === "inativos" ? "selected" : ""}>Desativados</option>
+              <option value="todos" ${cadastro.situacao === "todos" ? "selected" : ""}>Todos</option>
+            </select>
+          </label>
+        </form>
+      </div>
+      <div id="mc-cadastro-lista"></div>
+    </section>`);
+  document.querySelector("#mc-novo-item").addEventListener("click", () => abrirCadastro(entidade));
+  const filtros = document.querySelector("#mc-filtros");
+  let espera = null;
+  // Busca enquanto digita (com pausa curta) e ao trocar a situação
+  const filtrar = () => {
+    cadastro.q = filtros.elements.q.value.trim();
+    cadastro.situacao = filtros.elements.situacao.value;
+    carregarCadastro({ reiniciar: true });
+  };
+  filtros.addEventListener("submit", (evento) => {
+    evento.preventDefault();
+    filtrar();
+  });
+  filtros.elements.q.addEventListener("input", () => {
+    clearTimeout(espera);
+    espera = setTimeout(filtrar, 350);
+  });
+  filtros.elements.situacao.addEventListener("change", filtrar);
+  await carregarCadastro({ reiniciar: true });
 }
 
 // Voltar/avançar do navegador

@@ -27,6 +27,9 @@ import {
   listarUsuarios,
   redefinirSenha
 } from "../../services/mycontrol/usuarios.service.js";
+import { MENSAGENS_CONFLITO } from "../../services/mycontrol/cadastros.service.js";
+import { tipoDeImagemAceito } from "../../services/mycontrol/arquivos.service.js";
+import { ROTAS_CADASTROS } from "./mycontrol-cadastros.routes.js";
 
 // Hash descartável usado quando o login não existe: a verificação custa o mesmo tempo que uma
 // senha errada, então o tempo de resposta não revela quais logins existem
@@ -135,10 +138,12 @@ async function editar(req, res, { usuario, id }) {
   send(res, 200, { usuario: publico(atualizado) });
 }
 
-// Redefine a senha de outro usuário (ou a própria)
+// Redefine a senha de outro usuário (ou a própria). As sessões abertas do alvo caem; se a pessoa
+// redefiniu a própria senha, recebe um token novo para não ser derrubada da tela em que está.
 async function senha(req, res, { usuario, id }) {
-  await redefinirSenha(usuario, id, await readBody(req));
-  send(res, 200, { ok: true });
+  const alvo = await redefinirSenha(usuario, id, await readBody(req));
+  const headers = alvo.id === usuario.id ? { "Set-Cookie": cookieDeSessaoMc(alvo) } : {};
+  send(res, 200, { ok: true }, headers);
 }
 
 // Desativa ou reativa
@@ -148,10 +153,10 @@ async function ativo(req, res, { usuario, id }) {
   send(res, 200, { usuario: publico(atualizado) });
 }
 
-// Tabela de rotas. `publica: true` só nas do assistente e de autenticação; nas demais,
+// Tabela de rotas da Fase 1. `publica: true` só nas do assistente e de autenticação; nas demais,
 // `permissao` é checada no servidor por requireMcUser antes do handler rodar.
 // O id aceita no máximo 9 dígitos: cabe no INTEGER do banco (maior que isso é 404, não erro 500).
-export const ROTAS_MYCONTROL = Object.freeze([
+const ROTAS_FASE1 = [
   { metodo: "GET", caminho: /^\/api\/mycontrol\/setup\/status$/, publica: true, handler: statusAssistente },
   { metodo: "POST", caminho: /^\/api\/mycontrol\/setup\/primeiro-usuario$/, publica: true, handler: primeiroUsuario },
   { metodo: "POST", caminho: /^\/api\/mycontrol\/auth\/login$/, publica: true, handler: login },
@@ -162,7 +167,10 @@ export const ROTAS_MYCONTROL = Object.freeze([
   { metodo: "PATCH", caminho: /^\/api\/mycontrol\/usuarios\/(\d{1,9})$/, permissao: PERMISSAO_GERENCIAR_USUARIOS, handler: editar },
   { metodo: "POST", caminho: /^\/api\/mycontrol\/usuarios\/(\d{1,9})\/senha$/, permissao: PERMISSAO_GERENCIAR_USUARIOS, handler: senha },
   { metodo: "POST", caminho: /^\/api\/mycontrol\/usuarios\/(\d{1,9})\/ativo$/, permissao: PERMISSAO_GERENCIAR_USUARIOS, handler: ativo }
-]);
+];
+
+// Todas as rotas do MyControl (Fase 1 + cadastros da Fase 2)
+export const ROTAS_MYCONTROL = Object.freeze([...ROTAS_FASE1, ...ROTAS_CADASTROS]);
 
 // Roteador do MyControl: sempre trata o caminho (devolve true), mesmo quando é 404
 export async function handleMyControlRoutes(req, res, { method, url }) {
@@ -176,14 +184,23 @@ export async function handleMyControlRoutes(req, res, { method, url }) {
     // Toda escrita exige corpo JSON. Um formulário HTML de outro site só consegue mandar
     // text/plain/form-urlencoded sem preflight de CORS; exigir application/json impede que uma
     // página maliciosa aberta por alguém da rede crie o primeiro usuário (rota pública) ou
-    // dispare ações com o cookie de quem está logado.
-    if (method !== "GET" && !/^application\/json\b/i.test(req.headers["content-type"] || "")) {
+    // dispare ações com o cookie de quem está logado. O upload de imagem exige image/jpeg,
+    // image/png ou image/webp, que também não passa sem preflight (ver arquivos.service.js).
+    if (method !== "GET" && rota.corpo === "imagem" && !tipoDeImagemAceito(req)) {
+      send(res, 415, { error: "Envie a imagem como JPG, PNG ou WEBP." });
+      return true;
+    }
+    if (method !== "GET" && rota.corpo !== "imagem" && !/^application\/json\b/i.test(req.headers["content-type"] || "")) {
       send(res, 415, { error: "Envie os dados em JSON." });
       return true;
     }
-    const contexto = {};
+    // Capturas da URL: por padrão a primeira é o id; `parametros` dá nome a cada uma
+    const contexto = { url };
     const captura = url.pathname.match(rota.caminho);
-    if (captura?.[1]) contexto.id = Number.parseInt(captura[1], 10);
+    (rota.parametros || ["id"]).forEach((nome, indice) => {
+      const valor = captura?.[indice + 1];
+      if (valor !== undefined) contexto[nome] = nome === "id" ? Number.parseInt(valor, 10) : valor;
+    });
     if (!rota.publica) {
       // Toda rota não pública exige sessão do MyControl ativa E a permissão dela
       contexto.usuario = await requireMcUser(req, res, rota.permissao);
@@ -199,8 +216,15 @@ export async function handleMyControlRoutes(req, res, { method, url }) {
     if (erro.mensagemUsuario) {
       send(res, erro.statusCode || 400, { error: erro.mensagemUsuario });
     } else if (erro.code === "23505") {
-      // Login duplicado que escapou da checagem prévia (corrida): responde como conflito
-      send(res, 409, { error: "Já existe um usuário com esse login." });
+      // Unicidade que escapou das checagens prévias (corrida ou valor repetido): conflito com
+      // a mensagem da constraint (login, placa, chave, identificador, cargo)
+      send(res, 409, { error: MENSAGENS_CONFLITO[erro.constraint] || "Já existe um cadastro com esses dados." });
+    } else if (erro.code === "23503") {
+      // Referência que sumiu no meio (ex.: cargo excluído enquanto alguém salvava um colaborador)
+      send(res, 409, { error: "Um item usado neste cadastro foi alterado ao mesmo tempo. Recarregue e tente de novo." });
+    } else if (erro.name === "StorageValidationError") {
+      // Imagem vazia, acima do limite ou que não é JPG/PNG/WEBP de verdade (conferido pelos bytes)
+      send(res, 400, { error: erro.message });
     } else if (erro.message === "JSON inválido.") {
       send(res, 400, { error: "JSON inválido." });
     } else if (String(erro.message).startsWith("Arquivo muito grande")) {
