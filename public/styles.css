@@ -2816,6 +2816,55 @@ body.sheet-manager-open {
   box-shadow: none;
 }
 
+/* Botão do cabeçalho que troca de sistema (MyEstoque <-> MyControl), ao lado das 3 barras.
+   É um <a> de propósito: navega na MESMA janela (no app desktop, abrir janela nova mandaria
+   para o navegador externo). Mesma altura e cores do botão de menu. */
+.troca-sistema {
+  display: inline-flex;
+  height: 46px;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  padding: 0 1rem;
+  border: 1px solid rgba(0, 123, 135, 0.16);
+  border-radius: 999px;
+  background: rgba(0, 123, 135, 0.09);
+  color: var(--ac-teal-dark);
+  font-size: 0.9rem;
+  font-weight: 800;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: background 160ms ease, transform 160ms ease;
+}
+
+.troca-sistema:hover {
+  background: white;
+  transform: translateY(-1px);
+}
+
+.troca-sistema svg {
+  width: 1.2rem;
+  height: 1.2rem;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* No celular fica só o ícone (o nome segue no title/aria-label) */
+@media (max-width: 720px) {
+  .troca-sistema {
+    width: 46px;
+    padding: 0;
+  }
+
+  .troca-sistema span {
+    display: none;
+  }
+}
+
 .menu-toggle span {
   display: block;
   width: 21px;

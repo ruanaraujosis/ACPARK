@@ -15,7 +15,7 @@ import {
   stopOrderAlerts
 } from "./js/services/order-alerts.js";
 import { stopAllOrderAlerts, testOrderAlert } from "./js/services/audio-alert-manager.js";
-import { definirPreferenciasDoPdv, limparAlertasDoPdv, mostrarBotaoDeAtivacaoPdv, mostrarPedidoProntoParaRetirada } from "./js/services/pdv-order-alerts.js?v=20260925-transferencia-rascunho";
+import { definirPreferenciasDoPdv, limparAlertasDoPdv, mostrarBotaoDeAtivacaoPdv, mostrarPedidoProntoParaRetirada } from "./js/services/pdv-order-alerts.js?v=20260925-mycontrol-cabecalho";
 
 let damageDraftItems = [];
 let renderDamageDraftItems;
@@ -101,6 +101,9 @@ function shell(content, actions = "") {
       ? [["painel", "Painel do setor"], ["order", "Novo pedido"], ["mine", "Meus pedidos"], ["inventario", "Inventário"], ["damage-return", "Nova devolução de avaria"]]
       : [["order", "Novo pedido"], ["mine", "Meus pedidos"], ["my-stock", "Meu estoque"], ["inventario", "Inventário"], ["damage-return", "Nova devolução de avaria"]];
 
+  // Só o Almoxarifado vê, no cabeçalho, o botão que abre o MyControl (mesma janela, sem target).
+  // PDV não vê o botão, mas /mycontrol segue acessível: o acesso de verdade é o login do MyControl.
+
   app.innerHTML = `
     <div class="app-shell min-h-screen">
       <nav class="site-topbar sticky top-0 z-30">
@@ -113,6 +116,7 @@ function shell(content, actions = "") {
             </div>
           </div>
           <div class="menu-wrap">
+            ${role === "admin" ? `<a class="troca-sistema" href="/mycontrol" title="Abrir o MyControl" aria-label="Abrir o MyControl"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 8h13l-3.5-3.5"/><path d="M20 16H7l3.5 3.5"/></svg><span>MyControl</span></a>` : ""}
             <button class="menu-toggle" id="menu-toggle" type="button" aria-label="Abrir menu" aria-expanded="false">
               <span></span>
               <span></span>

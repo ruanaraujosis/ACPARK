@@ -1,0 +1,511 @@
+/* Estilos próprios do MyControl. A base (botões, cards, menu lateral, tabelas) vem do
+   styles.css do MyEstoque; aqui ficam só as peças que não existem lá e os ajustes de toque.
+   Breakpoints do código novo, só estes: 720px (celular) e 1024px (tablet/janela estreita). */
+
+/* Campos com 16px: abaixo disso o iPhone dá zoom sozinho ao focar. O rótulo usa text-sm e o
+   input herdava 14px dele (font: inherit). Checkbox e radio ficam de fora. */
+html input:not([type="checkbox"]):not([type="radio"]),
+html select,
+html textarea {
+  font-size: 1rem;
+}
+
+/* Espaço lateral mínimo de 16px (o .app-main do MyEstoque desce a 12px em tela pequena) */
+.mc-main {
+  padding-inline: max(1rem, env(safe-area-inset-left), env(safe-area-inset-right));
+}
+
+/* Alvos de toque de pelo menos 44px no menu lateral herdado do MyEstoque */
+.side-link {
+  min-height: 44px;
+}
+
+.side-close {
+  width: 44px;
+  height: 44px;
+}
+
+.side-logout {
+  min-height: 48px;
+}
+
+/* Botão de mostrar senha com 44px de alvo; o campo cresce junto para caber */
+.password-field input {
+  min-height: 3.25rem;
+  padding-right: 3.5rem;
+}
+
+.password-toggle {
+  width: 2.75rem;
+  height: 2.75rem;
+}
+
+/* Nome longo quebra em vez de cortar; login não quebra no meio */
+.mc-nome {
+  overflow-wrap: anywhere;
+}
+
+.mc-login {
+  white-space: nowrap;
+}
+
+/* Tela de login/assistente: espaçamentos em rem (nada de largura fixa) */
+.mc-acesso-hero,
+.mc-acesso-corpo {
+  padding: 2rem;
+}
+
+.mc-acesso-titulo {
+  font-size: clamp(1.75rem, 6vw, 3rem);
+  overflow-wrap: anywhere;
+}
+
+/* Formulários: uma coluna, rótulo sempre acima do campo */
+.mc-form {
+  display: grid;
+  gap: 1rem;
+}
+
+/* Duas colunas quando cabem (desktop), uma só em tela estreita, sem breakpoint novo */
+.mc-form-grade {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr));
+}
+
+.mc-campo {
+  display: grid;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.mc-rotulo {
+  font-size: 0.875rem;
+  font-weight: 700;
+}
+
+.mc-ajuda {
+  color: #64748b;
+  font-size: 0.8rem;
+}
+
+.mc-botao-cheio {
+  width: 100%;
+  min-height: 48px;
+}
+
+/* Cartões e barra de título das telas logadas */
+.mc-cartao {
+  display: grid;
+  gap: 0.9rem;
+  min-width: 0;
+}
+
+.mc-barra {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: flex-end;
+  justify-content: space-between;
+}
+
+.mc-barra-titulo {
+  min-width: 0;
+}
+
+/* Texto de ajuda sempre na própria linha, para nenhum botão ficar espremido */
+.mc-barra-ajuda {
+  flex: 1 1 100%;
+}
+
+/* Selos (permissões): quebram de linha sem empurrar o layout */
+.mc-selos {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.mc-selo {
+  display: inline-block;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  background: #f1f5f9;
+  color: #475569;
+  font-size: 0.75rem;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.mc-selo.is-todas {
+  background: #eef2ff;
+  color: #4338ca;
+}
+
+/* Situação do usuário */
+.mc-chip {
+  display: inline-block;
+  padding: 0.2rem 0.65rem;
+  border-radius: 999px;
+  background: #ecfdf5;
+  color: #047857;
+  font-size: 0.78rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.mc-chip.is-inativo {
+  background: #f1f5f9;
+  color: #64748b;
+}
+
+.mc-voce {
+  margin-left: 0.35rem;
+  color: #64748b;
+  font-size: 0.78rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* Data completa no desktop, curta no celular; o rótulo "Último acesso" só aparece no cartão */
+.mc-data-curta,
+.mc-rotulo-cartao {
+  display: none;
+}
+
+/* Ações da lista: 44px de altura, 8px+ entre elas; a destrutiva fica afastada das demais */
+.mc-acoes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  align-items: center;
+}
+
+.mc-acao {
+  min-height: 44px;
+  padding: 0.5rem 1rem;
+  font-size: 0.9rem;
+}
+
+.mc-acao-perigo {
+  margin-left: 1rem;
+  background: rgba(226, 68, 53, 0.12);
+  color: #b42318;
+  box-shadow: none;
+}
+
+.mc-acao-reativar {
+  margin-left: 1rem;
+}
+
+/* Na tabela do desktop a coluna de permissões pode crescer; ações e data não quebram à toa */
+.mc-usuarios .mc-col-permissoes {
+  min-width: 14rem;
+}
+
+.mc-usuarios .mc-col-acoes .mc-acoes {
+  flex-wrap: nowrap;
+}
+
+.mc-data-longa {
+  white-space: nowrap;
+}
+
+/* Permissões agrupadas (Uso, Cadastros, Configuração, Consulta) */
+.mc-permissoes {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.mc-permissoes-topo {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.mc-permissoes-grupos {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 13rem), 1fr));
+}
+
+.mc-grupo {
+  display: grid;
+  align-content: start;
+  gap: 0.1rem;
+  min-width: 0;
+  margin: 0;
+  padding: 0.6rem 0.85rem 0.7rem;
+  border: 1px solid rgba(0, 123, 135, 0.16);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.85);
+}
+
+.mc-grupo legend {
+  padding: 0 0.35rem;
+  color: var(--ac-orange);
+  font-size: 0.76rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* Cada caixa fica dentro de um label inline-flex com 44px de altura (alvo de toque) */
+.mc-permissao,
+.mc-marcar-todas {
+  display: inline-flex;
+  gap: 0.6rem;
+  align-items: center;
+  min-height: 44px;
+  font-size: 0.95rem;
+  cursor: pointer;
+}
+
+/* A regra global de input dá width:100% e min-height:44px também a checkbox; aqui volta ao
+   tamanho normal. O prefixo html sobe a especificidade acima da regra global. */
+html .mc-permissao input[type="checkbox"],
+html .mc-marcar-todas input[type="checkbox"] {
+  flex: 0 0 auto;
+  width: 1.15rem;
+  height: 1.15rem;
+  min-height: 0;
+  margin: 0;
+}
+
+.mc-permissao small {
+  display: block;
+  color: #64748b;
+  font-size: 0.78rem;
+  line-height: 1.3;
+}
+
+.mc-permissao:has(input:disabled) {
+  cursor: not-allowed;
+}
+
+/* Modal: janela central com rolagem interna no desktop */
+body.mc-modal-aberto {
+  overflow: hidden;
+}
+
+.mc-modal-fundo {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgba(0, 63, 72, 0.4);
+}
+
+.mc-modal {
+  display: flex;
+  width: min(100%, 48rem);
+  max-height: calc(100dvh - 2rem);
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 22px;
+  background: #fff;
+  box-shadow: 0 28px 70px rgba(0, 63, 72, 0.28);
+}
+
+.mc-modal-topo {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.15rem;
+  border-bottom: 1px solid rgba(0, 123, 135, 0.12);
+}
+
+.mc-modal-fechar {
+  display: inline-grid;
+  flex: 0 0 auto;
+  width: 44px;
+  height: 44px;
+  place-items: center;
+  border: 1px solid rgba(0, 123, 135, 0.16);
+  background: rgba(0, 123, 135, 0.09);
+  color: var(--ac-teal-dark);
+  font-size: 1.6rem;
+  line-height: 1;
+}
+
+.mc-modal-corpo {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 1rem 1.15rem;
+}
+
+/* Rodapé de ações sempre visível (fora da área que rola) */
+.mc-modal-rodape {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  justify-content: flex-end;
+  padding: 0.85rem 1.15rem calc(0.85rem + env(safe-area-inset-bottom));
+  border-top: 1px solid rgba(0, 123, 135, 0.12);
+  background: #fff;
+}
+
+.mc-modal-rodape .btn {
+  min-height: 48px;
+}
+
+/* Link discreto da tela de login para o MyEstoque */
+.mc-link-discreto {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  color: var(--ac-teal-dark);
+  font-size: 0.95rem;
+  font-weight: 700;
+  text-decoration: underline;
+}
+
+/* Tablet ou janela estreita: a lista de usuários vira cartões em duas colunas (a tabela
+   empurraria as ações para fora da tela); nome em destaque, login e situação abaixo, ações no
+   rodapé do cartão */
+@media (max-width: 1024px) {
+  .mc-usuarios .table-wrap {
+    overflow: visible;
+    border: none;
+  }
+
+  .mc-usuarios table {
+    min-width: 0;
+  }
+
+  .mc-usuarios thead {
+    display: none;
+  }
+
+  .mc-usuarios tbody {
+    display: grid;
+    gap: 0.75rem;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .mc-usuarios tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-auto-rows: min-content;
+    gap: 0.45rem 0.75rem;
+    padding: 0.9rem;
+    border: 1px solid rgba(0, 123, 135, 0.14);
+    border-radius: 18px;
+    background: #fff;
+  }
+
+  .mc-usuarios td {
+    display: block;
+    min-width: 0;
+    padding: 0;
+    border: none;
+    overflow: visible;
+  }
+
+  .mc-usuarios .mc-col-nome {
+    grid-column: 1 / -1;
+    font-size: 1.05rem;
+  }
+
+  .mc-usuarios .mc-col-login {
+    grid-column: 1;
+    align-self: center;
+    color: #475569;
+  }
+
+  .mc-usuarios .mc-col-situacao {
+    grid-column: 2;
+    grid-row: 2;
+    justify-self: end;
+  }
+
+  .mc-usuarios .mc-col-permissoes,
+  .mc-usuarios .mc-col-acesso,
+  .mc-usuarios .mc-col-acoes {
+    grid-column: 1 / -1;
+    min-width: 0;
+  }
+
+  .mc-usuarios .mc-col-acesso {
+    color: #475569;
+    font-size: 0.85rem;
+  }
+
+  .mc-rotulo-cartao {
+    display: inline;
+    margin-right: 0.25rem;
+    font-weight: 700;
+  }
+
+  /* Rodapé do cartão com as ações; fica sempre embaixo, mesmo em cartões de alturas diferentes */
+  .mc-usuarios .mc-col-acoes {
+    align-self: end;
+    margin-top: 0.35rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid rgba(0, 123, 135, 0.12);
+  }
+
+  .mc-usuarios .mc-col-acoes .mc-acoes {
+    flex-wrap: wrap;
+  }
+
+  .mc-acao {
+    flex: 1 1 6rem;
+  }
+
+  /* No cartão a ação destrutiva vai para a própria linha, longe de Editar/Senha */
+  .mc-acao-perigo,
+  .mc-acao-reativar {
+    flex: 1 1 100%;
+    margin-left: 0;
+    margin-top: 0.5rem;
+  }
+}
+
+/* Celular */
+@media (max-width: 720px) {
+  .mc-acesso-hero,
+  .mc-acesso-corpo {
+    padding: 1.5rem;
+  }
+
+  /* Botões principais em largura total */
+  .mc-botao-cheio-celular {
+    width: 100%;
+    min-height: 48px;
+  }
+
+  /* Modal em tela cheia: 100dvh (não 100vh, que ignora a barra do navegador no celular) */
+  .mc-modal-fundo {
+    padding: 0;
+  }
+
+  .mc-modal {
+    width: 100%;
+    height: 100dvh;
+    max-height: 100dvh;
+    border-radius: 0;
+  }
+
+  .mc-modal-rodape .btn {
+    flex: 1 1 8rem;
+  }
+
+  .mc-data-longa {
+    display: none;
+  }
+
+  .mc-data-curta {
+    display: inline;
+  }
+
+  /* Cartões de usuário em uma coluna */
+  .mc-usuarios tbody {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

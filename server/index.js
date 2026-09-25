@@ -17,6 +17,8 @@ import { handleOrderAlertRoutes } from "./modules/order-alerts/order-alerts.rout
 import { handleBackupRoutes } from "./modules/backup/backup.routes.js";
 import { handleSetupRoutes } from "./modules/setup/setup.routes.js";
 import { handleInventariosRoutes } from "./modules/inventarios/inventarios.routes.js";
+import { ehRotaMyControl, handleMyControlRoutes } from "./modules/mycontrol/mycontrol.routes.js";
+import { configurarSessaoMc, MC_AUDIENCE } from "./services/mycontrol/sessao.js";
 import { ensurePdvAdministrativoColumn } from "./services/pdvs/pdv-administrativo.service.js";
 import { executarTick, iniciarAgendador } from "./services/integrations/core/scheduler.js";
 import { comprimirSePossivel, marcarSuporteGzip, normalizeCategories, normalizeCategoryList, normalizeText, readBody, send } from "./utils/http.js";
@@ -50,12 +52,21 @@ const mime = {
 };
 
 
-// Decodifica e valida o cookie de sessão (JWT); retorna null se ausente ou inválido
+// Token emitido para o MyControl? (aud "mycontrol", como texto ou dentro de uma lista)
+function ehTokenDoMyControl(payload) {
+  const aud = payload?.aud;
+  return aud === MC_AUDIENCE || (Array.isArray(aud) && aud.includes(MC_AUDIENCE));
+}
+
+// Decodifica e valida o cookie de sessão (JWT); retorna null se ausente ou inválido.
+// Recusa token do MyControl: as rotas abaixo do portão só exigem "estar logado", então um
+// token do MyControl colocado no cookie `session` não pode abrir o MyEstoque.
 function sessionFrom(req) {
   const cookies = parseCookie(req.headers.cookie || "");
   if (!cookies.session) return null;
   try {
-    return jwt.verify(cookies.session, jwtSecret);
+    const payload = jwt.verify(cookies.session, jwtSecret);
+    return ehTokenDoMyControl(payload) ? null : payload;
   } catch {
     return null;
   }
@@ -202,10 +213,21 @@ function registerLoginFailure(ip) {
   entry.count += 1;
 }
 
+// O MyControl usa o mesmo segredo de base (derivado lá), as mesmas opções de cookie e o mesmo
+// limite de tentativas de login por IP do MyEstoque
+configurarSessaoMc({ jwtSecret, sessionCookieOptions, isLoginRateLimited, registerLoginFailure });
+
 // Roteador principal das rotas /api/*; delega para os handlers de cada módulo
 async function api(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const method = req.method || "GET";
+
+  // MyControl: tratado ANTES de tudo e principalmente antes do portão de sessão do MyEstoque
+  // (não exige o cookie `session` nem roda processAutoOrders). Sessão e permissões próprias.
+  if (ehRotaMyControl(url.pathname)) {
+    await handleMyControlRoutes(req, res, { method, url });
+    return;
+  }
 
   if (url.pathname === "/api/auth/me") {
     return send(res, 200, { user: sessionFrom(req) });
@@ -898,19 +920,38 @@ function comprimirEstatico(res, caminho, extensao, conteudo) {
   return { corpo, headers };
 }
 
-// Serve arquivos estáticos de /public; cai para index.html (SPA) quando o arquivo não existe
+// O caminho pertence à página do MyControl (/mycontrol ou /mycontrol/...)?
+function ehPaginaMyControl(pathname) {
+  return pathname === "/mycontrol" || pathname.startsWith("/mycontrol/");
+}
+
+// Serve arquivos estáticos de /public; cai para o index.html (SPA) quando o arquivo não existe.
+// /mycontrol e /mycontrol/* sem arquivo caem no index.html do MyControl; o resto, no do MyEstoque.
 function serveStatic(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
-  const requested = url.pathname === "/" ? "/index.html" : decodeURIComponent(url.pathname);
+  let requested;
+  try {
+    requested = url.pathname === "/" ? "/index.html" : decodeURIComponent(url.pathname);
+  } catch {
+    // %-encoding quebrado (ex.: "/%E0%A4%A") não é caminho válido
+    res.writeHead(400);
+    return res.end("Bad request");
+  }
+  if (requested === "/mycontrol" || requested === "/mycontrol/") requested = "/mycontrol/index.html";
   const file = path.normalize(path.join(publicDir, requested));
-  // Impede path traversal para fora da pasta public
-  if (!file.startsWith(publicDir)) {
+  // Impede path traversal para fora da pasta public. path.relative em vez de startsWith: uma
+  // pasta vizinha com o mesmo prefixo (public-algo) passaria num startsWith de texto cru.
+  const relativo = path.relative(publicDir, file);
+  if (relativo.startsWith("..") || path.isAbsolute(relativo)) {
     res.writeHead(403);
     return res.end("Forbidden");
   }
+  const indexDaSpa = ehPaginaMyControl(url.pathname)
+    ? path.join(publicDir, "mycontrol", "index.html")
+    : path.join(publicDir, "index.html");
   fs.readFile(file, (error, content) => {
     if (error) {
-      fs.readFile(path.join(publicDir, "index.html"), (fallbackError, fallback) => {
+      fs.readFile(indexDaSpa, (fallbackError, fallback) => {
         if (fallbackError) {
           res.writeHead(404);
           return res.end("Not found");

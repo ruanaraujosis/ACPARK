@@ -1228,6 +1228,82 @@ ALTER SEQUENCE public.inventarios_id_seq OWNED BY public.inventarios.id;
 
 
 --
+-- Name: mc_auditoria; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.mc_auditoria (
+    id integer NOT NULL,
+    usuario_id integer,
+    usuario text,
+    acao text NOT NULL,
+    entidade text NOT NULL,
+    entidade_id text,
+    antes jsonb,
+    depois jsonb,
+    motivo text,
+    criado_em timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: mc_auditoria_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.mc_auditoria_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: mc_auditoria_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.mc_auditoria_id_seq OWNED BY public.mc_auditoria.id;
+
+
+--
+-- Name: mc_usuarios; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.mc_usuarios (
+    id integer NOT NULL,
+    usuario text NOT NULL,
+    nome text NOT NULL,
+    senha text NOT NULL,
+    permissoes text[] DEFAULT '{}'::text[] NOT NULL,
+    ativo boolean DEFAULT true NOT NULL,
+    criado_em timestamp with time zone DEFAULT now() NOT NULL,
+    criado_por integer,
+    ultimo_login_em timestamp with time zone,
+    CONSTRAINT mc_usuarios_usuario_check CHECK ((usuario = lower(usuario)))
+);
+
+
+--
+-- Name: mc_usuarios_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.mc_usuarios_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: mc_usuarios_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.mc_usuarios_id_seq OWNED BY public.mc_usuarios.id;
+
+
+--
 -- Name: omie_jobs; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2124,6 +2200,20 @@ ALTER TABLE ONLY public.inventarios ALTER COLUMN id SET DEFAULT nextval('public.
 
 
 --
+-- Name: mc_auditoria id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_auditoria ALTER COLUMN id SET DEFAULT nextval('public.mc_auditoria_id_seq'::regclass);
+
+
+--
+-- Name: mc_usuarios id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_usuarios ALTER COLUMN id SET DEFAULT nextval('public.mc_usuarios_id_seq'::regclass);
+
+
+--
 -- Name: omie_jobs id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -2552,6 +2642,30 @@ ALTER TABLE ONLY public.inventarios
 
 ALTER TABLE ONLY public.inventarios
     ADD CONSTRAINT inventarios_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: mc_auditoria mc_auditoria_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_auditoria
+    ADD CONSTRAINT mc_auditoria_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: mc_usuarios mc_usuarios_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_usuarios
+    ADD CONSTRAINT mc_usuarios_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: mc_usuarios mc_usuarios_usuario_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_usuarios
+    ADD CONSTRAINT mc_usuarios_usuario_key UNIQUE (usuario);
 
 
 --
@@ -3044,6 +3158,20 @@ CREATE INDEX idx_mappings_sku_ativo ON public.product_integration_mappings USING
 
 
 --
+-- Name: idx_mc_auditoria_criado_em; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_mc_auditoria_criado_em ON public.mc_auditoria USING btree (criado_em DESC);
+
+
+--
+-- Name: idx_mc_auditoria_entidade; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_mc_auditoria_entidade ON public.mc_auditoria USING btree (entidade, entidade_id, criado_em DESC);
+
+
+--
 -- Name: idx_omie_jobs_entity; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3365,6 +3493,14 @@ ALTER TABLE ONLY public.integration_webhooks
 
 ALTER TABLE ONLY public.inventario_itens
     ADD CONSTRAINT inventario_itens_inventario_id_fkey FOREIGN KEY (inventario_id) REFERENCES public.inventarios(id) ON DELETE CASCADE;
+
+
+--
+-- Name: mc_usuarios mc_usuarios_criado_por_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_usuarios
+    ADD CONSTRAINT mc_usuarios_criado_por_fkey FOREIGN KEY (criado_por) REFERENCES public.mc_usuarios(id) ON DELETE SET NULL;
 
 
 --
