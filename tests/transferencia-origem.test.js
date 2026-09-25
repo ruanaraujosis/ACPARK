@@ -117,3 +117,15 @@ test("retirada e transferência avisam em diálogo quando a OMIE foi ignorada", 
   assert.match(app, /await avisarSeOmieIgnorada\(r\.integracao\);/);
   assert.match(app, /await avisarSeOmieIgnorada\(resultado\?\.integracao\);/);
 });
+
+test("transferência rápida salva o rascunho sozinha e tem o botão Salvar ao lado de Limpar", () => {
+  const transf = app.slice(app.indexOf("async function abrirTransferenciaRapida"), app.indexOf("async function viewRelease("));
+  assert.match(transf, /id="transfer-salvar" type="button">Salvar<\/button>\s*<button class="btn secondary" id="transfer-limpar"/);
+  assert.match(transf, /const renderCarrinho = \(\) => \{\s*salvarRascunhoTransferencia\(\);/);
+  assert.match(transf, /origemSel\.addEventListener\("change", salvarRascunhoTransferencia\);/);
+  assert.match(transf, /secao\.querySelector\("#transfer-obs"\)\.addEventListener\("input", salvarRascunhoTransferencia\);/);
+  // Restaura antes do primeiro desenho (senão o carrinho vazio sobrescreveria o rascunho)
+  assert.ok(transf.indexOf("localStorage.getItem(CHAVE_RASCUNHO_TRANSFERENCIA)") < transf.lastIndexOf("  renderCarrinho();\n  origemSel.addEventListener"));
+  // Concluir e Limpar apagam o rascunho
+  assert.equal((transf.match(/apagarRascunhoTransferencia\(\);/g) || []).length, 2);
+});

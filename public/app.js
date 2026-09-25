@@ -15,7 +15,7 @@ import {
   stopOrderAlerts
 } from "./js/services/order-alerts.js";
 import { stopAllOrderAlerts, testOrderAlert } from "./js/services/audio-alert-manager.js";
-import { definirPreferenciasDoPdv, limparAlertasDoPdv, mostrarBotaoDeAtivacaoPdv, mostrarPedidoProntoParaRetirada } from "./js/services/pdv-order-alerts.js?v=20260924-aviso-omie-ignorada";
+import { definirPreferenciasDoPdv, limparAlertasDoPdv, mostrarBotaoDeAtivacaoPdv, mostrarPedidoProntoParaRetirada } from "./js/services/pdv-order-alerts.js?v=20260925-transferencia-rascunho";
 
 let damageDraftItems = [];
 let renderDamageDraftItems;
@@ -6695,7 +6695,8 @@ async function abrirTransferenciaRapida() {
 
           ${htmlCartaoCarrinho({
             idLista: "transfer-cart",
-            acoes: `<button class="btn secondary" id="transfer-limpar" type="button">Limpar</button>`,
+            acoes: `<button class="btn secondary" id="transfer-salvar" type="button">Salvar</button>
+              <button class="btn secondary" id="transfer-limpar" type="button">Limpar</button>`,
             botaoPrincipal: `<button class="btn mt-3 w-full" id="transfer-concluir" type="button">Concluir transferência</button>`
           })}
         </div>
@@ -6729,7 +6730,30 @@ async function abrirTransferenciaRapida() {
     renderCarrinho();
   };
 
+  // Rascunho da transferência no navegador: salvo a cada mudança (produtos, quantidades, origem,
+  // destino, observação), para trocar de aba ou recarregar sem perder o que foi montado. Não há
+  // rascunho no servidor: a transferência conclui na hora, então basta o do navegador.
+  const CHAVE_RASCUNHO_TRANSFERENCIA = "transferencia-rapida-rascunho";
+  const salvarRascunhoTransferencia = () => {
+    try {
+      localStorage.setItem(CHAVE_RASCUNHO_TRANSFERENCIA, JSON.stringify({
+        origem: origemSel.value,
+        destino: destinoSel.value,
+        observacao: secao.querySelector("#transfer-obs").value,
+        itens: carrinho,
+        salvoEm: new Date().toISOString()
+      }));
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const apagarRascunhoTransferencia = () => {
+    try { localStorage.removeItem(CHAVE_RASCUNHO_TRANSFERENCIA); } catch {}
+  };
+
   const renderCarrinho = () => {
+    salvarRascunhoTransferencia();
     secao.querySelector("#transfer-cart").innerHTML = carrinho.length
       ? table(["Produto", "Qtd (un)", "Ação"], carrinho.map((item, indice) => `
           <tr class="order-cart-row">
@@ -6763,7 +6787,36 @@ async function abrirTransferenciaRapida() {
 
   ligarFiltroProdutosDisponiveis("transfer-available", "transfer-available-row");
   ligarSeletorDeProduto("transfer", adicionar);
+
+  // Restaura o rascunho salvo (antes do primeiro desenho, que salvaria o carrinho vazio por cima).
+  // Produto que ficou inativo desde então sai; local que não existe mais volta ao padrão.
+  try {
+    const rascunho = JSON.parse(localStorage.getItem(CHAVE_RASCUNHO_TRANSFERENCIA) || "null");
+    if (rascunho) {
+      for (const item of Array.isArray(rascunho.itens) ? rascunho.itens : []) {
+        const produto = produtos.find((p) => p.sku === item.sku);
+        const qtd = Number(item.quantidade);
+        if (produto && Number.isInteger(qtd) && qtd > 0) carrinho.push({ sku: produto.sku, nome: produto.nome, quantidade: qtd });
+      }
+      if ([...origemSel.options].some((o) => o.value === rascunho.origem)) origemSel.value = rascunho.origem;
+      if ([...destinoSel.options].some((o) => o.value === rascunho.destino)) destinoSel.value = rascunho.destino;
+      secao.querySelector("#transfer-obs").value = String(rascunho.observacao || "");
+      sincronizarOpcoes();
+      atualizarSeletorDeLocal(origemSel);
+      atualizarSeletorDeLocal(destinoSel);
+      if (carrinho.length) toast(`Rascunho da transferência recuperado (${carrinho.length} produto(s)).`);
+    }
+  } catch {
+    // Rascunho corrompido ou navegador sem storage: começa vazio
+  }
   renderCarrinho();
+  origemSel.addEventListener("change", salvarRascunhoTransferencia);
+  destinoSel.addEventListener("change", salvarRascunhoTransferencia);
+  secao.querySelector("#transfer-obs").addEventListener("input", salvarRascunhoTransferencia);
+  secao.querySelector("#transfer-salvar").addEventListener("click", () => {
+    if (salvarRascunhoTransferencia()) toast("Rascunho da transferência salvo neste navegador.");
+    else toast("Este navegador não permite salvar o rascunho.", "error");
+  });
 
   secao.querySelector("#transfer-limpar").addEventListener("click", async () => {
     if (!carrinho.length) return;
@@ -6777,6 +6830,7 @@ async function abrirTransferenciaRapida() {
     carrinho.splice(0, carrinho.length);
     secao.querySelector("#transfer-obs").value = "";
     renderCarrinho();
+    apagarRascunhoTransferencia();
   });
 
   secao.querySelector("#transfer-concluir").addEventListener("click", async (event) => {
@@ -6814,6 +6868,7 @@ async function abrirTransferenciaRapida() {
       carrinho.splice(0, carrinho.length);
       secao.querySelector("#transfer-obs").value = "";
       renderCarrinho();
+      apagarRascunhoTransferencia();
     } catch (error) {
       toast(error.message || "Não foi possível concluir a transferência.", "error");
     } finally {

@@ -190,7 +190,7 @@ test("o cache-bust acompanhou a última mudança do app.js", () => {
   // Verificado na prova visual: com o mesmo ?v=, o navegador serviu a versão antiga e a
   // correção parecia não ter sido aplicada.
   const versao = html.match(/app\.js\?v=([^"]+)/)?.[1];
-  assert.equal(versao, "20260924-aviso-omie-ignorada");
+  assert.equal(versao, "20260925-transferencia-rascunho");
   assert.match(html, new RegExp(`styles\\.css\\?v=${versao}`), "css e js compartilham a versão");
   // Módulo importado sem ?v= fica 1h em cache: com export novo, a tela ficava em branco para
   // quem tinha a versão velha (24/09/2026). O módulo do alerta do PDV segue a versão do app.js.
