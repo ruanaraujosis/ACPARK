@@ -171,9 +171,14 @@ test("a auditoria da assinatura guarda cada ajuste aplicado", () => {
 
 test("o quadro de assinatura é o mesmo núcleo da devolução de avaria", () => {
   // Antes o desenho existia só dentro do formulário de avaria; o inventário teria de copiar.
-  assert.match(app, /function ligarQuadroDeAssinatura\(canvas, \{ aoDesenhar \} = \{\}\)/);
+  // Desde a Fase 2 do MyControl o núcleo mora em js/ui/assinatura.js (compartilhado com o
+  // MyControl) e o app.js importa de lá: avaria e os dois inventários seguem usando o mesmo.
+  const nucleo = fs.readFileSync("public/js/ui/assinatura.js", "utf8");
+  assert.match(nucleo, /export function ligarQuadroDeAssinatura\(canvas, \{ aoDesenhar \} = \{\}\)/);
+  assert.match(app, /import \{ ligarQuadroDeAssinatura \} from "\.\/js\/ui\/assinatura\.js\?v=/);
+  assert.doesNotMatch(app, /function ligarQuadroDeAssinatura/, "a definição não pode voltar duplicada no app.js");
   const usos = [...app.matchAll(/ligarQuadroDeAssinatura\(/g)].length;
-  assert.ok(usos >= 3, `esperava a definição e os dois usos, achei ${usos}`);
+  assert.ok(usos >= 3, `esperava os três usos (avaria e os dois inventários), achei ${usos}`);
 });
 
 test("a assinatura pendente tem prioridade sobre a tela de contagem", () => {

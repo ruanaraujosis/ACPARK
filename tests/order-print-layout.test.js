@@ -72,7 +72,8 @@ test("QTD nunca converte -- continua sempre a quantidade em unidade, igual antes
   // QTD é a mesma quantidadeBruta (solicitada ou liberada, conforme o status) sem divisão
   // nenhuma -- só a coluna EMB deriva; QTD nunca dependeu de fator/embalagem.
   const printOrderBlock = appSource.slice(appSource.indexOf("async function printOrder"), appSource.indexOf("// Extrai os itens de retirada a partir do card do pedido"));
-  assert.match(printOrderBlock, /return \{ product, emb, qtd: quantidadeBruta \};/);
+  // A origem da linha vai junto (24/09/2026), só para o cupom dizer de onde sai cada parte
+  assert.match(printOrderBlock, /return \{ product, emb, qtd: quantidadeBruta, origem: row\.dataset\.origemNome \|\| "" \};/);
 });
 
 test("a conversão de EMB usa a quantidade já escolhida pelo status (solicitada ou liberada), nunca recalcula outra", () => {

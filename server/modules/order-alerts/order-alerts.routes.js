@@ -29,6 +29,9 @@ const systemSounds = [
 const allowedRepeatModes = new Set(["once", "two_times", "three_times", "thirty_seconds", "until_viewed", "until_service_start"]);
 const allowedIntervals = new Set([3, 5, 10, 15, 30]);
 
+// Chave da configuração única do alerta dos PDVs (não é de um usuário: vale para todos os PDVs)
+const CHAVE_ALERTA_DOS_PDVS = "pdvs:todos";
+
 let schemaReady = null;
 
 // Cria/atualiza (uma única vez, cacheado em memória) as tabelas de preferências e sons de alerta
@@ -179,6 +182,51 @@ export async function handleOrderAlertRoutes(req, res, context) {
     const pending = await pendingOrdersCount();
     const ids = await pendingOrderIds();
     return send(res, 200, { pending, pendingOrders, pendingOrderIds: ids }), true;
+  }
+
+  // Alerta dos PDVs ("pedido pronto para retirada"): UMA configuração para todos os PDVs, que só
+  // o Almoxarifado edita. Mora na mesma tabela das preferências, com a chave fixa "pdvs:todos".
+  // Padrão: repetir até visualizar -- o de 3 toques parava antes de o PDV perceber.
+  if (url.pathname === "/api/admin/pdv-alert-preferences" || url.pathname === "/api/pdv/alert-preferences") {
+    const doAdmin = url.pathname.startsWith("/api/admin/");
+    if (doAdmin && user.role !== "admin") return send(res, 403, { error: "Acesso restrito ao Almoxarifado." }), true;
+    if (!doAdmin && user.role !== "pdv") return send(res, 403, { error: "Acesso restrito aos PDVs." }), true;
+    await ensureOrderAlertTables();
+    const padraoDoPdv = { ...defaultPreferences, repeatMode: "until_viewed" };
+
+    if (method === "GET") {
+      const rows = await query(
+        `SELECT enabled, sound_id, volume, visual_notifications, repeat_mode, repeat_interval_seconds, stop_on_view, stop_on_service_start
+         FROM user_order_alert_preferences WHERE user_key = $1`,
+        [CHAVE_ALERTA_DOS_PDVS]
+      );
+      const preferences = rows[0] ? mapPreferenceRow(rows[0]) : padraoDoPdv;
+      if (!doAdmin) return send(res, 200, { preferences }), true;
+      const sounds = await query(
+        `SELECT sound_key AS id, display_name AS "displayName" FROM order_alert_sounds
+         WHERE is_active = TRUE ORDER BY is_system DESC, display_name`
+      );
+      return send(res, 200, { preferences, sounds }), true;
+    }
+
+    if (method === "PUT" && doAdmin) {
+      const preferences = normalizePreferences({ ...padraoDoPdv, ...(await readBody(req)) });
+      const somExiste = await query("SELECT 1 FROM order_alert_sounds WHERE sound_key = $1 AND is_active = TRUE", [preferences.soundId]);
+      if (!somExiste[0]) return send(res, 400, { error: "Toque selecionado nao esta disponivel." }), true;
+      await query(
+        `INSERT INTO user_order_alert_preferences
+          (user_key, enabled, sound_id, volume, visual_notifications, repeat_mode, repeat_interval_seconds, stop_on_view, stop_on_service_start, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE, TRUE, NOW())
+         ON CONFLICT (user_key) DO UPDATE
+         SET enabled = EXCLUDED.enabled, sound_id = EXCLUDED.sound_id, volume = EXCLUDED.volume,
+             visual_notifications = EXCLUDED.visual_notifications, repeat_mode = EXCLUDED.repeat_mode,
+             repeat_interval_seconds = EXCLUDED.repeat_interval_seconds, updated_at = NOW()`,
+        [CHAVE_ALERTA_DOS_PDVS, preferences.enabled, preferences.soundId, preferences.volume,
+          preferences.visualNotifications, preferences.repeatMode, preferences.repeatIntervalSeconds]
+      );
+      return send(res, 200, { ok: true, preferences }), true;
+    }
+    return send(res, 405, { error: "Metodo nao permitido." }), true;
   }
 
   // Consulta/atualiza as preferências pessoais de alerta (som, volume, repetição) do usuário logado

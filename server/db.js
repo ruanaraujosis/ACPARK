@@ -102,6 +102,14 @@ export function asInt(value, fallback = 0) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+// Quantidade de estoque que aceita fração (KG, L...): vírgula ou ponto, até 3 casas, nunca
+// negativa; valor inválido cai no padrão. produtos.qtd_total é NUMERIC desde 21/09/2026
+export function asQuantidade(value, fallback = 0) {
+  const parsed = Number(String(value ?? "").trim().replace(",", "."));
+  if (!Number.isFinite(parsed) || String(value ?? "").trim() === "") return fallback;
+  return Math.max(0, Math.round(parsed * 1000) / 1000);
+}
+
 // Gera um código único legível (ex: PED-20260804120000-AB1C) para pedidos, avarias, etc.
 export function code(prefix) {
   const stamp = new Intl.DateTimeFormat("sv-SE", {

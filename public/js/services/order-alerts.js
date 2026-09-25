@@ -159,7 +159,9 @@ function ensureOrderAlertContainer() {
 function updateActivationButton() {
   const button = document.querySelector("#order-alert-activate");
   if (!button) return;
-  const shouldShow = state.user?.role === "admin" && preferences.enabled && !audioIsActivated();
+  // O PDV também tem alerta sonoro (pedido pronto para retirada), com padrão fixo
+  const querSom = (state.user?.role === "admin" && preferences.enabled) || state.user?.role === "pdv";
+  const shouldShow = querSom && !audioIsActivated();
   button.classList.toggle("hidden", !shouldShow);
 }
 

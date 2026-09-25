@@ -22,6 +22,21 @@ SET client_min_messages = warning;
 SET row_security = off;
 
 --
+-- Name: mc_matricula_imutavel(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.mc_matricula_imutavel() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+    BEGIN
+      IF NEW.matricula IS DISTINCT FROM OLD.matricula OR NEW.matricula_numero IS DISTINCT FROM OLD.matricula_numero THEN
+        RAISE EXCEPTION 'A matricula do colaborador nao pode ser alterada.';
+      END IF;
+      RETURN NEW;
+    END $$;
+
+
+--
 -- Name: processar_autopedido(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -1228,6 +1243,399 @@ ALTER SEQUENCE public.inventarios_id_seq OWNED BY public.inventarios.id;
 
 
 --
+-- Name: mc_arquivos; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.mc_arquivos (
+    id integer NOT NULL,
+    entidade text NOT NULL,
+    papel text NOT NULL,
+    storage_key text NOT NULL,
+    mime text NOT NULL,
+    tamanho integer NOT NULL,
+    largura integer,
+    altura integer,
+    sha256 text NOT NULL,
+    miniatura_key text,
+    miniatura_mime text,
+    criado_por integer,
+    criado_em timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT mc_arquivos_papel_check CHECK ((papel = ANY (ARRAY['foto'::text, 'assinatura'::text, 'assinatura_registro'::text])))
+);
+
+
+--
+-- Name: mc_arquivos_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.mc_arquivos_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: mc_arquivos_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.mc_arquivos_id_seq OWNED BY public.mc_arquivos.id;
+
+
+--
+-- Name: mc_auditoria; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.mc_auditoria (
+    id integer NOT NULL,
+    usuario_id integer,
+    usuario text,
+    acao text NOT NULL,
+    entidade text NOT NULL,
+    entidade_id text,
+    antes jsonb,
+    depois jsonb,
+    motivo text,
+    criado_em timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: mc_auditoria_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.mc_auditoria_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: mc_auditoria_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.mc_auditoria_id_seq OWNED BY public.mc_auditoria.id;
+
+
+--
+-- Name: mc_campos; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.mc_campos (
+    id integer NOT NULL,
+    entidade text NOT NULL,
+    chave text NOT NULL,
+    rotulo text NOT NULL,
+    tipo text NOT NULL,
+    opcoes jsonb DEFAULT '[]'::jsonb NOT NULL,
+    obrigatorio boolean DEFAULT false NOT NULL,
+    ordem integer DEFAULT 0 NOT NULL,
+    ativo boolean DEFAULT true NOT NULL,
+    sistema boolean DEFAULT false NOT NULL,
+    travado boolean DEFAULT false NOT NULL,
+    excluido_em timestamp with time zone,
+    criado_em timestamp with time zone DEFAULT now() NOT NULL,
+    criado_por integer,
+    atualizado_em timestamp with time zone,
+    CONSTRAINT mc_campos_chave_check CHECK ((chave ~ '^[a-z][a-z0-9_]{0,59}$'::text)),
+    CONSTRAINT mc_campos_entidade_check CHECK ((entidade = ANY (ARRAY['colaborador'::text, 'veiculo'::text, 'ferramenta'::text])))
+);
+
+
+--
+-- Name: mc_campos_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.mc_campos_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: mc_campos_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.mc_campos_id_seq OWNED BY public.mc_campos.id;
+
+
+--
+-- Name: mc_cargos; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.mc_cargos (
+    id integer NOT NULL,
+    nome text NOT NULL,
+    abreviacao text NOT NULL,
+    ativo boolean DEFAULT true NOT NULL,
+    criado_em timestamp with time zone DEFAULT now() NOT NULL,
+    criado_por integer,
+    atualizado_em timestamp with time zone,
+    CONSTRAINT mc_cargos_abreviacao_check CHECK ((abreviacao ~ '^[A-Z]{2,6}$'::text))
+);
+
+
+--
+-- Name: mc_cargos_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.mc_cargos_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: mc_cargos_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.mc_cargos_id_seq OWNED BY public.mc_cargos.id;
+
+
+--
+-- Name: mc_colaboradores; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.mc_colaboradores (
+    id integer NOT NULL,
+    matricula text NOT NULL,
+    matricula_numero bigint NOT NULL,
+    nome text NOT NULL,
+    cargo_id integer NOT NULL,
+    assinatura_id integer,
+    foto_id integer,
+    dados jsonb DEFAULT '{}'::jsonb NOT NULL,
+    ativo boolean DEFAULT true NOT NULL,
+    criado_em timestamp with time zone DEFAULT now() NOT NULL,
+    criado_por integer,
+    atualizado_em timestamp with time zone,
+    atualizado_por integer,
+    CONSTRAINT mc_colaboradores_matricula_check CHECK ((matricula ~ '^[A-Z]{2,6}-[0-9]{6,}$'::text))
+);
+
+
+--
+-- Name: mc_colaboradores_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.mc_colaboradores_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: mc_colaboradores_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.mc_colaboradores_id_seq OWNED BY public.mc_colaboradores.id;
+
+
+--
+-- Name: mc_ferramentas; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.mc_ferramentas (
+    id integer NOT NULL,
+    identificador text NOT NULL,
+    nome text NOT NULL,
+    foto_id integer,
+    descricao text,
+    dados jsonb DEFAULT '{}'::jsonb NOT NULL,
+    ativo boolean DEFAULT true NOT NULL,
+    criado_em timestamp with time zone DEFAULT now() NOT NULL,
+    criado_por integer,
+    atualizado_em timestamp with time zone,
+    atualizado_por integer
+);
+
+
+--
+-- Name: mc_ferramentas_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.mc_ferramentas_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: mc_ferramentas_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.mc_ferramentas_id_seq OWNED BY public.mc_ferramentas.id;
+
+
+--
+-- Name: mc_matricula_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.mc_matricula_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: mc_registros; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.mc_registros (
+    id integer NOT NULL,
+    tipo text NOT NULL,
+    item_id integer NOT NULL,
+    colaborador_id integer NOT NULL,
+    registrado_por integer NOT NULL,
+    retirado_em timestamp with time zone DEFAULT now() NOT NULL,
+    foto_antes_id integer NOT NULL,
+    assinatura_id integer NOT NULL,
+    assinatura_automatica boolean DEFAULT true NOT NULL,
+    observacao text,
+    km_saida integer,
+    devolvido_em timestamp with time zone,
+    devolvido_por integer,
+    foto_depois_id integer,
+    observacao_devolucao text,
+    km_volta integer,
+    km_alto_confirmado boolean DEFAULT false NOT NULL,
+    status text DEFAULT 'EM_USO'::text NOT NULL,
+    cancelado_em timestamp with time zone,
+    cancelado_por integer,
+    motivo_cancelamento text,
+    excluido_em timestamp with time zone,
+    excluido_por integer,
+    motivo_exclusao text,
+    atualizado_em timestamp with time zone,
+    atualizado_por integer,
+    CONSTRAINT mc_registros_km_saida_check CHECK ((km_saida >= 0)),
+    CONSTRAINT mc_registros_km_saida_veiculo CHECK (((tipo <> 'veiculo'::text) OR (km_saida IS NOT NULL))),
+    CONSTRAINT mc_registros_km_volta_minimo CHECK (((km_volta IS NULL) OR (km_volta >= km_saida))),
+    CONSTRAINT mc_registros_status_check CHECK ((status = ANY (ARRAY['EM_USO'::text, 'DEVOLVIDO'::text, 'CANCELADO'::text]))),
+    CONSTRAINT mc_registros_tipo_check CHECK ((tipo = ANY (ARRAY['veiculo'::text, 'ferramenta'::text])))
+);
+
+
+--
+-- Name: mc_registros_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.mc_registros_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: mc_registros_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.mc_registros_id_seq OWNED BY public.mc_registros.id;
+
+
+--
+-- Name: mc_usuarios; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.mc_usuarios (
+    id integer NOT NULL,
+    usuario text NOT NULL,
+    nome text NOT NULL,
+    senha text NOT NULL,
+    permissoes text[] DEFAULT '{}'::text[] NOT NULL,
+    ativo boolean DEFAULT true NOT NULL,
+    criado_em timestamp with time zone DEFAULT now() NOT NULL,
+    criado_por integer,
+    ultimo_login_em timestamp with time zone,
+    senha_alterada_em timestamp with time zone,
+    CONSTRAINT mc_usuarios_usuario_check CHECK ((usuario = lower(usuario)))
+);
+
+
+--
+-- Name: mc_usuarios_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.mc_usuarios_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: mc_usuarios_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.mc_usuarios_id_seq OWNED BY public.mc_usuarios.id;
+
+
+--
+-- Name: mc_veiculos; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.mc_veiculos (
+    id integer NOT NULL,
+    numero_chave text NOT NULL,
+    nome text NOT NULL,
+    placa text NOT NULL,
+    foto_id integer,
+    descricao text,
+    dados jsonb DEFAULT '{}'::jsonb NOT NULL,
+    ativo boolean DEFAULT true NOT NULL,
+    criado_em timestamp with time zone DEFAULT now() NOT NULL,
+    criado_por integer,
+    atualizado_em timestamp with time zone,
+    atualizado_por integer,
+    CONSTRAINT mc_veiculos_placa_check CHECK ((placa ~ '^[A-Z]{3}[0-9][A-Z0-9][0-9]{2}$'::text))
+);
+
+
+--
+-- Name: mc_veiculos_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.mc_veiculos_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: mc_veiculos_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.mc_veiculos_id_seq OWNED BY public.mc_veiculos.id;
+
+
+--
 -- Name: omie_jobs; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1426,7 +1834,8 @@ CREATE TABLE public.pdvs (
     is_cozinha boolean DEFAULT false,
     codigo_orion text,
     categoria text,
-    administrativo boolean DEFAULT false NOT NULL
+    administrativo boolean DEFAULT false NOT NULL,
+    local_estoque_padrao_pdv_id integer
 );
 
 
@@ -1578,7 +1987,9 @@ CREATE TABLE public.pedidos (
     reversao_pdv_observacao text,
     reversao_pdv_em timestamp without time zone,
     reversao_pdv_por text,
-    reenviado_pdv_em timestamp without time zone
+    reenviado_pdv_em timestamp without time zone,
+    local_origem_pdv_id integer,
+    origem_por_item boolean
 );
 
 
@@ -2121,6 +2532,69 @@ ALTER TABLE ONLY public.inventarios ALTER COLUMN id SET DEFAULT nextval('public.
 
 
 --
+-- Name: mc_arquivos id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_arquivos ALTER COLUMN id SET DEFAULT nextval('public.mc_arquivos_id_seq'::regclass);
+
+
+--
+-- Name: mc_auditoria id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_auditoria ALTER COLUMN id SET DEFAULT nextval('public.mc_auditoria_id_seq'::regclass);
+
+
+--
+-- Name: mc_campos id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_campos ALTER COLUMN id SET DEFAULT nextval('public.mc_campos_id_seq'::regclass);
+
+
+--
+-- Name: mc_cargos id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_cargos ALTER COLUMN id SET DEFAULT nextval('public.mc_cargos_id_seq'::regclass);
+
+
+--
+-- Name: mc_colaboradores id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_colaboradores ALTER COLUMN id SET DEFAULT nextval('public.mc_colaboradores_id_seq'::regclass);
+
+
+--
+-- Name: mc_ferramentas id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_ferramentas ALTER COLUMN id SET DEFAULT nextval('public.mc_ferramentas_id_seq'::regclass);
+
+
+--
+-- Name: mc_registros id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_registros ALTER COLUMN id SET DEFAULT nextval('public.mc_registros_id_seq'::regclass);
+
+
+--
+-- Name: mc_usuarios id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_usuarios ALTER COLUMN id SET DEFAULT nextval('public.mc_usuarios_id_seq'::regclass);
+
+
+--
+-- Name: mc_veiculos id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_veiculos ALTER COLUMN id SET DEFAULT nextval('public.mc_veiculos_id_seq'::regclass);
+
+
+--
 -- Name: omie_jobs id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -2549,6 +3023,142 @@ ALTER TABLE ONLY public.inventarios
 
 ALTER TABLE ONLY public.inventarios
     ADD CONSTRAINT inventarios_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: mc_arquivos mc_arquivos_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_arquivos
+    ADD CONSTRAINT mc_arquivos_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: mc_auditoria mc_auditoria_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_auditoria
+    ADD CONSTRAINT mc_auditoria_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: mc_campos mc_campos_entidade_chave_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_campos
+    ADD CONSTRAINT mc_campos_entidade_chave_key UNIQUE (entidade, chave);
+
+
+--
+-- Name: mc_campos mc_campos_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_campos
+    ADD CONSTRAINT mc_campos_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: mc_cargos mc_cargos_abreviacao_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_cargos
+    ADD CONSTRAINT mc_cargos_abreviacao_key UNIQUE (abreviacao);
+
+
+--
+-- Name: mc_cargos mc_cargos_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_cargos
+    ADD CONSTRAINT mc_cargos_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: mc_colaboradores mc_colaboradores_matricula_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_colaboradores
+    ADD CONSTRAINT mc_colaboradores_matricula_key UNIQUE (matricula);
+
+
+--
+-- Name: mc_colaboradores mc_colaboradores_matricula_numero_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_colaboradores
+    ADD CONSTRAINT mc_colaboradores_matricula_numero_key UNIQUE (matricula_numero);
+
+
+--
+-- Name: mc_colaboradores mc_colaboradores_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_colaboradores
+    ADD CONSTRAINT mc_colaboradores_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: mc_ferramentas mc_ferramentas_identificador_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_ferramentas
+    ADD CONSTRAINT mc_ferramentas_identificador_key UNIQUE (identificador);
+
+
+--
+-- Name: mc_ferramentas mc_ferramentas_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_ferramentas
+    ADD CONSTRAINT mc_ferramentas_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: mc_registros mc_registros_foto_antes_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_registros
+    ADD CONSTRAINT mc_registros_foto_antes_id_key UNIQUE (foto_antes_id);
+
+
+--
+-- Name: mc_registros mc_registros_foto_depois_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_registros
+    ADD CONSTRAINT mc_registros_foto_depois_id_key UNIQUE (foto_depois_id);
+
+
+--
+-- Name: mc_registros mc_registros_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_registros
+    ADD CONSTRAINT mc_registros_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: mc_usuarios mc_usuarios_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_usuarios
+    ADD CONSTRAINT mc_usuarios_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: mc_usuarios mc_usuarios_usuario_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_usuarios
+    ADD CONSTRAINT mc_usuarios_usuario_key UNIQUE (usuario);
+
+
+--
+-- Name: mc_veiculos mc_veiculos_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_veiculos
+    ADD CONSTRAINT mc_veiculos_pkey PRIMARY KEY (id);
 
 
 --
@@ -3041,6 +3651,48 @@ CREATE INDEX idx_mappings_sku_ativo ON public.product_integration_mappings USING
 
 
 --
+-- Name: idx_mc_auditoria_criado_em; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_mc_auditoria_criado_em ON public.mc_auditoria USING btree (criado_em DESC);
+
+
+--
+-- Name: idx_mc_auditoria_entidade; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_mc_auditoria_entidade ON public.mc_auditoria USING btree (entidade, entidade_id, criado_em DESC);
+
+
+--
+-- Name: idx_mc_colaboradores_cargo; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_mc_colaboradores_cargo ON public.mc_colaboradores USING btree (cargo_id);
+
+
+--
+-- Name: idx_mc_registros_colaborador; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_mc_registros_colaborador ON public.mc_registros USING btree (colaborador_id);
+
+
+--
+-- Name: idx_mc_registros_registrado_por; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_mc_registros_registrado_por ON public.mc_registros USING btree (registrado_por);
+
+
+--
+-- Name: idx_mc_registros_retirado; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_mc_registros_retirado ON public.mc_registros USING btree (retirado_em DESC) WHERE (excluido_em IS NULL);
+
+
+--
 -- Name: idx_omie_jobs_entity; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3160,6 +3812,34 @@ CREATE INDEX idx_stock_snapshots_sku ON public.stock_snapshots USING btree (sku_
 
 
 --
+-- Name: mc_cargos_nome_unico; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX mc_cargos_nome_unico ON public.mc_cargos USING btree (lower(nome));
+
+
+--
+-- Name: mc_registros_item_em_uso; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX mc_registros_item_em_uso ON public.mc_registros USING btree (tipo, item_id) WHERE ((status = 'EM_USO'::text) AND (excluido_em IS NULL));
+
+
+--
+-- Name: mc_veiculos_chave_ativa; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX mc_veiculos_chave_ativa ON public.mc_veiculos USING btree (numero_chave) WHERE ativo;
+
+
+--
+-- Name: mc_veiculos_placa_ativa; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX mc_veiculos_placa_ativa ON public.mc_veiculos USING btree (placa) WHERE ativo;
+
+
+--
 -- Name: uq_factor_decisions; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3171,6 +3851,13 @@ CREATE UNIQUE INDEX uq_factor_decisions ON public.integration_factor_decisions U
 --
 
 CREATE UNIQUE INDEX uq_factor_evidence ON public.integration_factor_evidence USING btree (integration_id, external_product_id, fator);
+
+
+--
+-- Name: mc_colaboradores mc_colaboradores_matricula_imutavel; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER mc_colaboradores_matricula_imutavel BEFORE UPDATE ON public.mc_colaboradores FOR EACH ROW EXECUTE FUNCTION public.mc_matricula_imutavel();
 
 
 --
@@ -3362,6 +4049,126 @@ ALTER TABLE ONLY public.integration_webhooks
 
 ALTER TABLE ONLY public.inventario_itens
     ADD CONSTRAINT inventario_itens_inventario_id_fkey FOREIGN KEY (inventario_id) REFERENCES public.inventarios(id) ON DELETE CASCADE;
+
+
+--
+-- Name: mc_colaboradores mc_colaboradores_assinatura_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_colaboradores
+    ADD CONSTRAINT mc_colaboradores_assinatura_id_fkey FOREIGN KEY (assinatura_id) REFERENCES public.mc_arquivos(id);
+
+
+--
+-- Name: mc_colaboradores mc_colaboradores_cargo_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_colaboradores
+    ADD CONSTRAINT mc_colaboradores_cargo_id_fkey FOREIGN KEY (cargo_id) REFERENCES public.mc_cargos(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: mc_colaboradores mc_colaboradores_foto_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_colaboradores
+    ADD CONSTRAINT mc_colaboradores_foto_id_fkey FOREIGN KEY (foto_id) REFERENCES public.mc_arquivos(id);
+
+
+--
+-- Name: mc_ferramentas mc_ferramentas_foto_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_ferramentas
+    ADD CONSTRAINT mc_ferramentas_foto_id_fkey FOREIGN KEY (foto_id) REFERENCES public.mc_arquivos(id);
+
+
+--
+-- Name: mc_registros mc_registros_assinatura_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_registros
+    ADD CONSTRAINT mc_registros_assinatura_id_fkey FOREIGN KEY (assinatura_id) REFERENCES public.mc_arquivos(id);
+
+
+--
+-- Name: mc_registros mc_registros_atualizado_por_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_registros
+    ADD CONSTRAINT mc_registros_atualizado_por_fkey FOREIGN KEY (atualizado_por) REFERENCES public.mc_usuarios(id);
+
+
+--
+-- Name: mc_registros mc_registros_cancelado_por_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_registros
+    ADD CONSTRAINT mc_registros_cancelado_por_fkey FOREIGN KEY (cancelado_por) REFERENCES public.mc_usuarios(id);
+
+
+--
+-- Name: mc_registros mc_registros_colaborador_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_registros
+    ADD CONSTRAINT mc_registros_colaborador_id_fkey FOREIGN KEY (colaborador_id) REFERENCES public.mc_colaboradores(id);
+
+
+--
+-- Name: mc_registros mc_registros_devolvido_por_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_registros
+    ADD CONSTRAINT mc_registros_devolvido_por_fkey FOREIGN KEY (devolvido_por) REFERENCES public.mc_usuarios(id);
+
+
+--
+-- Name: mc_registros mc_registros_excluido_por_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_registros
+    ADD CONSTRAINT mc_registros_excluido_por_fkey FOREIGN KEY (excluido_por) REFERENCES public.mc_usuarios(id);
+
+
+--
+-- Name: mc_registros mc_registros_foto_antes_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_registros
+    ADD CONSTRAINT mc_registros_foto_antes_id_fkey FOREIGN KEY (foto_antes_id) REFERENCES public.mc_arquivos(id);
+
+
+--
+-- Name: mc_registros mc_registros_foto_depois_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_registros
+    ADD CONSTRAINT mc_registros_foto_depois_id_fkey FOREIGN KEY (foto_depois_id) REFERENCES public.mc_arquivos(id);
+
+
+--
+-- Name: mc_registros mc_registros_registrado_por_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_registros
+    ADD CONSTRAINT mc_registros_registrado_por_fkey FOREIGN KEY (registrado_por) REFERENCES public.mc_usuarios(id);
+
+
+--
+-- Name: mc_usuarios mc_usuarios_criado_por_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_usuarios
+    ADD CONSTRAINT mc_usuarios_criado_por_fkey FOREIGN KEY (criado_por) REFERENCES public.mc_usuarios(id) ON DELETE SET NULL;
+
+
+--
+-- Name: mc_veiculos mc_veiculos_foto_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_veiculos
+    ADD CONSTRAINT mc_veiculos_foto_id_fkey FOREIGN KEY (foto_id) REFERENCES public.mc_arquivos(id);
 
 
 --

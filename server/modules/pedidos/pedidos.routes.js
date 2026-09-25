@@ -8,6 +8,18 @@ import {
 } from "../../services/integrations/core/stock-launches.service.js";
 import { converterQuantidadeDoPedido, obterFatoresEmLote } from "../../services/integrations/core/fator-conversao.repository.js";
 import { publishOrderAlert, publishOrderStatusChange } from "../../services/order-alerts/order-alerts.events.js";
+import { publicarEventoDoPdv } from "../../services/inventarios/inventario.events.js";
+import {
+  debitarOrigem,
+  estornarOrigem,
+  exigirSemItemDividido,
+  origemDaLinha,
+  ORDEM_LINHA_PADRAO_PRIMEIRO,
+  origemInformada,
+  origemPadraoDoPedido,
+  sqlOrigemDaNovaLinha,
+  validarOrigem
+} from "../../services/pedidos/origem-estoque.service.js";
 import { normalizeOrderStatus, orderStatuses } from "./pedidos.service.js";
 
 // Janela em que um novo envio do mesmo PDV entra no pedido anterior em vez de abrir outro card.
@@ -131,6 +143,137 @@ function statusFromRequest(value) {
 }
 
 // Roteador do módulo de pedidos (solicitação, liberação e histórico)
+// Movimenta o estoque de uma retirada (ou transferência rápida) já validada: baixa no local de
+// origem, crédito no PDV solicitante e lançamento na integração externa. Compartilhada pelas duas
+// rotas para a regra de estoque existir num lugar só. Nunca bloqueia por causa da integração.
+export async function baixarEstoqueDaRetirada(client, orderCode, targetRows) {
+  const negativos = [];
+  const sobras = [];
+  let lancamentoIntegracao = null;
+  for (const row of targetRows) {
+    if (origemDaLinha(row) !== null && origemDaLinha(row) === Number(row.pdv_id)) {
+      const erro = new Error("O local de origem não pode ser o próprio PDV de destino.");
+      erro.statusCode = 400;
+      throw erro;
+    }
+  }
+  // Quais PDVs deste pedido sao administrativos. Uma consulta so, antes do laco: um
+  // pedido pode ter itens de mais de um PDV, e perguntar por item repetiria a leitura.
+  const administrativos = await pdvsAdministrativos(client, targetRows.map((row) => row.pdv_id));
+
+  // Baixa definitiva: sai do estoque central e entra no saldo físico do PDV.
+  // Só a quantidade liberada é movimentada; a diferença para o solicitado não vira pendência.
+  for (const row of targetRows) {
+    const qty = asInt(row.quantidade_liberada);
+    // Sai do local de origem do pedido: Almoxarifado (qtd_total) ou o PDV de origem
+    const saldo = await debitarOrigem(client, { origemPdvId: origemDaLinha(row), sku: row.sku_produto, quantidade: qty });
+    // Saldo central negativo não bloqueia a retirada, mas volta para a tela como aviso.
+    // Number(), não asInt(): qtd_total é NUMERIC e volta do driver como string ("-0.5") --
+    // asInt() truncaria pra "-0" antes de comparar, e "-0 < 0" é falso (bug real, pego
+    // antes de ampliar a coluna: um saldo negativo pequeno deixaria de avisar).
+    if (saldo && Number(saldo.saldo) < 0) {
+      negativos.push({ sku: saldo.sku, nome: saldo.nome, saldo: Number(saldo.saldo), local: saldo.local });
+    }
+    const pendente = asInt(row.quantidade_solicitada) - qty;
+    if (pendente > 0) sobras.push({ sku: row.sku_produto, solicitada: asInt(row.quantidade_solicitada), liberada: qty, nao_atendida: pendente });
+
+    // PDV Administrativo NAO acumula saldo.
+    //
+    // Ele nao e ponto de venda: e um setor interno (escritorio, limpeza, marketing,
+    // manutencao) que CONSOME estoque sem vender. O que ele retira sai da empresa para
+    // consumo, entao nao vira saldo de revenda em lugar nenhum. A linha de estoque_pdv
+    // continua existindo porque e nela que mora a permissao de pedido
+    // (`permitido = TRUE`, conferida na criacao do pedido) -- ela libera, nunca acumula.
+    if (!administrativos.has(row.pdv_id)) {
+      await client.query(
+        `INSERT INTO estoque_pdv (pdv_id, sku_produto, quantidade)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (pdv_id, sku_produto) DO UPDATE SET quantidade = estoque_pdv.quantidade + EXCLUDED.quantidade`,
+        [row.pdv_id, row.sku_produto, qty]
+      );
+    }
+  }
+
+  // Enfileira a transferência ALMOXARIFADO → PDV para a integração externa.
+  // Nunca bloqueia: sem integração, sem vínculo ou sem internet, a retirada conclui
+  // do mesmo jeito e o lançamento fica pendente na fila.
+  //
+  // O PDV Administrativo fica de FORA: para ele nao ha transferencia entre locais,
+  // porque nao existe local de destino -- a mercadoria sai da empresa como consumo
+  // interno. O lancamento dele e uma SAIDA do local do almoxarifado, tratada logo
+  // abaixo, e mandar TRF aqui faria a OMIE acreditar que o estoque continua na empresa,
+  // so que em outro lugar.
+  const itensDeRevenda = targetRows.filter((row) => !administrativos.has(row.pdv_id));
+  lancamentoIntegracao = await registrarTransferenciasDaRetirada(client, {
+    codigoPedido: orderCode,
+    itens: itensDeRevenda.map((row) => ({
+      pedidoItemId: row.id,
+      sku: row.sku_produto,
+      pdvId: row.pdv_id,
+      origemPdvId: origemDaLinha(row),
+      quantidade: asInt(row.quantidade_liberada)
+    }))
+  });
+
+  // SAIDA por consumo interno do PDV Administrativo -- "SAI", nunca "TRF".
+  //
+  // O lancamento e enfileirado e o payload e montado, mas NADA sai para a OMIE: o dominio
+  // de motivo de "SAI" na conta tem so quatro valores (INV, PER, OPS, PDV, conferidos na
+  // documentacao da API) e nenhum significa consumo interno. Ate o usuario escolher, o
+  // payload leva um sentinela e a tarefa se recusa a enviar, mesmo em modo REAL.
+  //
+  // Enfileirar mesmo assim e proposital: quando o motivo for definido, o historico de
+  // consumo ja estara montado e conferido, em vez de comecar do zero naquele dia.
+  const itensAdministrativos = targetRows.filter((row) => administrativos.has(row.pdv_id));
+  if (itensAdministrativos.length) {
+    const consumo = await registrarConsumoAdministrativo(client, {
+      codigoPedido: orderCode,
+      itens: itensAdministrativos.map((row) => ({
+        pedidoItemId: row.id,
+        sku: row.sku_produto,
+        pdvId: row.pdv_id,
+        origemPdvId: origemDaLinha(row),
+        quantidade: asInt(row.quantidade_liberada)
+      }))
+    });
+    lancamentoIntegracao = {
+      ...(lancamentoIntegracao || {}),
+      consumo_administrativo: consumo,
+      motivo_consumo:
+        "Saída por consumo administrativo registrada em simulação: o código de motivo da OMIE para consumo interno ainda não foi escolhido, então nada é enviado."
+    };
+  }
+
+  return { negativos, sobras, lancamentoIntegracao };
+}
+
+// Erro com status HTTP, para as rotas de origem/divisão responderem sem repetir três linhas
+function erroComStatus(statusCode, mensagem) {
+  const erro = new Error(mensagem);
+  erro.statusCode = statusCode;
+  return erro;
+}
+
+// Avisa SÓ o PDV dono do pedido (canal por PDV) que ele entrou em "Aguardando Retirada".
+// Nunca usa o canal do Almoxarifado: aquele transmite tudo a todos e entregaria pedidos de um
+// ponto aos outros. Só é chamado na transição de ENTRADA no status, nunca em recarga de tela
+// nem na migração de legado (que muda status direto no SQL, sem passar por aqui).
+export async function avisarPdvPedidoAguardandoRetirada(codigoPedido) {
+  if (!codigoPedido) return;
+  try {
+    const linhas = await query(
+      "SELECT DISTINCT pdv_id FROM pedidos WHERE codigo_pedido = $1 AND pdv_id IS NOT NULL",
+      [codigoPedido]
+    );
+    for (const { pdv_id: pdvId } of linhas) {
+      publicarEventoDoPdv("PEDIDO_AGUARDANDO_RETIRADA", pdvId, { codigoPedido });
+    }
+  } catch (error) {
+    // O alerta é um extra em tempo real; falhar aqui nunca pode derrubar a mudança de status
+    console.error("Falha ao avisar o PDV do pedido aguardando retirada:", error.message);
+  }
+}
+
 export async function handlePedidosRoutes(req, res, context) {
   const { method, requireUser, url, user } = context;
 
@@ -291,7 +434,7 @@ export async function handlePedidosRoutes(req, res, context) {
             `SELECT id, quantidade_solicitada
              FROM pedidos
              WHERE codigo_pedido = $1 AND sku_produto = $2 AND status = 'Pendente'
-             ORDER BY id
+             ${ORDEM_LINHA_PADRAO_PRIMEIRO}
              LIMIT 1
              FOR UPDATE`,
             [orderCode, sku]
@@ -309,8 +452,8 @@ export async function handlePedidosRoutes(req, res, context) {
         } else {
           await client.query(
             `INSERT INTO pedidos
-              (codigo_pedido, solicitante, sku_produto, pdv_id, quantidade_solicitada, observacao)
-             VALUES ($1, $2, $3, $4, $5, $6)`,
+              (codigo_pedido, solicitante, sku_produto, pdv_id, quantidade_solicitada, observacao, local_origem_pdv_id)
+             VALUES ($1, $2, $3, $4, $5, $6, ${sqlOrigemDaNovaLinha(1, 4)})`,
             [orderCode, solicitante, sku, user.pdvId, conversao.unidades, observacao]
           );
         }
@@ -469,7 +612,7 @@ export async function handlePedidosRoutes(req, res, context) {
           const jaExiste = await client.query(
             `SELECT id FROM pedidos
              WHERE codigo_pedido = $1 AND sku_produto = $2
-             ORDER BY id LIMIT 1
+             ${ORDEM_LINHA_PADRAO_PRIMEIRO} LIMIT 1
              FOR UPDATE`,
             [orderCode, sku]
           );
@@ -489,8 +632,8 @@ export async function handlePedidosRoutes(req, res, context) {
             await client.query(
               `INSERT INTO pedidos
                 (codigo_pedido, solicitante, sku_produto, pdv_id, quantidade_solicitada, observacao,
-                 status, pedido_editado, pedido_editado_em, pedido_editado_por)
-               VALUES ($1, $2, $3, $4, $5, $6, 'Pendente', TRUE, CURRENT_TIMESTAMP, $7)`,
+                 status, pedido_editado, pedido_editado_em, pedido_editado_por, local_origem_pdv_id)
+               VALUES ($1, $2, $3, $4, $5, $6, 'Pendente', TRUE, CURRENT_TIMESTAMP, $7, ${sqlOrigemDaNovaLinha(1, 4)})`,
               [
                 orderCode,
                 primeiraLinha.solicitante,
@@ -557,9 +700,12 @@ export async function handlePedidosRoutes(req, res, context) {
               p.retirada_assinatura, p.retirada_responsavel, p.retirada_observacao,
               p.retirada_em, p.retirada_usuario_almoxarifado,
               COALESCE(p.pedido_editado, FALSE) AS pedido_editado, p.pedido_editado_em, p.pedido_editado_por,
-              COALESCE(p.pedido_reaberto_finalizado, FALSE) AS pedido_reaberto_finalizado
+              COALESCE(p.pedido_reaberto_finalizado, FALSE) AS pedido_reaberto_finalizado,
+              -- De onde saiu cada parte: o PDV vê o produto somado, e a origem só na retirada
+              po.nome AS local_origem
        FROM pedidos p
        JOIN produtos pr ON pr.sku = p.sku_produto
+       LEFT JOIN pdvs po ON po.id = p.local_origem_pdv_id
        WHERE p.pdv_id = $1 AND ($2::date IS NULL OR p.data_hora::date >= $2::date)
          AND ($3::date IS NULL OR p.data_hora::date <= $3::date)
        ORDER BY p.data_hora ASC, p.id ASC`,
@@ -618,6 +764,7 @@ export async function handlePedidosRoutes(req, res, context) {
         error.statusCode = 404;
         throw error;
       }
+      if (nextStatus === "Pendente") await exigirSemItemDividido(client, orderCode);
       const normalized = rows.rows.map((row) => ({ ...row, normalizedStatus: normalizeOrderStatus(row.status) }));
       const targetRows = normalized.filter((row) => row.normalizedStatus === expectedStatus);
       if (!targetRows.length) {
@@ -689,6 +836,9 @@ export async function handlePedidosRoutes(req, res, context) {
       usuario: user.name || "Almoxarifado",
       origem: "kanban"
     });
+    if (nextStatus === "Aguardando Retirada" && expectedStatus !== "Aguardando Retirada") {
+      await avisarPdvPedidoAguardandoRetirada(orderCode);
+    }
     send(res, 200, { ok: true, ...result });
     return true;
   }
@@ -868,11 +1018,17 @@ export async function handlePedidosRoutes(req, res, context) {
               p.retirada_observacao, p.retirada_em, p.retirada_usuario_almoxarifado,
               p.version, p.updated_at,
               COALESCE(p.pedido_editado, FALSE) AS pedido_editado, p.pedido_editado_em, p.pedido_editado_por,
-              COALESCE(p.pedido_reaberto_finalizado, FALSE) AS pedido_reaberto_finalizado
+              COALESCE(p.pedido_reaberto_finalizado, FALSE) AS pedido_reaberto_finalizado,
+              -- Local de origem (NULL = Almoxarifado) e o saldo NELE, para o painel mostrar de
+              -- onde a mercadoria vai sair e quanto há lá
+              p.local_origem_pdv_id, po.nome AS local_origem, COALESCE(p.origem_por_item, FALSE) AS origem_por_item,
+              CASE WHEN p.local_origem_pdv_id IS NULL THEN pr.qtd_total ELSE COALESCE(eo.quantidade, 0) END AS saldo_origem
        FROM pedidos p
        JOIN pdvs pd ON pd.id = p.pdv_id
        JOIN produtos pr ON pr.sku = p.sku_produto
        LEFT JOIN estoque_pdv e ON e.pdv_id = p.pdv_id AND e.sku_produto = p.sku_produto
+       LEFT JOIN pdvs po ON po.id = p.local_origem_pdv_id
+       LEFT JOIN estoque_pdv eo ON eo.pdv_id = p.local_origem_pdv_id AND eo.sku_produto = p.sku_produto
        WHERE ($1::date IS NULL OR p.criado_em::date >= $1::date)
          AND ($2::date IS NULL OR p.criado_em::date <= $2::date)
          AND ($3::int = 0 OR p.pdv_id = $3)
@@ -982,10 +1138,12 @@ export async function handlePedidosRoutes(req, res, context) {
           `INSERT INTO pedidos
              (codigo_pedido, solicitante, pdv_id, sku_produto, quantidade_solicitada, quantidade_liberada,
               status, observacao, data_hora, criado_em, em_andamento_em,
-              pedido_editado, pedido_editado_em, pedido_editado_por, version, updated_at, item_origem)
+              pedido_editado, pedido_editado_em, pedido_editado_por, version, updated_at, item_origem,
+              local_origem_pdv_id)
            VALUES ($1, $2, $3, $4, $5, 0,
                    'Em Andamento', $6, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
-                   TRUE, CURRENT_TIMESTAMP, $7, 1, CURRENT_TIMESTAMP, 'ALMOX')
+                   TRUE, CURRENT_TIMESTAMP, $7, 1, CURRENT_TIMESTAMP, 'ALMOX',
+                   ${sqlOrigemDaNovaLinha(1, 3)})
            RETURNING id, codigo_pedido, sku_produto, quantidade_solicitada, item_origem`,
           [
             order.codigo_pedido,
@@ -1167,11 +1325,16 @@ export async function handlePedidosRoutes(req, res, context) {
     await ensurePedidoAuditTable();
 
     await tx(async (client) => {
+      if (nextStatus === "Pendente") {
+        // Sem código no corpo, o pedido é o dos itens enviados
+        const codigoDoPedido = orderCode || (await client.query("SELECT codigo_pedido FROM pedidos WHERE id = $1", [asInt(items[0]?.id)])).rows[0]?.codigo_pedido;
+        if (codigoDoPedido) await exigirSemItemDividido(client, codigoDoPedido);
+      }
       // Reabrir todo o pedido para Em Andamento: reverte itens finalizados e reagrupa itens
       // duplicados do mesmo produto/PDV em uma única linha antes de reabrir
       if (orderCode && nextStatus === "Em Andamento") {
         const orderItems = await client.query(
-          `SELECT id, status, quantidade_solicitada, quantidade_liberada, pdv_id, sku_produto, version
+          `SELECT id, status, quantidade_solicitada, quantidade_liberada, pdv_id, sku_produto, version, local_origem_pdv_id
            FROM pedidos
            WHERE codigo_pedido = $1
            ORDER BY id
@@ -1200,7 +1363,7 @@ export async function handlePedidosRoutes(req, res, context) {
           if (currentStatus === "Finalizado") {
             // Reabrir um item já finalizado estorna a baixa: devolve ao estoque central e retira do PDV
             const oldQty = asInt(current.quantidade_liberada);
-            await client.query("UPDATE produtos SET qtd_total = qtd_total + $1 WHERE sku = $2", [oldQty, current.sku_produto]);
+            await estornarOrigem(client, { origemPdvId: origemDaLinha(current), sku: current.sku_produto, quantidade: oldQty });
             await client.query(
               "UPDATE estoque_pdv SET quantidade = GREATEST(0, quantidade - $1) WHERE pdv_id = $2 AND sku_produto = $3",
               [oldQty, current.pdv_id, current.sku_produto]
@@ -1209,7 +1372,7 @@ export async function handlePedidosRoutes(req, res, context) {
             // mercadoria está no PDV e os dois sistemas divergem em silêncio.
             await registrarCompensacaoDaReabertura(client, {
               codigoPedido: orderCode,
-              itens: [{ pedidoItemId: current.id, sku: current.sku_produto, pdvId: current.pdv_id, quantidade: oldQty }]
+              itens: [{ pedidoItemId: current.id, sku: current.sku_produto, pdvId: current.pdv_id, origemPdvId: origemDaLinha(current), quantidade: oldQty }]
             });
           }
         }
@@ -1217,7 +1380,7 @@ export async function handlePedidosRoutes(req, res, context) {
         // Agrupa itens duplicados (mesmo pdv+sku) para consolidar em uma única linha ao reabrir
         const groups = new Map();
         for (const row of orderItems.rows) {
-          const key = `${row.pdv_id}::${row.sku_produto}`;
+          const key = `${row.pdv_id}::${row.sku_produto}::${origemDaLinha(row) ?? "ALMOX"}`;
           const group = groups.get(key) || {
             keepId: row.id,
             ids: [],
@@ -1308,7 +1471,7 @@ export async function handlePedidosRoutes(req, res, context) {
       // Aplica a transição item a item, respeitando as transições permitidas e a versão esperada
       let changedItems = 0;
       for (const item of items) {
-        const old = await client.query("SELECT codigo_pedido, status, quantidade_solicitada, quantidade_liberada, pdv_id, sku_produto, version FROM pedidos WHERE id = $1", [asInt(item.id)]);
+        const old = await client.query("SELECT codigo_pedido, status, quantidade_solicitada, quantidade_liberada, pdv_id, sku_produto, version, local_origem_pdv_id FROM pedidos WHERE id = $1", [asInt(item.id)]);
         if (!old.rows[0]) continue;
         const current = old.rows[0];
         const currentStatus = normalizeOrderStatus(current.status);
@@ -1344,7 +1507,7 @@ export async function handlePedidosRoutes(req, res, context) {
           }
           if (currentStatus === "Finalizado") {
             const oldQty = asInt(current.quantidade_liberada);
-            await client.query("UPDATE produtos SET qtd_total = qtd_total + $1 WHERE sku = $2", [oldQty, current.sku_produto]);
+            await estornarOrigem(client, { origemPdvId: origemDaLinha(current), sku: current.sku_produto, quantidade: oldQty });
             await client.query(
               "UPDATE estoque_pdv SET quantidade = GREATEST(0, quantidade - $1) WHERE pdv_id = $2 AND sku_produto = $3",
               [oldQty, current.pdv_id, current.sku_produto]
@@ -1427,10 +1590,12 @@ export async function handlePedidosRoutes(req, res, context) {
                AND sku_produto = $2
                AND status = 'Aguardando Retirada'
                AND id <> $3
+               -- Partes de um item dividido saem de lugares diferentes: fundir apagaria a origem
+               AND local_origem_pdv_id IS NOT DISTINCT FROM $4
              ORDER BY id
              LIMIT 1
              FOR UPDATE`,
-            [current.codigo_pedido || orderCode, current.sku_produto, asInt(item.id)]
+            [current.codigo_pedido || orderCode, current.sku_produto, asInt(item.id), origemDaLinha(current)]
           );
           const keep = existing.rows[0];
           if (keep) {
@@ -1465,7 +1630,7 @@ export async function handlePedidosRoutes(req, res, context) {
         // Reabrir um item finalizado estorna a baixa anterior (mesmo raciocínio do bloco de cima)
         if (currentStatus === "Finalizado" && itemStatus !== "Finalizado") {
           const oldQty = asInt(current.quantidade_liberada);
-          await client.query("UPDATE produtos SET qtd_total = qtd_total + $1 WHERE sku = $2", [oldQty, current.sku_produto]);
+          await estornarOrigem(client, { origemPdvId: origemDaLinha(current), sku: current.sku_produto, quantidade: oldQty });
           await client.query(
             "UPDATE estoque_pdv SET quantidade = GREATEST(0, quantidade - $1) WHERE pdv_id = $2 AND sku_produto = $3",
             [oldQty, current.pdv_id, current.sku_produto]
@@ -1474,7 +1639,7 @@ export async function handlePedidosRoutes(req, res, context) {
           await registrarCompensacaoDaReabertura(client, {
             codigoPedido: current.codigo_pedido,
             itens: [
-              { pedidoItemId: asInt(item.id), sku: current.sku_produto, pdvId: current.pdv_id, quantidade: oldQty }
+              { pedidoItemId: asInt(item.id), sku: current.sku_produto, pdvId: current.pdv_id, origemPdvId: origemDaLinha(current), quantidade: oldQty }
             ]
           });
         }
@@ -1500,7 +1665,383 @@ export async function handlePedidosRoutes(req, res, context) {
       usuario: user.name || "Almoxarifado",
       origem: "painel"
     });
+    if (nextStatus === "Aguardando Retirada" && currentStatusFilter !== "Aguardando Retirada") {
+      await avisarPdvPedidoAguardandoRetirada(orderCode || items[0]?.codigo_pedido);
+    }
     send(res, 200, { ok: true, excedentes });
+    return true;
+  }
+
+  // Muda o local de ORIGEM (de onde a mercadoria sai). Só o Almoxarifado, e só antes de
+  // finalizar: depois da retirada a baixa já saiu de um lugar, e mudar a origem deixaria o
+  // estorno de uma reabertura devolvendo para o lugar errado. Duas formas:
+  //   { codigo_pedido, local_origem_pdv_id }        -> todos os itens que seguem a origem padrão
+  //                                                    (itens ajustados um a um não são tocados)
+  //   { codigo_pedido, itens: [{ id, local_origem_pdv_id }] } -> só os itens listados
+  if (url.pathname === "/api/admin/orders/origem" && method === "POST") {
+    if (!requireUser(req, res, "admin")) return true;
+    await ensurePedidoAuditTable();
+    const body = await readBody(req);
+    const orderCode = normalizeText(body.codigo_pedido, 80);
+    const porItem = Array.isArray(body.itens);
+    if (!orderCode) return send(res, 400, { error: "Pedido inválido." }), true;
+    if (porItem && !body.itens.length) return send(res, 400, { error: "Informe ao menos um item." }), true;
+    const usuario = user.name || "Almoxarifado";
+    try {
+      const resultado = await tx(async (client) => {
+        const { rows } = await client.query(
+          `SELECT id, pdv_id, status, sku_produto, local_origem_pdv_id, origem_por_item
+           FROM pedidos WHERE codigo_pedido = $1 ORDER BY id FOR UPDATE`,
+          [orderCode]
+        );
+        if (!rows.length) throw erroComStatus(404, "Pedido não encontrado.");
+        if (rows.some((row) => normalizeOrderStatus(row.status) === "Finalizado")) {
+          throw erroComStatus(409, "Pedido finalizado não muda de local de origem. Reabra o pedido antes.");
+        }
+        const destinoPdvId = rows[0].pdv_id;
+
+        if (!porItem) {
+          const origemPdvId = origemInformada(body.local_origem_pdv_id);
+          await validarOrigem(client, { origemPdvId, destinoPdvId });
+          const alvo = rows.filter((row) => row.origem_por_item !== true);
+          await client.query(
+            `UPDATE pedidos SET local_origem_pdv_id = $2, version = COALESCE(version, 1) + 1, updated_at = CURRENT_TIMESTAMP
+             WHERE codigo_pedido = $1 AND origem_por_item IS NOT TRUE`,
+            [orderCode, origemPdvId]
+          );
+          await registrarAuditoriaStatus(client, {
+            codigoPedido: orderCode,
+            acao: "local_origem_alterado",
+            usuario,
+            observacao: `Origem padrão do pedido alterada para ${origemPdvId ?? "Almoxarifado"} (${alvo.length} item(ns); itens ajustados um a um mantidos)`,
+            dados: { local_origem_novo: origemPdvId, itens: alvo.map((row) => row.id) }
+          });
+          return { codigo_pedido: orderCode, local_origem_pdv_id: origemPdvId, itens_alterados: alvo.length };
+        }
+
+        const porId = new Map(rows.map((row) => [Number(row.id), row]));
+        const alterados = [];
+        for (const pedido of body.itens) {
+          const id = asInt(pedido?.id);
+          const linha = porId.get(id);
+          if (!linha) throw erroComStatus(400, `O item ${pedido?.id} não pertence a este pedido.`);
+          const origemPdvId = origemInformada(pedido?.local_origem_pdv_id);
+          await validarOrigem(client, { origemPdvId, destinoPdvId });
+          // Duas partes do mesmo produto com a mesma origem seriam a mesma coisa em duas linhas
+          const repetida = rows.some((outra) => Number(outra.id) !== id
+            && outra.sku_produto === linha.sku_produto
+            && origemDaLinha(outra) === origemPdvId);
+          if (repetida) throw erroComStatus(400, `O produto ${linha.sku_produto} já tem uma parte saindo dessa origem.`);
+          const anterior = origemDaLinha(linha);
+          await client.query(
+            `UPDATE pedidos SET local_origem_pdv_id = $2, origem_por_item = TRUE,
+                    version = COALESCE(version, 1) + 1, updated_at = CURRENT_TIMESTAMP
+             WHERE id = $1`,
+            [id, origemPdvId]
+          );
+          linha.local_origem_pdv_id = origemPdvId;
+          await registrarAuditoriaStatus(client, {
+            codigoPedido: orderCode,
+            acao: "local_origem_item_alterado",
+            usuario,
+            observacao: `Origem de ${linha.sku_produto} alterada de ${anterior ?? "Almoxarifado"} para ${origemPdvId ?? "Almoxarifado"}`,
+            dados: { item_id: id, sku: linha.sku_produto, local_origem_anterior: anterior, local_origem_novo: origemPdvId }
+          });
+          alterados.push(id);
+        }
+        return { codigo_pedido: orderCode, itens_alterados: alterados.length };
+      });
+      send(res, 200, { ok: true, ...resultado });
+    } catch (error) {
+      if (error.statusCode) return send(res, error.statusCode, { error: error.message }), true;
+      throw error;
+    }
+    return true;
+  }
+
+  // Saldo de cada produto do pedido em cada local que pode ser origem (Almoxarifado + PDVs não
+  // administrativos), para o Almoxarifado escolher de onde tirar. Só leitura.
+  if (url.pathname === "/api/admin/pedido/saldos-origem" && method === "GET") {
+    if (!requireUser(req, res, "admin")) return true;
+    const skus = String(url.searchParams.get("skus") || "").split(",").map((v) => v.trim()).filter(Boolean).slice(0, 300);
+    const pdvs = await query("SELECT id, nome FROM pdvs WHERE administrativo IS NOT TRUE ORDER BY nome");
+    const saldos = {};
+    if (skus.length) {
+      const central = await query("SELECT sku, qtd_total FROM produtos WHERE sku = ANY($1::text[])", [skus]);
+      for (const linha of central) saldos[linha.sku] = { ALMOX: Number(linha.qtd_total) || 0 };
+      const locais = await query(
+        `SELECT e.sku_produto, e.pdv_id, e.quantidade
+         FROM estoque_pdv e JOIN pdvs d ON d.id = e.pdv_id AND d.administrativo IS NOT TRUE
+         WHERE e.sku_produto = ANY($1::text[])`,
+        [skus]
+      );
+      for (const linha of locais) {
+        saldos[linha.sku_produto] ||= { ALMOX: 0 };
+        saldos[linha.sku_produto][String(linha.pdv_id)] = Number(linha.quantidade) || 0;
+      }
+    }
+    send(res, 200, { pdvs, saldos });
+    return true;
+  }
+
+  // DIVIDIR um item entre origens: o PDV pediu 10, o Almoxarifado tem 6 e o PARK tem 4. Cada
+  // parte vira uma linha do mesmo produto, com a sua quantidade e a sua origem; a soma é sempre o
+  // que o PDV pediu. Só em "Em Andamento": em Pendente o PDV ainda edita o pedido e não sabe das
+  // partes, e de Aguardando Retirada em diante a liberação já foi decidida.
+  if (url.pathname === "/api/admin/pedido/dividir-item" && method === "POST") {
+    if (!requireUser(req, res, "admin")) return true;
+    await ensurePedidoEditColumns();
+    await ensurePedidoAuditTable();
+    const body = await readBody(req);
+    const orderCode = normalizeText(body.codigo_pedido, 80);
+    const itemId = asInt(body.id);
+    const partes = Array.isArray(body.partes) ? body.partes : [];
+    const usuario = user.name || "Almoxarifado";
+    if (!orderCode || !itemId) return send(res, 400, { error: "Pedido ou item inválido." }), true;
+    try {
+      const resultado = await tx(async (client) => {
+        const { rows } = await client.query(
+          "SELECT * FROM pedidos WHERE codigo_pedido = $1 ORDER BY id FOR UPDATE",
+          [orderCode]
+        );
+        const linha = rows.find((row) => Number(row.id) === itemId);
+        if (!linha) throw erroComStatus(400, "O item não pertence a este pedido.");
+        if (normalizeOrderStatus(linha.status) !== "Em Andamento") {
+          throw erroComStatus(409, "Só dá para dividir um item com o pedido Em andamento.");
+        }
+        if (partes.length < 2 || partes.length > 5) throw erroComStatus(400, "Divida em 2 a 5 partes.");
+        const normalizadas = partes.map((parte) => ({
+          quantidade: Number(parte?.quantidade),
+          origem: origemInformada(parte?.local_origem_pdv_id)
+        }));
+        if (normalizadas.some((parte) => !Number.isInteger(parte.quantidade) || parte.quantidade <= 0)) {
+          throw erroComStatus(400, "Cada parte precisa de uma quantidade inteira maior que zero.");
+        }
+        const pedida = asInt(linha.quantidade_solicitada);
+        const soma = normalizadas.reduce((total, parte) => total + parte.quantidade, 0);
+        if (soma !== pedida) throw erroComStatus(400, `A soma das partes (${soma}) precisa ser igual ao pedido (${pedida}).`);
+        const chaves = normalizadas.map((parte) => parte.origem ?? "ALMOX");
+        if (new Set(chaves).size !== chaves.length) throw erroComStatus(400, "Cada parte precisa de uma origem diferente.");
+        // Outras partes já existentes deste produto (dividido antes) também não podem repetir origem
+        const irmas = rows.filter((row) => Number(row.id) !== itemId && row.sku_produto === linha.sku_produto);
+        for (const parte of normalizadas) {
+          await validarOrigem(client, { origemPdvId: parte.origem, destinoPdvId: linha.pdv_id });
+          if (irmas.some((irma) => origemDaLinha(irma) === parte.origem)) {
+            throw erroComStatus(400, `O produto ${linha.sku_produto} já tem uma parte saindo de ${parte.origem ?? "Almoxarifado"}.`);
+          }
+        }
+
+        // A liberação já digitada é repartida na ordem das partes, sem mudar o total liberado
+        let liberadaRestante = asInt(linha.quantidade_liberada);
+        const liberadas = normalizadas.map((parte) => {
+          const liberada = Math.min(liberadaRestante, parte.quantidade);
+          liberadaRestante -= liberada;
+          return liberada;
+        });
+        liberadas[liberadas.length - 1] += liberadaRestante;
+
+        // A linha original fica com a primeira parte (mantém id, data e solicitante)
+        await client.query(
+          `UPDATE pedidos
+           SET quantidade_solicitada = $2, quantidade_liberada = $3, local_origem_pdv_id = $4,
+               origem_por_item = TRUE, pedido_editado = TRUE, pedido_editado_em = CURRENT_TIMESTAMP,
+               pedido_editado_por = $5, version = COALESCE(version, 1) + 1, updated_at = CURRENT_TIMESTAMP
+           WHERE id = $1`,
+          [itemId, normalizadas[0].quantidade, liberadas[0], normalizadas[0].origem, usuario]
+        );
+        const novas = [];
+        for (let indice = 1; indice < normalizadas.length; indice += 1) {
+          const inserida = await client.query(
+            `INSERT INTO pedidos
+               (codigo_pedido, solicitante, pdv_id, sku_produto, quantidade_solicitada, quantidade_liberada,
+                status, observacao, data_hora, criado_em, em_andamento_em, liberado_em, pronto_retirada_em,
+                release_mode, pedido_editado, pedido_editado_em, pedido_editado_por, version, updated_at,
+                item_origem, local_origem_pdv_id, origem_por_item)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+                     TRUE, CURRENT_TIMESTAMP, $15, 1, CURRENT_TIMESTAMP, 'ALMOX', $16, TRUE)
+             RETURNING id`,
+            [
+              linha.codigo_pedido, linha.solicitante, linha.pdv_id, linha.sku_produto,
+              normalizadas[indice].quantidade, liberadas[indice],
+              linha.status, linha.observacao, linha.data_hora, linha.criado_em, linha.em_andamento_em,
+              linha.liberado_em, linha.pronto_retirada_em, linha.release_mode,
+              usuario, normalizadas[indice].origem
+            ]
+          );
+          novas.push(inserida.rows[0].id);
+        }
+        await registrarAuditoriaStatus(client, {
+          codigoPedido: orderCode,
+          acao: "item_dividido",
+          usuario,
+          observacao: `${linha.sku_produto} dividido: ${normalizadas.map((parte) => `${parte.quantidade} de ${parte.origem ?? "Almoxarifado"}`).join(" + ")}`,
+          dados: { item_id: itemId, sku: linha.sku_produto, novas_linhas: novas, partes: normalizadas.map((parte, i) => ({ ...parte, liberada: liberadas[i] })) }
+        });
+        return { codigo_pedido: orderCode, linhas: [itemId, ...novas] };
+      });
+      send(res, 200, { ok: true, ...resultado });
+    } catch (error) {
+      if (error.statusCode) return send(res, error.statusCode, { error: error.message }), true;
+      throw error;
+    }
+    return true;
+  }
+
+  // DESFAZER a divisão: as partes do produto voltam a ser uma linha só, com a soma das
+  // quantidades e a origem padrão do pedido. Mesma janela da divisão (Em Andamento).
+  if (url.pathname === "/api/admin/pedido/juntar-item" && method === "POST") {
+    if (!requireUser(req, res, "admin")) return true;
+    await ensurePedidoAuditTable();
+    const body = await readBody(req);
+    const orderCode = normalizeText(body.codigo_pedido, 80);
+    const sku = normalizeText(body.sku, 80);
+    const usuario = user.name || "Almoxarifado";
+    if (!orderCode || !sku) return send(res, 400, { error: "Pedido ou produto inválido." }), true;
+    try {
+      const resultado = await tx(async (client) => {
+        const { rows } = await client.query(
+          "SELECT * FROM pedidos WHERE codigo_pedido = $1 AND sku_produto = $2 ORDER BY id FOR UPDATE",
+          [orderCode, sku]
+        );
+        if (rows.length < 2) throw erroComStatus(400, "Este produto não está dividido.");
+        if (rows.some((row) => normalizeOrderStatus(row.status) !== "Em Andamento")) {
+          throw erroComStatus(409, "Só dá para desfazer a divisão com o pedido Em andamento.");
+        }
+        const manter = rows[0];
+        const quantidade = rows.reduce((total, row) => total + asInt(row.quantidade_solicitada), 0);
+        const liberada = rows.reduce((total, row) => total + asInt(row.quantidade_liberada), 0);
+        const outras = rows.slice(1).map((row) => row.id);
+        // Tira as outras partes antes de ler a origem padrão, para elas não entrarem na conta
+        await client.query("DELETE FROM pedidos WHERE id = ANY($1::int[])", [outras]);
+        await client.query("UPDATE pedidos SET origem_por_item = NULL WHERE id = $1", [manter.id]);
+        const origem = await origemPadraoDoPedido(client, orderCode, manter.pdv_id);
+        await client.query(
+          `UPDATE pedidos
+           SET quantidade_solicitada = $2, quantidade_liberada = $3, local_origem_pdv_id = $4,
+               origem_por_item = NULL, pedido_editado = TRUE, pedido_editado_em = CURRENT_TIMESTAMP,
+               pedido_editado_por = $5, version = COALESCE(version, 1) + 1, updated_at = CURRENT_TIMESTAMP
+           WHERE id = $1`,
+          [manter.id, quantidade, liberada, origem, usuario]
+        );
+        await registrarAuditoriaStatus(client, {
+          codigoPedido: orderCode,
+          acao: "divisao_desfeita",
+          usuario,
+          observacao: `${sku}: ${rows.length} partes voltaram a ser uma (${quantidade} de ${origem ?? "Almoxarifado"})`,
+          dados: { sku, item_id: manter.id, removidas: outras, quantidade, liberada, local_origem: origem }
+        });
+        return { codigo_pedido: orderCode, id: manter.id };
+      });
+      send(res, 200, { ok: true, ...resultado });
+    } catch (error) {
+      if (error.statusCode) return send(res, error.statusCode, { error: error.message }), true;
+      throw error;
+    }
+    return true;
+  }
+
+  // TRANSFERÊNCIA RÁPIDA: o Almoxarifado monta e conclui na hora a ida de mercadoria de um
+  // local (Almoxarifado ou outro PDV) para um PDV. Decisão do usuário (23/09/2026): sem
+  // assinatura do PDV -- o Almoxarifado finaliza direto. Nasce como pedido comum (item_origem
+  // ALMOX) e passa pela MESMA movimentação da retirada (baixarEstoqueDaRetirada), então vale
+  // a mesma regra de estoque, de aviso de saldo negativo, de OMIE e de estorno na reabertura.
+  if (url.pathname === "/api/admin/transferencia-rapida" && method === "POST") {
+    if (!requireUser(req, res, "admin")) return true;
+    await ensurePedidoEditColumns();
+    await ensurePedidoAuditTable();
+    const body = await readBody(req);
+    const destinoPdvId = asInt(body.pdv_destino_id);
+    const origemPdvId = origemInformada(body.local_origem_pdv_id);
+    const observacao = normalizeText(body.observacao, 500);
+    const usuario = user.name || "Almoxarifado";
+    // Soma linhas repetidas do mesmo produto em vez de criar duas
+    const porSku = new Map();
+    for (const item of Array.isArray(body.itens) ? body.itens : []) {
+      const sku = normalizeText(item?.sku, 80);
+      const quantidade = asInt(item?.quantidade);
+      if (sku && quantidade > 0) porSku.set(sku, (porSku.get(sku) || 0) + quantidade);
+    }
+    if (!destinoPdvId) return send(res, 400, { error: "Escolha o PDV de destino." }), true;
+    if (!porSku.size) return send(res, 400, { error: "Informe ao menos um produto com quantidade." }), true;
+    try {
+      let resposta;
+      await tx(async (client) => {
+        const destino = await client.query("SELECT id, nome FROM pdvs WHERE id = $1", [destinoPdvId]);
+        if (!destino.rows[0]) {
+          const erro = new Error("PDV de destino não encontrado.");
+          erro.statusCode = 404;
+          throw erro;
+        }
+        const origem = await validarOrigem(client, { origemPdvId, destinoPdvId });
+        const produtos = await client.query(
+          "SELECT sku FROM produtos WHERE sku = ANY($1::text[]) AND ativo IS NOT FALSE",
+          [[...porSku.keys()]]
+        );
+        const encontrados = new Set(produtos.rows.map((row) => row.sku));
+        const faltando = [...porSku.keys()].find((sku) => !encontrados.has(sku));
+        if (faltando) {
+          const erro = new Error(`Produto ${faltando} não encontrado ou inativo.`);
+          erro.statusCode = 404;
+          throw erro;
+        }
+
+        const orderCode = code("TRF");
+        const linhas = [];
+        for (const [sku, quantidade] of porSku) {
+          const inserida = await client.query(
+            `INSERT INTO pedidos
+               (codigo_pedido, solicitante, pdv_id, sku_produto, quantidade_solicitada, quantidade_liberada,
+                status, observacao, data_hora, criado_em, em_andamento_em, liberado_em, pronto_retirada_em,
+                version, updated_at, item_origem, local_origem_pdv_id)
+             VALUES ($1, $2, $3, $4, $5, $5, 'Aguardando Retirada', $6, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
+                     CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1, CURRENT_TIMESTAMP, 'ALMOX', $7)
+             RETURNING id, codigo_pedido, pdv_id, sku_produto, quantidade_solicitada, quantidade_liberada, local_origem_pdv_id`,
+            [orderCode, `TRANSFERÊNCIA (${usuario})`, destinoPdvId, sku, quantidade, observacao || "Transferência rápida", origemPdvId]
+          );
+          linhas.push(inserida.rows[0]);
+        }
+
+        const movimento = await baixarEstoqueDaRetirada(client, orderCode, linhas);
+
+        await client.query(
+          `UPDATE pedidos
+           SET status = 'Finalizado',
+               retirada_responsavel = $2,
+               retirada_observacao = $3,
+               retirada_em = CURRENT_TIMESTAMP,
+               retirada_usuario_almoxarifado = $4,
+               updated_at = CURRENT_TIMESTAMP
+           WHERE codigo_pedido = $1`,
+          [orderCode, `TRANSFERÊNCIA RÁPIDA (${usuario})`, observacao || null, usuario]
+        );
+        await registrarAuditoriaStatus(client, {
+          codigoPedido: orderCode,
+          acao: "transferencia_rapida",
+          usuario,
+          para: "Finalizado",
+          observacao: `Transferência rápida de ${origem?.nome || "Almoxarifado"} para ${destino.rows[0].nome}`,
+          dados: { origem: "transferencia-rapida", local_origem_pdv_id: origemPdvId, pdv_destino_id: destinoPdvId, itens: linhas.length }
+        });
+        resposta = {
+          codigo_pedido: orderCode,
+          itens: linhas.length,
+          saldos_negativos: movimento.negativos,
+          integracao: movimento.lancamentoIntegracao
+        };
+      });
+      publishOrderStatusChange({
+        codigoPedido: resposta.codigo_pedido,
+        de: "",
+        para: "Finalizado",
+        pdvId: destinoPdvId,
+        usuario,
+        origem: "transferencia-rapida"
+      });
+      send(res, 200, { ok: true, ...resposta });
+    } catch (error) {
+      if (error.statusCode) return send(res, error.statusCode, { error: error.message }), true;
+      throw error;
+    }
     return true;
   }
 
@@ -1547,7 +2088,7 @@ export async function handlePedidosRoutes(req, res, context) {
       const rows = await client.query(
         `SELECT id, codigo_pedido, solicitante, pdv_id, sku_produto, quantidade_solicitada, quantidade_liberada,
                 status, observacao, retirada_assinatura, pedido_editado, pedido_editado_em, pedido_editado_por,
-                release_mode
+                release_mode, local_origem_pdv_id
          FROM pedidos
          WHERE codigo_pedido = $1
          ORDER BY id
@@ -1595,93 +2136,10 @@ export async function handlePedidosRoutes(req, res, context) {
         error.statusCode = 400;
         throw error;
       }
-      // Quais PDVs deste pedido sao administrativos. Uma consulta so, antes do laco: um
-      // pedido pode ter itens de mais de um PDV, e perguntar por item repetiria a leitura.
-      const administrativos = await pdvsAdministrativos(client, targetRows.map((row) => row.pdv_id));
-
-      // Baixa definitiva: sai do estoque central e entra no saldo físico do PDV.
-      // Só a quantidade liberada é movimentada; a diferença para o solicitado não vira pendência.
-      for (const row of targetRows) {
-        const qty = asInt(row.quantidade_liberada);
-        const baixa = await client.query(
-          "UPDATE produtos SET qtd_total = qtd_total - $1 WHERE sku = $2 RETURNING sku, nome, qtd_total",
-          [qty, row.sku_produto]
-        );
-        // Saldo central negativo não bloqueia a retirada, mas volta para a tela como aviso.
-        // Number(), não asInt(): qtd_total é NUMERIC e volta do driver como string ("-0.5") --
-        // asInt() truncaria pra "-0" antes de comparar, e "-0 < 0" é falso (bug real, pego
-        // antes de ampliar a coluna: um saldo negativo pequeno deixaria de avisar).
-        const saldo = baixa.rows[0];
-        if (saldo && Number(saldo.qtd_total) < 0) {
-          negativos.push({ sku: saldo.sku, nome: saldo.nome, saldo: Number(saldo.qtd_total) });
-        }
-        const pendente = asInt(row.quantidade_solicitada) - qty;
-        if (pendente > 0) sobras.push({ sku: row.sku_produto, solicitada: asInt(row.quantidade_solicitada), liberada: qty, nao_atendida: pendente });
-
-        // PDV Administrativo NAO acumula saldo.
-        //
-        // Ele nao e ponto de venda: e um setor interno (escritorio, limpeza, marketing,
-        // manutencao) que CONSOME estoque sem vender. O que ele retira sai da empresa para
-        // consumo, entao nao vira saldo de revenda em lugar nenhum. A linha de estoque_pdv
-        // continua existindo porque e nela que mora a permissao de pedido
-        // (`permitido = TRUE`, conferida na criacao do pedido) -- ela libera, nunca acumula.
-        if (!administrativos.has(row.pdv_id)) {
-          await client.query(
-            `INSERT INTO estoque_pdv (pdv_id, sku_produto, quantidade)
-             VALUES ($1, $2, $3)
-             ON CONFLICT (pdv_id, sku_produto) DO UPDATE SET quantidade = estoque_pdv.quantidade + EXCLUDED.quantidade`,
-            [row.pdv_id, row.sku_produto, qty]
-          );
-        }
-      }
-
-      // Enfileira a transferência ALMOXARIFADO → PDV para a integração externa.
-      // Nunca bloqueia: sem integração, sem vínculo ou sem internet, a retirada conclui
-      // do mesmo jeito e o lançamento fica pendente na fila.
-      //
-      // O PDV Administrativo fica de FORA: para ele nao ha transferencia entre locais,
-      // porque nao existe local de destino -- a mercadoria sai da empresa como consumo
-      // interno. O lancamento dele e uma SAIDA do local do almoxarifado, tratada logo
-      // abaixo, e mandar TRF aqui faria a OMIE acreditar que o estoque continua na empresa,
-      // so que em outro lugar.
-      const itensDeRevenda = targetRows.filter((row) => !administrativos.has(row.pdv_id));
-      lancamentoIntegracao = await registrarTransferenciasDaRetirada(client, {
-        codigoPedido: orderCode,
-        itens: itensDeRevenda.map((row) => ({
-          pedidoItemId: row.id,
-          sku: row.sku_produto,
-          pdvId: row.pdv_id,
-          quantidade: asInt(row.quantidade_liberada)
-        }))
-      });
-
-      // SAIDA por consumo interno do PDV Administrativo -- "SAI", nunca "TRF".
-      //
-      // O lancamento e enfileirado e o payload e montado, mas NADA sai para a OMIE: o dominio
-      // de motivo de "SAI" na conta tem so quatro valores (INV, PER, OPS, PDV, conferidos na
-      // documentacao da API) e nenhum significa consumo interno. Ate o usuario escolher, o
-      // payload leva um sentinela e a tarefa se recusa a enviar, mesmo em modo REAL.
-      //
-      // Enfileirar mesmo assim e proposital: quando o motivo for definido, o historico de
-      // consumo ja estara montado e conferido, em vez de comecar do zero naquele dia.
-      const itensAdministrativos = targetRows.filter((row) => administrativos.has(row.pdv_id));
-      if (itensAdministrativos.length) {
-        const consumo = await registrarConsumoAdministrativo(client, {
-          codigoPedido: orderCode,
-          itens: itensAdministrativos.map((row) => ({
-            pedidoItemId: row.id,
-            sku: row.sku_produto,
-            pdvId: row.pdv_id,
-            quantidade: asInt(row.quantidade_liberada)
-          }))
-        });
-        lancamentoIntegracao = {
-          ...(lancamentoIntegracao || {}),
-          consumo_administrativo: consumo,
-          motivo_consumo:
-            "Saída por consumo administrativo registrada em simulação: o código de motivo da OMIE para consumo interno ainda não foi escolhido, então nada é enviado."
-        };
-      }
+      const movimento = await baixarEstoqueDaRetirada(client, orderCode, targetRows);
+      negativos.push(...movimento.negativos);
+      sobras.push(...movimento.sobras);
+      lancamentoIntegracao = movimento.lancamentoIntegracao;
 
       const finalized = await client.query(
         `UPDATE pedidos
@@ -1695,7 +2153,7 @@ export async function handlePedidosRoutes(req, res, context) {
          WHERE codigo_pedido = $1
            AND status = $6
            AND quantidade_liberada > 0
-         RETURNING id, codigo_pedido, sku_produto, quantidade_liberada`,
+         RETURNING id, codigo_pedido, sku_produto, quantidade_liberada, local_origem_pdv_id`,
         [orderCode, assinatura, responsavel, observacao || null, user.name || "Almoxarifado", targetStatus]
       );
       // Mescla com outro item finalizado do mesmo produto, evitando linhas duplicadas no histórico
@@ -1707,10 +2165,11 @@ export async function handlePedidosRoutes(req, res, context) {
              AND sku_produto = $2
              AND status = 'Finalizado'
              AND id <> $3
+             AND local_origem_pdv_id IS NOT DISTINCT FROM $4
            ORDER BY id
            LIMIT 1
            FOR UPDATE`,
-          [row.codigo_pedido, row.sku_produto, row.id]
+          [row.codigo_pedido, row.sku_produto, row.id, origemDaLinha(row)]
         );
         const keep = existing.rows[0];
         if (!keep) continue;

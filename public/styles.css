@@ -2531,6 +2531,8 @@ body.sheet-manager-open {
   padding-top: 0.2rem;
 }
 
+/* Mesmo carrinho na Transferência rápida (#transfer-cart) */
+.order-cart-list #transfer-cart,
 .order-cart-list #cart {
   min-height: 64px;
   overflow-x: auto;
@@ -2812,6 +2814,55 @@ body.sheet-manager-open {
   border: 1px solid rgba(0, 123, 135, 0.16);
   background: rgba(0, 123, 135, 0.09);
   box-shadow: none;
+}
+
+/* Botão do cabeçalho que troca de sistema (MyEstoque <-> MyControl), ao lado das 3 barras.
+   É um <a> de propósito: navega na MESMA janela (no app desktop, abrir janela nova mandaria
+   para o navegador externo). Mesma altura e cores do botão de menu. */
+.troca-sistema {
+  display: inline-flex;
+  height: 46px;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  padding: 0 1rem;
+  border: 1px solid rgba(0, 123, 135, 0.16);
+  border-radius: 999px;
+  background: rgba(0, 123, 135, 0.09);
+  color: var(--ac-teal-dark);
+  font-size: 0.9rem;
+  font-weight: 800;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: background 160ms ease, transform 160ms ease;
+}
+
+.troca-sistema:hover {
+  background: white;
+  transform: translateY(-1px);
+}
+
+.troca-sistema svg {
+  width: 1.2rem;
+  height: 1.2rem;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* No celular fica só o ícone (o nome segue no title/aria-label) */
+@media (max-width: 720px) {
+  .troca-sistema {
+    width: 46px;
+    padding: 0;
+  }
+
+  .troca-sistema span {
+    display: none;
+  }
 }
 
 .menu-toggle span {
@@ -4116,6 +4167,18 @@ body.has-order-panel {
   overscroll-behavior: contain;
 }
 
+/* Tabela de produtos do pedido: altura de 5 produtos (medida pelo JS em ajustarAlturaDaTabelaDoPedido,
+   porque a linha muda de altura com o nome do produto), rolando por dentro. Sem ela a tabela
+   ficava com o que sobrava do painel -- às vezes só o cabeçalho. O corpo do painel rola se a
+   tela for baixa demais para cabeçalho + 5 produtos. */
+.order-panel-content:has(> .order-panel-table) {
+  overflow-y: auto;
+}
+
+.order-panel-content > .table-wrap.order-panel-table.tem-altura-fixa {
+  flex: 0 0 auto;
+}
+
 /* A tabela do inventário pode ter milhares de linhas (o Almoxarifado sozinho tem 4.500+
    produtos): mesmo com alertas e filtros acima disputando espaço, ela nunca pode encolher a
    ponto de sumir -- uma altura mínima garante que sempre sobra algo para rolar. */
@@ -4192,6 +4255,85 @@ body.has-order-panel {
   text-transform: uppercase;
   opacity: 0.75;
 }
+
+/* Local de origem (editável) e de destino do pedido, lado a lado */
+/* Origem (maior, com o botão ao lado) e destino lado a lado, alinhados pelo topo: sem
+   align-items: start a coluna do destino esticava e a caixa ficava mais alta que o seletor */
+.order-panel-locais {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  gap: 0.6rem 0.9rem;
+  align-items: start;
+  flex-shrink: 0;
+}
+
+.order-panel-local {
+  display: grid;
+  gap: 0.35rem;
+  align-content: start;
+  margin: 0;
+  color: var(--ac-teal-dark);
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.order-panel-local strong {
+  display: flex;
+  align-items: center;
+  box-sizing: border-box;
+  height: 44px;
+  padding: 0 0.85rem;
+  border: 1px solid rgba(0, 123, 135, 0.16);
+  border-radius: 16px;
+  background: rgba(16, 182, 199, 0.05);
+  color: var(--ac-ink);
+  font-size: 0.95rem;
+  text-transform: none;
+}
+
+.order-panel-local select {
+  text-transform: none;
+  font-size: 0.95rem;
+}
+
+/* Transferência rápida (aba da Liberação): o resto do layout é o mesmo do Novo pedido */
+/* Carrinho da transferência: 3 colunas, sem a largura mínima global de 760px das tabelas */
+.transfer-cart-table table {
+  min-width: 0;
+}
+
+.transfer-cart-table th:nth-child(2),
+.transfer-cart-table td:nth-child(2) {
+  width: 8rem;
+}
+
+.transfer-cart-table th:nth-child(3),
+.transfer-cart-table td:nth-child(3) {
+  width: 3.5rem;
+  text-align: center;
+}
+
+@media (max-width: 720px) {
+  .transfer-cart-table th:nth-child(2),
+  .transfer-cart-table td:nth-child(2) {
+    width: 5.5rem;
+  }
+}
+
+.transfer-cart-sku {
+  display: block;
+  color: #64748b;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.transfer-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  gap: 0.75rem;
+}
+
 
 .order-panel-table {
   border: 1px solid rgba(0, 123, 135, 0.16);
@@ -4740,6 +4882,342 @@ tr[data-item-id].is-marked-remove .pdv-item-qty {
   font-weight: 900;
   line-height: 1;
   vertical-align: middle;
+}
+
+/* Selo de origem ("de PARK"): azul-petróleo, para não confundir com o laranja do "Almox" */
+.order-source-badge.is-origem {
+  border-color: rgba(0, 123, 135, 0.3);
+  background: rgba(16, 182, 199, 0.08);
+  color: var(--ac-teal-dark);
+}
+
+/* ===== Origem por item no painel do pedido ===== */
+.order-panel-origem-cell {
+  width: 5.5rem;
+  min-width: 5.5rem;
+}
+
+.order-panel-origem-cell select {
+  min-height: 36px;
+  padding-block: 0.3rem;
+  font-size: 0.85rem;
+}
+
+.order-panel-origem-cell .order-source-badge {
+  margin: 0.3rem 0 0;
+}
+
+/* Ação em texto dentro da célula (Dividir / Desfazer divisão) */
+.link-action {
+  display: block;
+  white-space: nowrap;
+  margin-top: 0.3rem;
+  border: 0;
+  background: none;
+  padding: 0;
+  color: var(--ac-teal-dark);
+  font-size: 0.78rem;
+  font-weight: 800;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* Parte de um item dividido: mesma coluna e altura das outras linhas (recuo desalinhava);
+   só um traço sutil no topo mostra que continua o produto de cima */
+.release-item-part td {
+  border-top-style: dashed;
+}
+
+/* Seletor e "Aplicar a todos" na mesma linha, com a mesma altura da caixa do destino */
+.order-panel-origem-linha {
+  display: flex;
+  gap: 0.5rem;
+  align-items: stretch;
+  text-transform: none;
+}
+
+.order-panel-origem-linha select {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 44px;
+}
+
+.order-panel-origem-linha .btn {
+  flex: 0 0 auto;
+  height: 44px;
+  min-height: 44px;
+  padding-block: 0;
+  white-space: nowrap;
+}
+
+/* Celular: origem e destino um embaixo do outro; o botão ocupa a largura toda */
+@media (max-width: 720px) {
+  .order-panel-locais {
+    grid-template-columns: 1fr;
+  }
+
+  .order-panel-origem-linha {
+    flex-wrap: wrap;
+  }
+
+  .order-panel-origem-linha select,
+  .order-panel-origem-linha .btn {
+    flex: 1 1 100%;
+  }
+}
+
+/* ===== Seletor de local de estoque (Almoxarifado / PDVs) =====
+   O <select> original fica escondido (continua sendo a fonte do valor); o botão e o menu
+   abaixo são o que a pessoa vê. */
+html .local-picker-nativo {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.local-picker {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  height: 44px;
+  padding: 0 0.75rem 0 0.45rem;
+  border: 1px solid rgba(0, 123, 135, 0.22);
+  border-radius: 16px;
+  background: white;
+  color: var(--ac-ink);
+  font: inherit;
+  font-weight: 800;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.local-picker:hover:not(:disabled),
+.local-picker[aria-expanded="true"] {
+  border-color: var(--ac-aqua);
+  box-shadow: 0 0 0 3px rgba(16, 182, 199, 0.14);
+}
+
+.local-picker:focus-visible {
+  outline: 2px solid var(--ac-aqua);
+  outline-offset: 2px;
+}
+
+.local-picker:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
+/* Linha do produto: só o selo redondo (a lista completa abre ao clicar) */
+.local-picker.is-compacto {
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border-radius: 999px;
+}
+
+.local-picker-nome {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.local-picker-nome.is-placeholder {
+  padding-left: 0.3rem;
+  color: #94a3b8;
+  font-weight: 700;
+}
+
+.local-picker-seta {
+  flex: 0 0 auto;
+  color: var(--ac-teal-dark);
+  font-size: 0.8rem;
+  transition: transform 0.15s;
+}
+
+.local-picker[aria-expanded="true"] .local-picker-seta {
+  transform: rotate(180deg);
+}
+
+/* Selo redondo do local: iniciais do PDV; o Almoxarifado tem cor própria */
+.local-avatar {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  background: rgba(16, 182, 199, 0.14);
+  color: var(--ac-teal-dark);
+  font-size: 0.68rem;
+  font-weight: 900;
+  letter-spacing: 0.02em;
+}
+
+.local-avatar.is-central {
+  background: rgba(234, 88, 12, 0.12);
+  color: #9a3412;
+}
+
+.local-picker.is-compacto .local-avatar {
+  width: 30px;
+  height: 30px;
+  font-size: 0.66rem;
+}
+
+/* Saldo do produto no local */
+.local-saldo {
+  flex: 0 0 auto;
+  min-width: 2rem;
+  padding: 0.18rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 900;
+  text-align: center;
+}
+
+.local-saldo.is-positivo {
+  background: rgba(22, 163, 74, 0.12);
+  color: #15803d;
+}
+
+.local-saldo.is-zero,
+.local-saldo.is-desconhecido {
+  background: rgba(148, 163, 184, 0.16);
+  color: #64748b;
+}
+
+.local-saldo.is-negativo {
+  background: rgba(220, 38, 38, 0.12);
+  color: #b91c1c;
+}
+
+/* Menu: flutua junto ao botão (fixed, para não ser cortado pela rolagem da tabela) */
+.local-menu {
+  position: fixed;
+  z-index: 1200;
+  box-sizing: border-box;
+  max-height: min(340px, 60vh);
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 0.4rem;
+  border: 1px solid rgba(0, 123, 135, 0.18);
+  border-radius: 18px;
+  background: white;
+  box-shadow: 0 18px 40px rgba(0, 58, 64, 0.18);
+}
+
+.local-menu-lista {
+  display: grid;
+  /* minmax(0, 1fr): sem isso o nome longo alargava a coluna e a lista rolava de lado */
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.15rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.local-grupo {
+  padding: 0.45rem 0.6rem 0.2rem;
+  color: #94a3b8;
+  font-size: 0.64rem;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.local-opcao {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0.35rem 0.55rem;
+  border-radius: 12px;
+  color: var(--ac-ink);
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.local-opcao:hover,
+.local-opcao:focus {
+  outline: none;
+  background: rgba(16, 182, 199, 0.08);
+}
+
+.local-opcao.is-escolhido {
+  background: rgba(16, 182, 199, 0.14);
+  color: var(--ac-teal-dark);
+}
+
+.local-opcao-nome {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.local-check {
+  flex: 0 0 1rem;
+  color: var(--ac-teal-dark);
+  font-weight: 900;
+  text-align: center;
+}
+
+/* Celular: painel de baixo, largura total, com fundo escurecido e alvos maiores */
+.local-menu-fundo {
+  position: fixed;
+  inset: 0;
+  z-index: 1199;
+  background: rgba(0, 38, 42, 0.35);
+}
+
+.local-menu.is-sheet {
+  top: auto;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  width: auto;
+  max-height: 70vh;
+  padding: 0.6rem 0.8rem calc(0.8rem + env(safe-area-inset-bottom, 0px));
+  border-radius: 22px 22px 0 0;
+}
+
+.local-menu-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.2rem 0.3rem 0.5rem;
+  color: var(--ac-teal-dark);
+}
+
+.local-menu.is-sheet .local-opcao {
+  min-height: 52px;
+}
+
+/* Diálogo de divisão: quantidade + origem por parte */
+.divisao-partes {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.divisao-parte {
+  display: grid;
+  grid-template-columns: 6rem minmax(0, 1fr) auto;
+  gap: 0.5rem;
+  align-items: center;
 }
 
 /* Almoxarifado: busca e seleção de produtos na liberação */
@@ -7311,5 +7789,17 @@ html .inventario-so-pendentes input[type="checkbox"] {
   }
   .painel-adm-barra {
     display: none;
+  }
+}
+
+/* Busca e categoria da lista de Estoque PDVs (mesmo visual das telas de inventário) */
+.stock-filtros {
+  grid-template-columns: minmax(12rem, 1fr) minmax(10rem, 18rem);
+  margin-top: 0.6rem;
+}
+
+@media (max-width: 720px) {
+  .stock-filtros {
+    grid-template-columns: 1fr;
   }
 }
