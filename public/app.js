@@ -462,6 +462,41 @@ async function route(view) {
 // As duas telas montam carrinho, busca de produto e lista de disponíveis do mesmo jeito; o HTML
 // mora aqui para elas não divergirem de novo. Os ids levam um prefixo por tela.
 
+// Texto sem acento e em minúsculas, para a busca não depender de "é" ou "E"
+function textoDeBusca(valor) {
+  return String(valor || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+}
+
+// Busca de produto por relevância. Antes cortava nos N primeiros em ordem alfabética: "leite"
+// trazia BATON AO LEITE, BISC... e nunca chegava em "M.P - LEITE" (visto em 25/09/2026).
+// Todas as palavras digitadas precisam aparecer (em qualquer ordem, no SKU, nome ou categoria);
+// a ordem é: SKU exato, SKU começando, nome com a palavra exata, nome começando, palavra
+// começando, o resto -- e no empate o nome mais curto primeiro (o mais "direto").
+function ranquearProdutosPorBusca(produtos, busca, limite = 30) {
+  const termo = textoDeBusca(busca);
+  if (!termo) return [];
+  const termos = termo.split(/\s+/).filter(Boolean);
+  return produtos
+    .map((produto) => {
+      const sku = textoDeBusca(produto.sku);
+      const nome = textoDeBusca(produto.nome);
+      const texto = `${sku} ${nome} ${textoDeBusca(produto.categoria)}`;
+      if (!termos.every((parte) => texto.includes(parte))) return null;
+      const palavras = nome.split(/[^a-z0-9]+/).filter(Boolean);
+      const pontos = sku === termo ? 0
+        : sku.startsWith(termo) ? 1
+          : termos.every((parte) => palavras.includes(parte)) ? 2
+            : nome.startsWith(termo) ? 3
+              : termos.every((parte) => palavras.some((palavra) => palavra.startsWith(parte))) ? 4
+                : 5;
+      return { produto, pontos, tamanho: nome.length };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.pontos - b.pontos || a.tamanho - b.tamanho || String(a.produto.nome).localeCompare(String(b.produto.nome), "pt-BR"))
+    .slice(0, limite)
+    .map((entrada) => entrada.produto);
+}
+
 // Categorias de um produto ("A, B" -> ["A", "B"])
 function categoriasDoProduto(produto) {
   return String(produto.categoria || "").split(",").map((c) => c.trim()).filter(Boolean);
@@ -535,15 +570,25 @@ function ligarSeletorDeProduto(prefixo, aoAdicionar) {
   const sugestoes = document.querySelector(`#${prefixo}-product-suggestions`);
   const quantidade = document.querySelector(`#${prefixo}-product-quantity`);
   if (!campo || !sku || !sugestoes) return;
+  // Cada sugestão vira um "produto" para a mesma busca por relevância das outras telas; a ordem
+  // de exibição vem da propriedade CSS order (a lista é grid), sem redesenhar os itens
+  const itens = [...document.querySelectorAll(`.${prefixo}-product-suggestion`)].map((item) => ({
+    item,
+    sku: item.dataset.sku,
+    nome: item.querySelector("strong")?.textContent || "",
+    categoria: item.dataset.search
+  }));
   campo.addEventListener("input", () => {
     const termo = String(campo.value || "").trim().toLowerCase();
-    let visiveis = 0;
     if (campo.dataset.selectedLabel !== campo.value) sku.value = "";
-    document.querySelectorAll(`.${prefixo}-product-suggestion`).forEach((item) => {
-      const mostrar = termo.length > 0 && item.dataset.search.includes(termo);
+    const achados = ranquearProdutosPorBusca(itens, termo, itens.length);
+    const posicao = new Map(achados.map((achado, indice) => [achado.item, indice]));
+    itens.forEach(({ item }) => {
+      const mostrar = posicao.has(item);
       item.classList.toggle("hidden", !mostrar);
-      if (mostrar) visiveis += 1;
+      item.style.order = mostrar ? String(posicao.get(item)) : "";
     });
+    const visiveis = achados.length;
     sugestoes.classList.toggle("hidden", termo.length === 0 || visiveis === 0);
     if (!termo) sku.value = "";
   });
@@ -2513,20 +2558,7 @@ viewDamageReturn = async function viewDamageReturnNew(filters = {}) {
   const productMatches = (value) => {
     const term = normalizeSearch(value);
     if (!term) return [];
-    return availableProducts
-      .map((product) => {
-        const haystack = normalizeSearch(`${product.sku} ${product.nome} ${product.categoria || ""} ${labelForProduct(product)}`);
-        const score = normalizeSearch(product.sku) === term ? 0
-          : normalizeSearch(product.sku).startsWith(term) ? 1
-          : normalizeSearch(product.nome).startsWith(term) ? 2
-          : haystack.includes(term) ? 3
-          : 99;
-        return { product, score };
-      })
-      .filter((entry) => entry.score < 99)
-      .sort((a, b) => a.score - b.score || String(a.product.nome).localeCompare(String(b.product.nome)))
-      .slice(0, 12)
-      .map((entry) => entry.product);
+    return ranquearProdutosPorBusca(availableProducts, value, 30);
   };
   const findExactProduct = (value) => {
     const term = normalizeSearch(value);
@@ -7516,7 +7548,6 @@ function openAddAlmoxProductModal(card, filters = {}) {
   const selectedList = modal.querySelector("#almox-product-selected-list");
   const submitButton = modal.querySelector('#add-almox-product-form button[type="submit"]');
   const productLabel = (product) => `${product.nome || ""} - ${product.sku || ""}`.trim();
-  const matchesProduct = (product, term) => `${product.sku || ""} ${product.nome || ""}`.toLowerCase().includes(term);
   const availableProducts = () => products.filter((product) => !pendingItems.some((item) => item.sku === product.sku));
   let visibleProducts = [];
   const selectProduct = (product) => {
@@ -7585,7 +7616,7 @@ function openAddAlmoxProductModal(card, filters = {}) {
       resultsBox.classList.remove("is-open");
       return;
     }
-    const matches = candidates.filter((product) => matchesProduct(product, term)).slice(0, 8);
+    const matches = ranquearProdutosPorBusca(candidates, term, 30);
     visibleProducts = matches;
     resultsBox.classList.add("is-open");
     resultsBox.innerHTML = matches.length
