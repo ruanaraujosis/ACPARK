@@ -11,6 +11,14 @@ const ENDERECO_PADRAO = "http://192.168.1.207:5173";
 
 let janela = null;
 
+// Atalho "MyControl" abre o mesmo app com --mycontrol: a janela ja nasce em /mycontrol
+const ABRIR_MYCONTROL = process.argv.includes("--mycontrol");
+const CAMINHO_INICIAL = ABRIR_MYCONTROL ? "/mycontrol" : "/";
+const NOME_INICIAL = ABRIR_MYCONTROL ? "MyControl" : "MyEstoque";
+
+// Ultima pagina do servidor aberta na janela (MyEstoque ou MyControl); o Recarregar volta nela
+let ultimaUrlDoSistema = null;
+
 // Caminho do arquivo de configuracao (fica na pasta de dados do usuario, fora do app)
 function caminhoConfig() {
   return path.join(app.getPath("userData"), "config.json");
@@ -51,10 +59,33 @@ function abrirConfiguracao() {
   });
 }
 
+// Endereco inicial do sistema: raiz do MyEstoque ou /mycontrol, conforme o atalho usado
+function urlInicial() {
+  return lerEndereco() + CAMINHO_INICIAL;
+}
+
+// A URL pertence ao servidor configurado (e nao a tela interna de erro/config)?
+function ehDoServidor(url) {
+  try {
+    return new URL(url).origin === new URL(lerEndereco()).origin;
+  } catch {
+    return false;
+  }
+}
+
 // Carrega o sistema; se falhar, a tela de erro aparece pelo evento did-fail-load
 function carregarSistema() {
   if (!janela) return;
-  janela.loadURL(lerEndereco());
+  janela.loadURL(urlInicial());
+}
+
+// F5 / Tentar novamente: recarrega a pagina do sistema em que a pessoa estava (MyEstoque ou
+// MyControl), em vez de sempre voltar para a raiz; sem pagina anterior, abre o inicial
+function recarregarSistema() {
+  if (!janela) return;
+  const atual = janela.webContents.getURL();
+  if (ehDoServidor(atual)) return janela.webContents.reload();
+  janela.loadURL(ultimaUrlDoSistema && ehDoServidor(ultimaUrlDoSistema) ? ultimaUrlDoSistema : urlInicial());
 }
 
 function criarJanela() {
@@ -65,7 +96,7 @@ function criarJanela() {
     minHeight: 600,
     show: false,
     icon: path.join(__dirname, "icone.ico"),
-    title: "MyEstoque",
+    title: NOME_INICIAL,
     backgroundColor: "#0f172a",
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
@@ -77,11 +108,20 @@ function criarJanela() {
   // Evita piscar tela branca: so mostra quando o conteudo esta pronto
   janela.once("ready-to-show", () => janela.show());
 
+  // Guarda a pagina do servidor atual (inclui trocas de rota da SPA sem recarregar)
+  const lembrarPagina = (_evento, url) => {
+    if (ehDoServidor(url)) ultimaUrlDoSistema = url;
+  };
+  janela.webContents.on("did-navigate", lembrarPagina);
+  janela.webContents.on("did-navigate-in-page", lembrarPagina);
+
   // Se o servidor estiver fora do ar ou o endereco estiver errado, mostra tela de erro
   janela.webContents.on("did-fail-load", (_evento, codigoErro, descricao, urlQueFalhou, ehQuadroPrincipal) => {
     if (!ehQuadroPrincipal) return;
     // -3 = requisicao abortada (acontece em navegacao normal), nao e falha real
     if (codigoErro === -3) return;
+    // Lembra onde a pessoa tentava ir, para o "Tentar novamente" voltar exatamente ali
+    if (urlQueFalhou && ehDoServidor(urlQueFalhou)) ultimaUrlDoSistema = urlQueFalhou;
     janela.loadFile(path.join(__dirname, "erro.html"), {
       query: { servidor: lerEndereco(), detalhe: `${descricao} (${codigoErro})`, url: urlQueFalhou || "" }
     });
@@ -102,7 +142,7 @@ function montarMenu() {
     {
       label: "Sistema",
       submenu: [
-        { label: "Recarregar", accelerator: "F5", click: () => carregarSistema() },
+        { label: "Recarregar", accelerator: "F5", click: () => recarregarSistema() },
         { label: "Imprimir...", accelerator: "CmdOrCtrl+P", click: () => janela?.webContents.print() },
         { type: "separator" },
         { label: "Configurar endereco do servidor...", click: () => abrirConfiguracao() },
@@ -148,7 +188,7 @@ function montarMenu() {
 
 // Canais usados pelas telas internas (erro.html e config.html)
 ipcMain.handle("obter-endereco", () => lerEndereco());
-ipcMain.handle("tentar-novamente", () => carregarSistema());
+ipcMain.handle("tentar-novamente", () => recarregarSistema());
 ipcMain.handle("abrir-configuracao", () => abrirConfiguracao());
 ipcMain.handle("salvar-endereco", (_evento, valor) => {
   const endereco = normalizarEndereco(valor);
