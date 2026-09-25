@@ -30,6 +30,7 @@ import {
 import { MENSAGENS_CONFLITO } from "../../services/mycontrol/cadastros.service.js";
 import { tipoDeImagemAceito } from "../../services/mycontrol/arquivos.service.js";
 import { ROTAS_CADASTROS } from "./mycontrol-cadastros.routes.js";
+import { ROTAS_REGISTROS } from "./mycontrol-registros.routes.js";
 
 // Hash descartável usado quando o login não existe: a verificação custa o mesmo tempo que uma
 // senha errada, então o tempo de resposta não revela quais logins existem
@@ -169,8 +170,8 @@ const ROTAS_FASE1 = [
   { metodo: "POST", caminho: /^\/api\/mycontrol\/usuarios\/(\d{1,9})\/ativo$/, permissao: PERMISSAO_GERENCIAR_USUARIOS, handler: ativo }
 ];
 
-// Todas as rotas do MyControl (Fase 1 + cadastros da Fase 2)
-export const ROTAS_MYCONTROL = Object.freeze([...ROTAS_FASE1, ...ROTAS_CADASTROS]);
+// Todas as rotas do MyControl (Fase 1 + cadastros da Fase 2 + registros de uso da Fase 3)
+export const ROTAS_MYCONTROL = Object.freeze([...ROTAS_FASE1, ...ROTAS_CADASTROS, ...ROTAS_REGISTROS]);
 
 // Roteador do MyControl: sempre trata o caminho (devolve true), mesmo quando é 404
 export async function handleMyControlRoutes(req, res, { method, url }) {
@@ -214,7 +215,7 @@ export async function handleMyControlRoutes(req, res, { method, url }) {
       return true;
     }
     if (erro.mensagemUsuario) {
-      send(res, erro.statusCode || 400, { error: erro.mensagemUsuario });
+      send(res, erro.statusCode || 400, { error: erro.mensagemUsuario, ...(erro.extras || {}) });
     } else if (erro.code === "23505") {
       // Unicidade que escapou das checagens prévias (corrida ou valor repetido): conflito com
       // a mensagem da constraint (login, placa, chave, identificador, cargo)

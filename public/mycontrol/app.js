@@ -9,7 +9,7 @@ import { request } from "../js/api/api-client.js";
 import { toast } from "../js/ui/notifications.js";
 import { esc, table } from "../js/ui.js";
 // Mesmo núcleo de assinatura do MyEstoque (avaria e inventário); versão igual à dos assets daqui
-import { ligarQuadroDeAssinatura } from "../js/ui/assinatura.js?v=20260925-mycontrol-fase2b";
+import { ligarQuadroDeAssinatura } from "../js/ui/assinatura.js?v=20260925-mycontrol-fase3";
 
 const app = document.querySelector("#app");
 
@@ -38,16 +38,28 @@ const estado = {
   usuarios: []
 };
 
+// Permissões de registro (Fase 3): quem tem qualquer uma vê "Em uso", "Histórico" e o detalhe
+const PERMISSOES_REGISTRO = ["registro.registrar", "registro.devolver", "registro.editar", "registro.cancelar", "registro.excluir"];
+
 // Telas por caminho. Só existem as telas já feitas -- nada de tela vazia para fases futuras.
+// `permissao` pode ser uma lista (basta ter qualquer uma). O detalhe do registro
+// (/mycontrol/registros/123) é tratado à parte em renderizarRota.
 const TELAS = {
   "/mycontrol": { id: "inicio", titulo: "Início" },
+  "/mycontrol/registrar": { id: "registrar", titulo: "Registrar uso", permissao: "registro.registrar" },
+  "/mycontrol/em-uso": { id: "em-uso", titulo: "Em uso", permissao: PERMISSOES_REGISTRO },
+  "/mycontrol/historico": { id: "historico", titulo: "Histórico", permissao: PERMISSOES_REGISTRO },
   ...Object.fromEntries(Object.entries(CADASTROS).map(([entidade, c]) => [c.caminho, { id: "cadastro", entidade, titulo: c.plural, permissao: c.permissao }])),
   ...Object.fromEntries(ABAS_CONFIGURACAO.map((aba) => [aba.caminho, { id: "configuracao", aba: aba.id, titulo: "Configurações", permissao: aba.permissao }]))
 };
 
-// Itens do menu lateral: início, cadastros permitidos e Configurações (primeira aba permitida)
+// Itens do menu lateral: início, uso (registrar, em uso, histórico), cadastros permitidos e
+// Configurações (primeira aba permitida)
 function itensDoMenu() {
   const itens = [["/mycontrol", "Início"]];
+  for (const caminho of ["/mycontrol/registrar", "/mycontrol/em-uso", "/mycontrol/historico"]) {
+    if (pode(TELAS[caminho].permissao)) itens.push([caminho, TELAS[caminho].titulo]);
+  }
   for (const cadastro of Object.values(CADASTROS)) if (pode(cadastro.permissao)) itens.push([cadastro.caminho, cadastro.plural]);
   const primeiraAba = ABAS_CONFIGURACAO.find((aba) => pode(aba.permissao));
   if (primeiraAba) itens.push([primeiraAba.caminho, "Configurações"]);
@@ -65,8 +77,9 @@ function dataHtml(valor) {
   return `<span class="mc-data-longa">${esc(formatoLongo.format(data))}</span><span class="mc-data-curta">${esc(formatoCurto.format(data).replace(",", ""))}</span>`;
 }
 
-// O usuário logado tem a permissão?
+// O usuário logado tem a permissão? (lista = basta ter qualquer uma)
 function pode(permissao) {
+  if (Array.isArray(permissao)) return permissao.some((chave) => pode(chave));
   return Boolean(estado.usuario?.permissoes?.includes(permissao));
 }
 
@@ -661,11 +674,17 @@ function renderizarRota() {
   fecharModal();
   if (!estado.usuario) return renderLogin();
   const caminho = location.pathname.replace(/\/+$/, "") || "/mycontrol";
+  // Detalhe de um registro: /mycontrol/registros/123
+  const detalhe = caminho.match(/^\/mycontrol\/registros\/(\d{1,9})$/);
+  if (detalhe && pode(PERMISSOES_REGISTRO)) return renderDetalheRegistro(Number(detalhe[1]));
   const tela = TELAS[caminho];
   if (!tela || (tela.permissao && !pode(tela.permissao))) {
     history.replaceState(null, "", "/mycontrol");
     return renderInicio();
   }
+  if (tela.id === "registrar") return renderRegistrar();
+  if (tela.id === "em-uso") return renderEmUso();
+  if (tela.id === "historico") return renderHistorico();
   if (tela.id === "cadastro") return renderCadastro(tela.entidade);
   if (tela.id === "configuracao" && tela.aba === "usuarios") return renderUsuarios();
   if (tela.id === "configuracao" && tela.aba === "cargos") return renderCargos();
@@ -1345,6 +1364,676 @@ async function renderCadastro(entidade) {
   });
   filtros.elements.situacao.addEventListener("change", filtrar);
   await carregarCadastro({ reiniciar: true });
+}
+
+// ===== Registros de uso e devolução (Fase 3) =====
+// A tela de registro é usada no celular, no pátio: uma coluna, alvos grandes, câmera traseira e
+// botão de salvar sempre à vista. A hora de saída e de devolução é SEMPRE a do servidor; a tela
+// só mostra (em America/Sao_Paulo) o que o servidor devolve.
+
+// Nomes dos tipos e dos status na tela
+const TIPOS_REGISTRO = {
+  veiculo: { rotulo: "Veículo", busca: "Nome, placa ou nº da chave" },
+  ferramenta: { rotulo: "Ferramenta", busca: "Nome ou identificador" }
+};
+const STATUS_REGISTRO = { EM_USO: "Em uso", DEVOLVIDO: "Devolvido", CANCELADO: "Cancelado" };
+
+// Limite de imagem informado pelo servidor (UPLOAD_MAX_IMAGE_MB) e limite de km alto
+const registrosConfig = { limiteImagem: 8 * 1024 * 1024, limiteKmAlto: 1000 };
+
+// Data e hora completas em Brasília (detalhe do registro)
+function dataCompleta(valor) {
+  const data = valor ? new Date(valor) : null;
+  return !data || Number.isNaN(data.getTime()) ? "—" : formatoLongo.format(data);
+}
+
+// Selo da situação do registro
+function seloStatus(status) {
+  const classe = status === "EM_USO" ? "is-em-uso" : status === "CANCELADO" ? "is-inativo" : "";
+  return `<span class="mc-chip ${classe}">${esc(STATUS_REGISTRO[status] || status)}</span>`;
+}
+
+// Selo do cargo do colaborador
+function seloCargo(cargo) {
+  return cargo?.nome ? `<span class="mc-selo is-cargo">${esc(cargo.nome)}</span>` : "";
+}
+
+// Miniatura que abre a foto grande ao tocar (ou um quadrado vazio sem foto)
+function miniaturaBotao(id, titulo, { grande = false } = {}) {
+  if (!id) return `<span class="mc-miniatura is-vazia ${grande ? "is-grande" : ""}" aria-hidden="true"></span>`;
+  return `<button class="mc-miniatura ${grande ? "is-grande" : ""}" type="button" data-foto="${id}" data-titulo="${esc(titulo)}" aria-label="Ver foto: ${esc(titulo)}"><img src="${urlArquivo(id, { miniatura: true })}" alt="" loading="lazy" /></button>`;
+}
+
+// Liga os botões de miniatura dentro de `raiz` à foto grande
+function ligarMiniaturas(raiz = document) {
+  raiz.querySelectorAll("[data-foto]").forEach((botao) => botao.addEventListener("click", () => abrirFotoGrande(botao.dataset.foto, botao.dataset.titulo)));
+}
+
+// Campo de foto do registro (antes/depois): câmera traseira, prévia e troca antes de salvar
+function campoFotoRegistro(chave, rotulo, { obrigatoria = true } = {}) {
+  return `
+    <div class="mc-campo" data-foto-registro="${chave}">
+      <span class="mc-rotulo">${esc(rotulo)}${obrigatoria ? ' <span class="mc-obrigatorio" aria-label="obrigatória">*</span>' : ""}</span>
+      <div class="mc-foto-campo">
+        <img class="mc-foto-previa hidden" alt="Prévia da foto" />
+        <label class="btn secondary mc-acao mc-botao-arquivo mc-botao-camera">Tirar foto
+          <input type="file" accept="image/*" capture="environment" />
+        </label>
+      </div>
+    </div>`;
+}
+
+// Liga um campo de foto de registro; devolve { tem(), enviar() } -- enviar sobe a foto uma vez só
+// (se a devolução pedir confirmação de km, o reenvio reaproveita o mesmo arquivo)
+function ligarFotoRegistro(raiz, chave) {
+  const bloco = raiz.querySelector(`[data-foto-registro="${chave}"]`);
+  const entrada = bloco.querySelector("input[type=file]");
+  const previa = bloco.querySelector(".mc-foto-previa");
+  const rotuloBotao = bloco.querySelector(".mc-botao-camera");
+  let pendente = null;
+  let enviado = null;
+  let urlLocal = null;
+  entrada.addEventListener("change", async () => {
+    const arquivo = entrada.files?.[0];
+    if (!arquivo) return;
+    try {
+      const blob = await comprimirImagem(arquivo, { limite: registrosConfig.limiteImagem });
+      if (urlLocal) URL.revokeObjectURL(urlLocal);
+      urlLocal = URL.createObjectURL(blob);
+      previa.src = urlLocal;
+      previa.classList.remove("hidden");
+      rotuloBotao.firstChild.textContent = "Tirar outra foto";
+      pendente = { blob, original: arquivo };
+      enviado = null;
+    } catch (erro) {
+      toast(erro.message, "error");
+    }
+    entrada.value = "";
+  });
+  return {
+    tem: () => Boolean(pendente),
+    enviar: async () => {
+      if (!pendente) return null;
+      enviado ||= await enviarImagem("registro", "foto", pendente.blob, { original: pendente.original });
+      return enviado;
+    }
+  };
+}
+
+// Escolha com busca (item ou colaborador): lista resultados enquanto digita; ao escolher, mostra
+// o escolhido com o botão "Trocar". `buscar(q)` devolve a lista do servidor.
+function montarEscolha(bloco, { buscar, desenharItem, desenharEscolhido, aoEscolher }) {
+  const busca = bloco.querySelector("input[type=search]");
+  const lista = bloco.querySelector(".mc-resultados");
+  const escolhido = bloco.querySelector(".mc-escolhido");
+  const areaBusca = bloco.querySelector(".mc-escolha-busca");
+  let itens = [];
+  let espera = null;
+  let pedido = 0;
+  // Busca no servidor e desenha a lista (descarta respostas antigas que chegarem atrasadas)
+  const atualizar = async () => {
+    const meu = ++pedido;
+    try {
+      const resultado = await buscar(busca.value.trim());
+      if (meu !== pedido) return;
+      itens = resultado;
+      lista.innerHTML = itens.length
+        ? itens.map((item, i) => `<button class="mc-resultado" type="button" data-indice="${i}">${desenharItem(item)}</button>`).join("")
+        : '<p class="text-sm text-slate-500">Nada encontrado.</p>';
+      lista.querySelectorAll("[data-indice]").forEach((botao) => botao.addEventListener("click", () => escolher(itens[Number(botao.dataset.indice)])));
+    } catch (erro) {
+      avisarErro(erro);
+    }
+  };
+  // Mostra o escolhido no lugar da busca
+  const escolher = (item) => {
+    escolhido.innerHTML = `${desenharEscolhido(item)}<button class="btn secondary mc-acao" type="button" data-trocar>Trocar</button>`;
+    escolhido.classList.remove("hidden");
+    areaBusca.classList.add("hidden");
+    escolhido.querySelector("[data-trocar]").addEventListener("click", () => limpar());
+    ligarMiniaturas(escolhido);
+    aoEscolher(item);
+  };
+  // Volta para a busca
+  const limpar = () => {
+    escolhido.classList.add("hidden");
+    escolhido.innerHTML = "";
+    areaBusca.classList.remove("hidden");
+    aoEscolher(null);
+    atualizar();
+  };
+  busca.addEventListener("input", () => {
+    clearTimeout(espera);
+    espera = setTimeout(atualizar, 300);
+  });
+  atualizar();
+  return { limpar, atualizar };
+}
+
+// HTML-base de uma escolha com busca
+function htmlEscolha(chave, rotuloBusca, placeholder) {
+  return `
+    <div class="mc-escolha" data-escolha="${chave}">
+      <div class="mc-escolha-busca">
+        <label class="mc-campo"><span class="mc-rotulo">${esc(rotuloBusca)}</span>
+          <input type="search" enterkeyhint="search" autocomplete="off" autocapitalize="none" placeholder="${esc(placeholder)}" />
+        </label>
+        <div class="mc-resultados" role="list"></div>
+      </div>
+      <div class="mc-escolhido hidden"></div>
+    </div>`;
+}
+
+// Como um item aparece na lista de escolha e depois de escolhido
+function htmlItemDeRegistro(item, tipo) {
+  const extra = tipo === "veiculo" && item.numero_chave ? ` · chave ${esc(item.numero_chave)}` : "";
+  return `${miniaturaBotaoEstatica(item.foto_id)}<span class="mc-resultado-texto"><strong class="mc-nome">${esc(item.nome)}</strong><small><span class="mc-login">${esc(item.secundario || "")}</span>${extra}</small></span>`;
+}
+
+// Miniatura só para exibir (dentro de botão de resultado não pode haver outro botão)
+function miniaturaBotaoEstatica(id) {
+  return id ? `<span class="mc-miniatura"><img src="${urlArquivo(id, { miniatura: true })}" alt="" loading="lazy" /></span>` : '<span class="mc-miniatura is-vazia" aria-hidden="true"></span>';
+}
+
+// Como um colaborador aparece na lista de escolha
+function htmlColaboradorDeRegistro(colaborador) {
+  return `${miniaturaBotaoEstatica(colaborador.foto_id)}<span class="mc-resultado-texto"><strong class="mc-nome">${esc(colaborador.nome)}</strong><small><span class="mc-login">${esc(colaborador.matricula)}</span></small>${seloCargo(colaborador.cargo)}</span>`;
+}
+
+// Colaborador escolhido, com a assinatura do cadastro já aplicada
+function htmlColaboradorEscolhido(colaborador) {
+  return `
+    <div class="mc-escolhido-dados">${htmlColaboradorDeRegistro(colaborador)}</div>
+    ${colaborador.assinatura_id
+      ? `<div class="mc-assinatura-aplicada"><img src="${urlArquivo(colaborador.assinatura_id)}" alt="Assinatura de ${esc(colaborador.nome)}" /><p class="mc-aviso-ok">Assinatura do cadastro aplicada automaticamente.</p></div>`
+      : '<p class="mc-aviso">Este colaborador está sem assinatura no cadastro. Atualize o cadastro antes de registrar.</p>'}`;
+}
+
+// Tela "Registrar uso": tipo -> item disponível -> colaborador -> km (veículo) -> foto -> observação
+function renderRegistrar() {
+  let tipo = "veiculo";
+  let item = null;
+  let colaborador = null;
+  casca(`
+    <section class="card mc-cartao mc-registrar">
+      <div class="mc-barra-titulo">
+        <p class="eyebrow">Uso</p>
+        <h3 class="text-xl font-black">Registrar uso</h3>
+        <p class="text-sm text-slate-500">A data e a hora da saída são registradas pelo sistema no momento em que você salvar.</p>
+      </div>
+      <form id="mc-registrar-form" class="mc-form" novalidate>
+        <fieldset class="mc-passo">
+          <legend>O que vai sair</legend>
+          <div class="mc-segmentado" role="group" aria-label="Tipo">
+            ${Object.entries(TIPOS_REGISTRO).map(([id, t]) => `<button class="btn ${id === tipo ? "" : "secondary"}" type="button" data-tipo="${id}" aria-pressed="${id === tipo}">${esc(t.rotulo)}</button>`).join("")}
+          </div>
+          <div id="mc-escolha-item"></div>
+        </fieldset>
+        <fieldset class="mc-passo">
+          <legend>Quem vai levar</legend>
+          ${htmlEscolha("colaborador", "Buscar colaborador", "Nome ou matrícula")}
+        </fieldset>
+        <fieldset class="mc-passo" data-so-veiculo>
+          <legend>Quilometragem de saída</legend>
+          <label class="mc-campo"><span class="mc-rotulo">Km no painel <span class="mc-obrigatorio" aria-label="obrigatório">*</span></span>
+            <input name="km_saida" type="text" inputmode="numeric" pattern="[0-9.]*" autocomplete="off" placeholder="Ex.: 45230" />
+          </label>
+        </fieldset>
+        <fieldset class="mc-passo">
+          <legend>Foto de antes</legend>
+          ${campoFotoRegistro("antes", "Foto do item na saída")}
+        </fieldset>
+        <fieldset class="mc-passo">
+          <legend>Observação</legend>
+          <label class="mc-campo"><span class="mc-rotulo">Opcional</span>
+            <textarea name="observacao" rows="3" maxlength="1000" autocapitalize="sentences"></textarea>
+          </label>
+        </fieldset>
+        <div class="mc-barra-fixa">
+          <button class="btn mc-botao-cheio" type="submit">Registrar saída</button>
+        </div>
+      </form>
+    </section>`);
+
+  const form = document.querySelector("#mc-registrar-form");
+  const foto = ligarFotoRegistro(form, "antes");
+  let escolhaItem = null;
+  // (Re)monta a escolha de item para o tipo atual
+  const montarItem = () => {
+    item = null;
+    const alvo = document.querySelector("#mc-escolha-item");
+    alvo.innerHTML = htmlEscolha("item", `Buscar ${TIPOS_REGISTRO[tipo].rotulo.toLowerCase()} disponível`, TIPOS_REGISTRO[tipo].busca);
+    escolhaItem = montarEscolha(alvo.querySelector("[data-escolha]"), {
+      buscar: async (q) => (await api(`/api/mycontrol/registros/disponiveis?tipo=${tipo}&q=${encodeURIComponent(q)}`, { silentLoading: true })).itens,
+      desenharItem: (i) => htmlItemDeRegistro(i, tipo),
+      desenharEscolhido: (i) => `<div class="mc-escolhido-dados">${htmlItemDeRegistro(i, tipo)}</div>`,
+      aoEscolher: (i) => {
+        item = i;
+      }
+    });
+    form.querySelector("[data-so-veiculo]").classList.toggle("hidden", tipo !== "veiculo");
+  };
+  form.querySelectorAll("[data-tipo]").forEach((botao) => botao.addEventListener("click", () => {
+    tipo = botao.dataset.tipo;
+    form.querySelectorAll("[data-tipo]").forEach((b) => {
+      const ativo = b.dataset.tipo === tipo;
+      b.classList.toggle("secondary", !ativo);
+      b.setAttribute("aria-pressed", String(ativo));
+    });
+    montarItem();
+  }));
+  montarItem();
+  montarEscolha(form.querySelector('[data-escolha="colaborador"]'), {
+    buscar: async (q) => {
+      const dados = await api(`/api/mycontrol/registros/colaboradores?q=${encodeURIComponent(q)}`, { silentLoading: true });
+      registrosConfig.limiteImagem = dados.limite_imagem_bytes || registrosConfig.limiteImagem;
+      return dados.colaboradores;
+    },
+    desenharItem: htmlColaboradorDeRegistro,
+    desenharEscolhido: htmlColaboradorEscolhido,
+    aoEscolher: (c) => {
+      colaborador = c;
+    }
+  });
+
+  form.addEventListener("submit", async (evento) => {
+    evento.preventDefault();
+    // Conferência rápida na tela; o servidor valida tudo de novo
+    if (!item) return toast(`Escolha o ${TIPOS_REGISTRO[tipo].rotulo.toLowerCase()}.`, "error");
+    if (!colaborador) return toast("Escolha o colaborador.", "error");
+    if (!colaborador.assinatura_id) return toast("O colaborador está sem assinatura no cadastro.", "error");
+    const km = form.elements.km_saida.value.trim();
+    if (tipo === "veiculo" && !km) return toast("Informe a quilometragem de saída.", "error");
+    if (!foto.tem()) return toast("Tire a foto de antes.", "error");
+    const botao = form.querySelector("button[type=submit]");
+    botao.disabled = true;
+    try {
+      const fotoAntes = await foto.enviar();
+      const { registro } = await api("/api/mycontrol/registros", {
+        method: "POST",
+        loadingMessage: "Registrando saída...",
+        body: JSON.stringify({ tipo, item_id: item.id, colaborador_id: colaborador.id, km_saida: tipo === "veiculo" ? km : undefined, foto_antes: fotoAntes, observacao: form.elements.observacao.value })
+      });
+      toast(`Saída registrada às ${new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Sao_Paulo", timeStyle: "short" }).format(new Date(registro.retirado_em))}.`);
+      navegar("/mycontrol/em-uso");
+    } catch (erro) {
+      avisarErro(erro);
+      // Outro usuário registrou o mesmo item neste meio-tempo: a lista precisa mudar
+      if (erro.status === 409) escolhaItem?.limpar();
+    } finally {
+      botao.disabled = false;
+    }
+  });
+}
+
+// Cartão de um registro em uso (celular e desktop), com quem está, cargo e desde quando
+function cartaoEmUso(registro) {
+  const acoes = [];
+  if (pode("registro.devolver")) acoes.push(`<button class="btn mc-acao" type="button" data-devolver="${registro.id}">Devolver</button>`);
+  acoes.push(`<button class="btn secondary mc-acao" type="button" data-detalhe="${registro.id}">Detalhes</button>`);
+  return `
+    <article class="mc-cartao-registro">
+      <div class="mc-cartao-registro-topo">
+        ${miniaturaBotao(registro.foto_antes_id, `Foto de antes: ${registro.item.nome}`)}
+        <div class="mc-cartao-registro-titulo">
+          <strong class="mc-nome">${esc(registro.item.nome)}</strong>
+          <small><span class="mc-login">${esc(registro.item.secundario || "")}</span>${registro.item.numero_chave ? ` · chave ${esc(registro.item.numero_chave)}` : ""}</small>
+        </div>
+        <span class="mc-selo">${esc(TIPOS_REGISTRO[registro.tipo].rotulo)}</span>
+      </div>
+      <p class="mc-cartao-registro-pessoa"><span class="mc-nome">${esc(registro.colaborador.nome)}</span> ${seloCargo(registro.colaborador.cargo)}</p>
+      <p class="text-sm text-slate-600">Desde ${dataHtml(registro.retirado_em)}${registro.km_saida !== null ? ` · saiu com ${esc(registro.km_saida)} km` : ""}</p>
+      <div class="mc-acoes">${acoes.join("")}</div>
+    </article>`;
+}
+
+// Tela "Em uso": o que está com alguém agora
+async function renderEmUso() {
+  let dados;
+  try {
+    dados = await api("/api/mycontrol/registros/em-uso");
+  } catch (erro) {
+    avisarErro(erro);
+    return;
+  }
+  registrosConfig.limiteKmAlto = dados.limite_km_alto || registrosConfig.limiteKmAlto;
+  registrosConfig.limiteImagem = dados.limite_imagem_bytes || registrosConfig.limiteImagem;
+  casca(`
+    <section class="card mc-cartao">
+      <div class="mc-barra">
+        <div class="mc-barra-titulo">
+          <p class="eyebrow">Uso</p>
+          <h3 class="text-xl font-black">Em uso agora</h3>
+        </div>
+        ${pode("registro.registrar") ? '<button class="btn mc-botao-cheio-celular" type="button" id="mc-ir-registrar">Registrar uso</button>' : ""}
+        <p class="mc-barra-ajuda text-sm text-slate-500">${dados.registros.length ? `${dados.registros.length} item(ns) fora. Os mais antigos aparecem primeiro.` : "Nenhum veículo ou ferramenta em uso no momento."}</p>
+      </div>
+      <div class="mc-cartoes-registro">${dados.registros.map(cartaoEmUso).join("")}</div>
+    </section>`);
+  document.querySelector("#mc-ir-registrar")?.addEventListener("click", () => navegar("/mycontrol/registrar"));
+  ligarMiniaturas();
+  const achar = (id) => dados.registros.find((registro) => registro.id === Number(id));
+  document.querySelectorAll("[data-detalhe]").forEach((botao) => botao.addEventListener("click", () => navegar(`/mycontrol/registros/${botao.dataset.detalhe}`)));
+  document.querySelectorAll("[data-devolver]").forEach((botao) => botao.addEventListener("click", () => abrirDevolucao(achar(botao.dataset.devolver), renderEmUso)));
+}
+
+// Modal de devolução: km de volta (veículo), foto de depois e observação. Diferença de km acima
+// do limite: o servidor responde KM_ALTO e a tela pede confirmação antes de reenviar.
+function abrirDevolucao(registro, aoConcluir) {
+  let foto = null;
+  abrirModal({
+    titulo: `Devolver ${registro.item.nome}`,
+    textoSalvar: "Registrar devolução",
+    corpo: `
+      <div class="mc-form">
+        <p class="text-sm text-slate-600">Com <strong>${esc(registro.colaborador.nome)}</strong> desde ${esc(dataCompleta(registro.retirado_em))}. A hora da devolução é registrada pelo sistema.</p>
+        ${registro.tipo === "veiculo" ? `
+          <label class="mc-campo"><span class="mc-rotulo">Km de volta <span class="mc-obrigatorio" aria-label="obrigatório">*</span></span>
+            <input name="km_volta" type="text" inputmode="numeric" pattern="[0-9.]*" autocomplete="off" />
+            <small class="mc-ajuda">Saiu com ${esc(registro.km_saida)} km. Não pode ser menor que isso.</small>
+          </label>` : ""}
+        ${campoFotoRegistro("depois", "Foto do item na devolução")}
+        <label class="mc-campo"><span class="mc-rotulo">Observação (opcional)</span>
+          <textarea name="observacao_devolucao" rows="3" maxlength="1000" autocapitalize="sentences"></textarea>
+        </label>
+      </div>`,
+    aoAbrir: (form) => {
+      foto = ligarFotoRegistro(form, "depois");
+    },
+    aoEnviar: async (form) => {
+      const km = form.elements.km_volta?.value.trim();
+      if (registro.tipo === "veiculo" && !km) {
+        toast("Informe a quilometragem de volta.", "error");
+        return false;
+      }
+      if (!foto.tem()) {
+        toast("Tire a foto da devolução.", "error");
+        return false;
+      }
+      const corpo = { km_volta: km, foto_depois: await foto.enviar(), observacao_devolucao: form.elements.observacao_devolucao.value };
+      // Envia; se o servidor pedir confirmação de km alto, pergunta e reenvia confirmado
+      const enviarDevolucao = (extra = {}) => api(`/api/mycontrol/registros/${registro.id}/devolver`, { method: "POST", body: JSON.stringify({ ...corpo, ...extra }), loadingMessage: "Registrando devolução..." });
+      try {
+        await enviarDevolucao();
+      } catch (erro) {
+        if (erro.details?.codigo !== "KM_ALTO") throw erro;
+        if (!confirmar(`${erro.message}\n\nA quilometragem está certa? Toque em OK para confirmar a devolução.`)) return false;
+        await enviarDevolucao({ confirmarKmAlto: true });
+      }
+      toast("Devolução registrada. O item está disponível de novo.");
+      fecharModal();
+      aoConcluir?.();
+      return true;
+    }
+  });
+}
+
+// Estado da tela de histórico (filtros e página)
+const historico = { registros: [], total: 0, pagina: 1, filtros: { tipo: "", status: "", de: "", ate: "", q: "" } };
+
+// Linha do histórico (tabela no desktop, cartão no celular/tablet)
+function linhaHistorico(registro) {
+  return `
+    <tr>
+      <td class="mc-col-foto">${miniaturaBotao(registro.foto_antes_id, `Foto de antes: ${registro.item.nome}`)}</td>
+      <td class="mc-col-nome"><strong class="mc-nome">${esc(registro.item.nome)}</strong></td>
+      <td class="mc-col-login"><span class="mc-login">${esc(registro.item.secundario || "")}</span></td>
+      <td class="mc-col-acesso"><span class="mc-rotulo-cartao">Com</span> ${esc(registro.colaborador.nome)} ${seloCargo(registro.colaborador.cargo)}</td>
+      <td class="mc-col-acesso"><span class="mc-rotulo-cartao">Saída</span> ${dataHtml(registro.retirado_em)}</td>
+      <td class="mc-col-acesso"><span class="mc-rotulo-cartao">Devolução</span> ${registro.devolvido_em ? dataHtml(registro.devolvido_em) : "—"}</td>
+      <td class="mc-col-situacao">${seloStatus(registro.status)}</td>
+      <td class="mc-col-acoes"><div class="mc-acoes"><button class="btn secondary mc-acao" type="button" data-detalhe="${registro.id}">Detalhes</button></div></td>
+    </tr>`;
+}
+
+// Busca uma página do histórico (reiniciar = primeira página com os filtros atuais)
+async function carregarHistorico({ reiniciar = false } = {}) {
+  const pagina = reiniciar ? 1 : historico.pagina + 1;
+  const parametros = new URLSearchParams({ pagina: String(pagina) });
+  for (const [chave, valor] of Object.entries(historico.filtros)) if (valor) parametros.set(chave, valor);
+  let dados;
+  try {
+    dados = await api(`/api/mycontrol/registros?${parametros}`);
+  } catch (erro) {
+    avisarErro(erro);
+    return;
+  }
+  historico.registros = reiniciar ? dados.registros : [...historico.registros, ...dados.registros];
+  historico.total = dados.total;
+  historico.pagina = dados.pagina;
+  const alvo = document.querySelector("#mc-historico-lista");
+  if (!alvo) return;
+  alvo.innerHTML = `
+    ${table(["", "Item", "Placa / identificador", "Colaborador", "Saída", "Devolução", "Situação", ""], historico.registros.map(linhaHistorico))}
+    <p class="mc-contagem text-sm text-slate-500">${historico.registros.length} de ${historico.total}</p>
+    ${historico.registros.length < historico.total ? '<button class="btn secondary mc-botao-cheio" type="button" id="mc-historico-mais">Carregar mais</button>' : ""}`;
+  ligarMiniaturas(alvo);
+  alvo.querySelector("#mc-historico-mais")?.addEventListener("click", () => carregarHistorico());
+  alvo.querySelectorAll("[data-detalhe]").forEach((botao) => botao.addEventListener("click", () => navegar(`/mycontrol/registros/${botao.dataset.detalhe}`)));
+}
+
+// Tela "Histórico": lista paginada com filtros (tipo, situação, período e busca)
+async function renderHistorico() {
+  const f = historico.filtros;
+  casca(`
+    <section class="card mc-cartao mc-lista mc-lista-com-foto">
+      <div class="mc-barra">
+        <div class="mc-barra-titulo">
+          <p class="eyebrow">Uso</p>
+          <h3 class="text-xl font-black">Histórico de registros</h3>
+        </div>
+        <form class="mc-filtros" id="mc-historico-filtros" role="search">
+          <label class="mc-campo mc-filtro-busca"><span class="mc-rotulo">Buscar</span>
+            <input name="q" type="search" enterkeyhint="search" autocomplete="off" value="${esc(f.q)}" placeholder="Colaborador, matrícula, item, placa..." />
+          </label>
+          <label class="mc-campo"><span class="mc-rotulo">Tipo</span>
+            <select name="tipo">
+              <option value="">Todos</option>
+              <option value="veiculo" ${f.tipo === "veiculo" ? "selected" : ""}>Veículos</option>
+              <option value="ferramenta" ${f.tipo === "ferramenta" ? "selected" : ""}>Ferramentas</option>
+            </select>
+          </label>
+          <label class="mc-campo"><span class="mc-rotulo">Situação</span>
+            <select name="status">
+              <option value="">Todas</option>
+              ${Object.entries(STATUS_REGISTRO).map(([id, rotulo]) => `<option value="${id}" ${f.status === id ? "selected" : ""}>${esc(rotulo)}</option>`).join("")}
+            </select>
+          </label>
+          <label class="mc-campo"><span class="mc-rotulo">De</span><input name="de" type="date" value="${esc(f.de)}" /></label>
+          <label class="mc-campo"><span class="mc-rotulo">Até</span><input name="ate" type="date" value="${esc(f.ate)}" /></label>
+        </form>
+        <p class="mc-barra-ajuda text-sm text-slate-500">Registros cancelados aparecem com a situação "Cancelado". Registros excluídos não aparecem.</p>
+      </div>
+      <div id="mc-historico-lista"></div>
+    </section>`);
+  const filtros = document.querySelector("#mc-historico-filtros");
+  let espera = null;
+  // Aplica os filtros e volta para a primeira página
+  const aplicar = () => {
+    for (const chave of Object.keys(historico.filtros)) historico.filtros[chave] = filtros.elements[chave].value.trim();
+    carregarHistorico({ reiniciar: true });
+  };
+  filtros.addEventListener("submit", (evento) => {
+    evento.preventDefault();
+    aplicar();
+  });
+  filtros.elements.q.addEventListener("input", () => {
+    clearTimeout(espera);
+    espera = setTimeout(aplicar, 350);
+  });
+  for (const chave of ["tipo", "status", "de", "ate"]) filtros.elements[chave].addEventListener("change", aplicar);
+  await carregarHistorico({ reiniciar: true });
+}
+
+// Linha "rótulo: valor" do detalhe
+function linhaDetalhe(rotulo, valor) {
+  return `<div class="mc-detalhe-linha"><dt>${esc(rotulo)}</dt><dd>${valor}</dd></div>`;
+}
+
+// Detalhe de um registro, com as ações conforme as permissões de quem está logado
+async function renderDetalheRegistro(id) {
+  let dados;
+  try {
+    dados = await api(`/api/mycontrol/registros/${id}`);
+  } catch (erro) {
+    avisarErro(erro);
+    if (erro.status === 404) navegar("/mycontrol/historico", { substituir: true });
+    return;
+  }
+  const r = dados.registro;
+  registrosConfig.limiteKmAlto = dados.limite_km_alto || registrosConfig.limiteKmAlto;
+  registrosConfig.limiteImagem = dados.limite_imagem_bytes || registrosConfig.limiteImagem;
+  const acoes = [];
+  if (r.status === "EM_USO" && pode("registro.devolver")) acoes.push('<button class="btn mc-acao" type="button" data-acao="devolver">Devolver</button>');
+  if (r.status !== "CANCELADO" && pode("registro.editar")) acoes.push('<button class="btn secondary mc-acao" type="button" data-acao="editar">Editar</button>');
+  // Ações destrutivas ficam afastadas das principais e sempre pedem motivo
+  const perigosas = [];
+  if (r.status !== "CANCELADO" && pode("registro.cancelar")) perigosas.push('<button class="btn mc-acao mc-acao-perigo" type="button" data-acao="cancelar">Cancelar registro</button>');
+  if (pode("registro.excluir")) perigosas.push('<button class="btn mc-acao mc-acao-perigo" type="button" data-acao="excluir">Excluir</button>');
+  const diferencaKm = r.km_volta !== null && r.km_saida !== null ? r.km_volta - r.km_saida : null;
+  casca(`
+    <section class="card mc-cartao mc-detalhe">
+      <div class="mc-barra">
+        <div class="mc-barra-titulo">
+          <p class="eyebrow">Registro nº ${esc(r.id)} · ${esc(TIPOS_REGISTRO[r.tipo].rotulo)}</p>
+          <h3 class="mc-nome text-xl font-black">${esc(r.item.nome)} <span class="mc-login text-base font-bold text-slate-500">${esc(r.item.secundario || "")}</span></h3>
+        </div>
+        ${seloStatus(r.status)}
+      </div>
+      <div class="mc-detalhe-grade">
+        <section class="mc-detalhe-secao">
+          <h4>Saída</h4>
+          <dl>
+            ${linhaDetalhe("Colaborador", `${esc(r.colaborador.nome)} <span class="mc-login">${esc(r.colaborador.matricula)}</span> ${seloCargo(r.colaborador.cargo)}`)}
+            ${linhaDetalhe("Data e hora", esc(dataCompleta(r.retirado_em)))}
+            ${linhaDetalhe("Registrado por", esc(r.registrado_por || "—"))}
+            ${r.tipo === "veiculo" ? linhaDetalhe("Km de saída", esc(r.km_saida)) : ""}
+            ${linhaDetalhe("Observação", esc(r.observacao || "—"))}
+          </dl>
+          <div class="mc-detalhe-midias">
+            <figure>${miniaturaBotao(r.foto_antes_id, "Foto de antes", { grande: true })}<figcaption>Foto de antes</figcaption></figure>
+            <figure class="mc-assinatura-aplicada"><img src="${urlArquivo(r.assinatura_id)}" alt="Assinatura de ${esc(r.colaborador.nome)}" /><figcaption>${r.assinatura_automatica ? "Assinatura do cadastro aplicada automaticamente" : "Assinatura"}</figcaption></figure>
+          </div>
+        </section>
+        ${r.devolvido_em ? `
+          <section class="mc-detalhe-secao">
+            <h4>Devolução</h4>
+            <dl>
+              ${linhaDetalhe("Data e hora", esc(dataCompleta(r.devolvido_em)))}
+              ${linhaDetalhe("Registrada por", esc(r.devolvido_por || "—"))}
+              ${r.tipo === "veiculo" ? linhaDetalhe("Km de volta", `${esc(r.km_volta)} (${esc(diferencaKm)} km rodados${r.km_alto_confirmado ? ", quilometragem alta confirmada" : ""})`) : ""}
+              ${linhaDetalhe("Observação", esc(r.observacao_devolucao || "—"))}
+            </dl>
+            <div class="mc-detalhe-midias"><figure>${miniaturaBotao(r.foto_depois_id, "Foto de depois", { grande: true })}<figcaption>Foto de depois</figcaption></figure></div>
+          </section>` : ""}
+        ${r.status === "CANCELADO" ? `
+          <section class="mc-detalhe-secao is-cancelado">
+            <h4>Cancelamento</h4>
+            <dl>
+              ${linhaDetalhe("Data e hora", esc(dataCompleta(r.cancelado_em)))}
+              ${linhaDetalhe("Cancelado por", esc(r.cancelado_por || "—"))}
+              ${linhaDetalhe("Motivo", esc(r.motivo_cancelamento || "—"))}
+            </dl>
+          </section>` : ""}
+      </div>
+      ${r.atualizado_em ? `<p class="text-sm text-slate-500">Última edição em ${esc(dataCompleta(r.atualizado_em))} por ${esc(r.atualizado_por || "—")}.</p>` : ""}
+      <div class="mc-detalhe-acoes">
+        <div class="mc-acoes">${acoes.join("")}<button class="btn secondary mc-acao" type="button" data-acao="voltar">Voltar</button></div>
+        ${perigosas.length ? `<div class="mc-acoes mc-acoes-perigosas">${perigosas.join("")}</div>` : ""}
+      </div>
+    </section>`);
+  ligarMiniaturas();
+  const recarregar = () => renderDetalheRegistro(id);
+  const acao = (nome, funcao) => document.querySelector(`[data-acao="${nome}"]`)?.addEventListener("click", funcao);
+  acao("voltar", () => (history.length > 1 ? history.back() : navegar("/mycontrol/historico")));
+  acao("devolver", () => abrirDevolucao(r, recarregar));
+  acao("editar", () => abrirEdicaoRegistro(r, recarregar));
+  acao("cancelar", () => abrirMotivo(r, "cancelar", recarregar));
+  acao("excluir", () => abrirMotivo(r, "excluir", () => navegar("/mycontrol/historico", { substituir: true })));
+}
+
+// Modal de edição do registro: observação, fotos e colaborador (a auditoria guarda antes e depois)
+function abrirEdicaoRegistro(registro, aoConcluir) {
+  let fotoAntes = null;
+  let fotoDepois = null;
+  let novoColaborador = null;
+  abrirModal({
+    titulo: `Editar registro nº ${registro.id}`,
+    textoSalvar: "Salvar alterações",
+    corpo: `
+      <div class="mc-form">
+        <div class="mc-campo">
+          <span class="mc-rotulo">Colaborador</span>
+          <p class="text-sm text-slate-600">Atual: <strong>${esc(registro.colaborador.nome)}</strong>. Para trocar, escolha outro abaixo (a assinatura do novo cadastro é aplicada automaticamente).</p>
+          ${htmlEscolha("colaborador", "Buscar outro colaborador", "Nome ou matrícula")}
+        </div>
+        <label class="mc-campo"><span class="mc-rotulo">Observação da saída</span>
+          <textarea name="observacao" rows="3" maxlength="1000" autocapitalize="sentences"></textarea>
+        </label>
+        ${campoFotoRegistro("antes", "Trocar a foto de antes (opcional)", { obrigatoria: false })}
+        ${registro.status === "DEVOLVIDO" ? `
+          <label class="mc-campo"><span class="mc-rotulo">Observação da devolução</span>
+            <textarea name="observacao_devolucao" rows="3" maxlength="1000" autocapitalize="sentences"></textarea>
+          </label>
+          ${campoFotoRegistro("depois", "Trocar a foto de depois (opcional)", { obrigatoria: false })}` : ""}
+      </div>`,
+    aoAbrir: (form) => {
+      form.elements.observacao.value = registro.observacao || "";
+      if (form.elements.observacao_devolucao) form.elements.observacao_devolucao.value = registro.observacao_devolucao || "";
+      fotoAntes = ligarFotoRegistro(form, "antes");
+      if (registro.status === "DEVOLVIDO") fotoDepois = ligarFotoRegistro(form, "depois");
+      montarEscolha(form.querySelector('[data-escolha="colaborador"]'), {
+        buscar: async (q) => (await api(`/api/mycontrol/registros/colaboradores?q=${encodeURIComponent(q)}`, { silentLoading: true })).colaboradores.filter((c) => c.id !== registro.colaborador.id),
+        desenharItem: htmlColaboradorDeRegistro,
+        desenharEscolhido: htmlColaboradorEscolhido,
+        aoEscolher: (c) => {
+          novoColaborador = c;
+        }
+      });
+    },
+    aoEnviar: async (form) => {
+      const corpo = { observacao: form.elements.observacao.value };
+      if (form.elements.observacao_devolucao) corpo.observacao_devolucao = form.elements.observacao_devolucao.value;
+      if (fotoAntes.tem()) corpo.foto_antes = await fotoAntes.enviar();
+      if (fotoDepois?.tem()) corpo.foto_depois = await fotoDepois.enviar();
+      if (novoColaborador) corpo.colaborador_id = novoColaborador.id;
+      await api(`/api/mycontrol/registros/${registro.id}`, { method: "PATCH", body: JSON.stringify(corpo) });
+      toast("Registro atualizado.");
+      fecharModal();
+      aoConcluir?.();
+      return true;
+    }
+  });
+}
+
+// Modal de motivo obrigatório para cancelar ou excluir
+function abrirMotivo(registro, acao, aoConcluir) {
+  const cancelar = acao === "cancelar";
+  abrirModal({
+    titulo: cancelar ? `Cancelar registro nº ${registro.id}` : `Excluir registro nº ${registro.id}`,
+    textoSalvar: cancelar ? "Cancelar registro" : "Excluir registro",
+    corpo: `
+      <div class="mc-form">
+        <p class="mc-aviso">${cancelar
+          ? "O registro continua no histórico como cancelado e o item volta a ficar disponível."
+          : "O registro sai das listas, mas continua guardado na auditoria. Use só para registro feito por engano."}</p>
+        <label class="mc-campo"><span class="mc-rotulo">Motivo <span class="mc-obrigatorio" aria-label="obrigatório">*</span></span>
+          <textarea name="motivo" rows="3" maxlength="500" required minlength="3" autocapitalize="sentences"></textarea>
+        </label>
+      </div>`,
+    aoEnviar: async (form) => {
+      const motivo = form.elements.motivo.value.trim();
+      if (motivo.length < 3) {
+        toast("Informe o motivo.", "error");
+        return false;
+      }
+      await api(`/api/mycontrol/registros/${registro.id}/${acao}`, { method: "POST", body: JSON.stringify({ motivo }) });
+      toast(cancelar ? "Registro cancelado." : "Registro excluído.");
+      fecharModal();
+      aoConcluir?.();
+      return true;
+    }
+  });
 }
 
 // Voltar/avançar do navegador

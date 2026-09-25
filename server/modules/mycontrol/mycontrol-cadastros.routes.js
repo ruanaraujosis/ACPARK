@@ -27,17 +27,42 @@ import {
   salvarMiniatura
 } from "../../services/mycontrol/arquivos.service.js";
 import { erroMc } from "../../services/mycontrol/usuarios.service.js";
+import { PERMISSOES_REGISTRO } from "../../services/mycontrol/registros.service.js";
 
-// Permissões que abrem algum cadastro (quem tem ao menos uma pode chegar às rotas de arquivo;
-// a entidade específica é conferida dentro do handler)
+// Permissões que abrem algum cadastro
 const PERMISSOES_DE_CADASTRO = Object.values(ENTIDADES).map((entidade) => entidade.permissao);
 
-// O usuário tem a permissão de gerenciar esta entidade? (senão 403)
-function exigirPermissaoDaEntidade(usuario, entidade) {
-  if (!entidadeValida(entidade)) throw erroMc(404, "Cadastro desconhecido.");
-  if (!(usuario.permissoes || []).includes(ENTIDADES[entidade].permissao)) {
-    throw erroMc(403, "Seu usuário não tem permissão para esta ação.");
+// Quem registra, devolve ou edita registros precisa VER as fotos dos cadastros (colaborador,
+// veículo, ferramenta) e enviar/ver as fotos dos próprios registros (Fase 3)
+const PERMISSOES_DE_USO = ["registro.registrar", "registro.devolver", "registro.editar"];
+
+// Quem pode chegar às rotas de arquivo; a entidade específica é conferida dentro do handler
+const PERMISSOES_DE_ARQUIVO = [...PERMISSOES_DE_CADASTRO, ...PERMISSOES_REGISTRO];
+
+// O usuário tem alguma das permissões?
+function temAlguma(usuario, permissoes) {
+  return permissoes.some((chave) => (usuario.permissoes || []).includes(chave));
+}
+
+// Pode ENVIAR imagem desta entidade? Cadastro: quem o gerencia. Registro: quem registra, devolve
+// ou edita registros (fotos de antes/depois). Senão 403.
+function exigirEnvioDaEntidade(usuario, entidade) {
+  if (entidade === "registro") {
+    if (!temAlguma(usuario, PERMISSOES_DE_USO)) throw erroMc(403, "Seu usuário não tem permissão para esta ação.");
+    return;
   }
+  if (!entidadeValida(entidade)) throw erroMc(404, "Cadastro desconhecido.");
+  if (!temAlguma(usuario, [ENTIDADES[entidade].permissao])) throw erroMc(403, "Seu usuário não tem permissão para esta ação.");
+}
+
+// Pode VER esta imagem? Foto de cadastro: quem gerencia o cadastro ou quem registra/devolve/edita
+// (precisa reconhecer a pessoa e o item). Foto e assinatura de registro: qualquer permissão de
+// registro (quem cancela ou exclui também abre o detalhe).
+function exigirVisualizacao(usuario, arquivo) {
+  const permitidas = arquivo.entidade === "registro"
+    ? PERMISSOES_REGISTRO
+    : entidadeValida(arquivo.entidade) ? [ENTIDADES[arquivo.entidade].permissao, ...PERMISSOES_DE_USO] : [];
+  if (!temAlguma(usuario, permitidas)) throw erroMc(403, "Seu usuário não tem permissão para ver esta imagem.");
 }
 
 // ===== Campos (Configurações > Campos) =====
@@ -115,8 +140,9 @@ function rotasDaEntidade(entidade) {
 
 // Recebe a imagem principal (foto ou assinatura) como corpo binário
 async function enviarArquivo(req, res, { usuario, entidade, url }) {
-  exigirPermissaoDaEntidade(usuario, entidade);
-  const papel = url.searchParams.get("papel") === "assinatura" ? "assinatura" : "foto";
+  exigirEnvioDaEntidade(usuario, entidade);
+  // Registro só recebe foto enviada; a assinatura dele é sempre a cópia feita pelo servidor
+  const papel = entidade !== "registro" && url.searchParams.get("papel") === "assinatura" ? "assinatura" : "foto";
   const buffer = await lerCorpoImagem(req);
   const arquivo = await tx((client) => salvarArquivo(client, { ator: usuario, entidade, papel, buffer }));
   send(res, 200, { arquivo });
@@ -124,16 +150,16 @@ async function enviarArquivo(req, res, { usuario, entidade, url }) {
 
 // Recebe a miniatura de uma foto já enviada
 async function enviarMiniatura(req, res, { usuario, entidade, id }) {
-  exigirPermissaoDaEntidade(usuario, entidade);
+  exigirEnvioDaEntidade(usuario, entidade);
   const buffer = await lerCorpoImagem(req, 512 * 1024 + 1);
   send(res, 200, { arquivo: await tx((client) => salvarMiniatura(client, { entidade, id, buffer })) });
 }
 
-// Serve a imagem (ou a miniatura com ?miniatura=1) para quem gerencia a entidade dela
+// Serve a imagem (ou a miniatura com ?miniatura=1) para quem pode vê-la (exigirVisualizacao)
 async function servirArquivo(req, res, { usuario, id, url }) {
   const arquivo = await tx((client) => carregarArquivo(client, id));
   if (!arquivo) throw erroMc(404, "Arquivo não encontrado.");
-  exigirPermissaoDaEntidade(usuario, arquivo.entidade);
+  exigirVisualizacao(usuario, arquivo);
   const { conteudo, mime } = await lerBinario(arquivo, { miniatura: url.searchParams.get("miniatura") === "1" });
   res.writeHead(200, {
     "Content-Type": mime,
@@ -145,7 +171,8 @@ async function servirArquivo(req, res, { usuario, id, url }) {
   res.end(conteudo);
 }
 
-const ENTIDADES_NA_URL = Object.keys(ENTIDADES).join("|");
+// Entidades aceitas nas rotas de envio: os três cadastros e os registros de uso (Fase 3)
+const ENTIDADES_NA_URL = [...Object.keys(ENTIDADES), "registro"].join("|");
 
 // Tabela de rotas da Fase 2 (juntada à da Fase 1 no roteador). `parametros` nomeia as capturas
 // da URL; `corpo: "imagem"` troca a exigência de JSON pela de imagem (ver arquivos.service.js).
@@ -218,7 +245,7 @@ export const ROTAS_CADASTROS = Object.freeze([
     caminho: new RegExp(`^\\/api\\/mycontrol\\/arquivos\\/(${ENTIDADES_NA_URL})$`),
     parametros: ["entidade"],
     corpo: "imagem",
-    permissao: PERMISSOES_DE_CADASTRO,
+    permissao: PERMISSOES_DE_ARQUIVO,
     handler: enviarArquivo
   },
   {
@@ -226,8 +253,8 @@ export const ROTAS_CADASTROS = Object.freeze([
     caminho: new RegExp(`^\\/api\\/mycontrol\\/arquivos\\/(${ENTIDADES_NA_URL})\\/(\\d{1,9})\\/miniatura$`),
     parametros: ["entidade", "id"],
     corpo: "imagem",
-    permissao: PERMISSOES_DE_CADASTRO,
+    permissao: PERMISSOES_DE_ARQUIVO,
     handler: enviarMiniatura
   },
-  { metodo: "GET", caminho: /^\/api\/mycontrol\/arquivos\/(\d{1,9})$/, permissao: PERMISSOES_DE_CADASTRO, handler: servirArquivo }
+  { metodo: "GET", caminho: /^\/api\/mycontrol\/arquivos\/(\d{1,9})$/, permissao: PERMISSOES_DE_ARQUIVO, handler: servirArquivo }
 ]);

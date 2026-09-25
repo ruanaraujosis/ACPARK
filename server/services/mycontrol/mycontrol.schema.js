@@ -21,7 +21,7 @@ async function criarTabelasDeCadastro(client) {
     CREATE TABLE IF NOT EXISTS mc_arquivos (
       id SERIAL PRIMARY KEY,
       entidade TEXT NOT NULL,
-      papel TEXT NOT NULL CHECK (papel IN ('foto', 'assinatura')),
+      papel TEXT NOT NULL CONSTRAINT mc_arquivos_papel_check CHECK (papel IN ('foto', 'assinatura', 'assinatura_registro')),
       storage_key TEXT NOT NULL,
       mime TEXT NOT NULL,
       tamanho INTEGER NOT NULL,
@@ -143,6 +143,73 @@ async function criarTabelasDeCadastro(client) {
     )`);
 }
 
+// Fase 3: registros de uso e devolução de veículos e ferramentas.
+//
+// DATAS: retirado_em, devolvido_em etc. são TIMESTAMPTZ DEFAULT now() e vêm SEMPRE do servidor
+// (a hora do navegador nunca é lida). É diferente de propósito das tabelas antigas do MyEstoque
+// (timestamp without time zone lido como texto pelo parser do tipo 1114 em server/db.js): com o
+// fuso gravado, o instante é inequívoco; a tela exibe em America/Sao_Paulo.
+async function criarTabelaDeRegistros(client) {
+  // Instalação da Fase 2 nasceu com o CHECK de papel só com foto/assinatura. Alarga a lista para
+  // a cópia de assinatura do registro -- só troca a regra, nenhum dado é tocado. Quando a
+  // definição já tem 'assinatura_registro', não faz nada.
+  await client.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'mc_arquivos_papel_check' AND pg_get_constraintdef(oid) LIKE '%assinatura_registro%'
+      ) THEN
+        ALTER TABLE mc_arquivos DROP CONSTRAINT IF EXISTS mc_arquivos_papel_check;
+        ALTER TABLE mc_arquivos ADD CONSTRAINT mc_arquivos_papel_check CHECK (papel IN ('foto', 'assinatura', 'assinatura_registro'));
+      END IF;
+    END $$`);
+
+  // Um registro por retirada. item_id aponta para mc_veiculos ou mc_ferramentas conforme o tipo
+  // (validado no servidor). A assinatura é uma CÓPIA feita no momento do registro (arquivo
+  // próprio, papel assinatura_registro): trocar a assinatura do cadastro depois não muda o registro.
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS mc_registros (
+      id SERIAL PRIMARY KEY,
+      tipo TEXT NOT NULL CHECK (tipo IN ('veiculo', 'ferramenta')),
+      item_id INTEGER NOT NULL,
+      colaborador_id INTEGER NOT NULL REFERENCES mc_colaboradores(id),
+      registrado_por INTEGER NOT NULL REFERENCES mc_usuarios(id),
+      retirado_em TIMESTAMPTZ NOT NULL DEFAULT now(),
+      foto_antes_id INTEGER NOT NULL UNIQUE REFERENCES mc_arquivos(id),
+      assinatura_id INTEGER NOT NULL REFERENCES mc_arquivos(id),
+      assinatura_automatica BOOLEAN NOT NULL DEFAULT TRUE,
+      observacao TEXT,
+      km_saida INTEGER CHECK (km_saida >= 0),
+      devolvido_em TIMESTAMPTZ,
+      devolvido_por INTEGER REFERENCES mc_usuarios(id),
+      foto_depois_id INTEGER UNIQUE REFERENCES mc_arquivos(id),
+      observacao_devolucao TEXT,
+      km_volta INTEGER,
+      km_alto_confirmado BOOLEAN NOT NULL DEFAULT FALSE,
+      status TEXT NOT NULL DEFAULT 'EM_USO' CHECK (status IN ('EM_USO', 'DEVOLVIDO', 'CANCELADO')),
+      cancelado_em TIMESTAMPTZ,
+      cancelado_por INTEGER REFERENCES mc_usuarios(id),
+      motivo_cancelamento TEXT,
+      excluido_em TIMESTAMPTZ,
+      excluido_por INTEGER REFERENCES mc_usuarios(id),
+      motivo_exclusao TEXT,
+      atualizado_em TIMESTAMPTZ,
+      atualizado_por INTEGER REFERENCES mc_usuarios(id),
+      CONSTRAINT mc_registros_km_saida_veiculo CHECK (tipo <> 'veiculo' OR km_saida IS NOT NULL),
+      CONSTRAINT mc_registros_km_volta_minimo CHECK (km_volta IS NULL OR km_volta >= km_saida)
+    )`);
+
+  // A regra "um item não tem dois registros em uso" mora no BANCO: dois envios simultâneos para o
+  // mesmo item não passam os dois, mesmo que as duas telas mostrem o item como disponível
+  await client.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS mc_registros_item_em_uso
+      ON mc_registros (tipo, item_id) WHERE status = 'EM_USO' AND excluido_em IS NULL`);
+  await client.query("CREATE INDEX IF NOT EXISTS idx_mc_registros_retirado ON mc_registros (retirado_em DESC) WHERE excluido_em IS NULL");
+  await client.query("CREATE INDEX IF NOT EXISTS idx_mc_registros_colaborador ON mc_registros (colaborador_id)");
+  await client.query("CREATE INDEX IF NOT EXISTS idx_mc_registros_registrado_por ON mc_registros (registrado_por)");
+}
+
 // Semeia os campos do sistema. Roda a cada boot, então é idempotente e NUNCA desfaz o que o
 // usuário mudou (rótulo, ordem, obrigatoriedade, campo desativado): ON CONFLICT DO NOTHING só
 // insere o que ainda não existe e não toca nas linhas que já estão lá.
@@ -204,6 +271,7 @@ export function ensureMyControlTables() {
 
     await criarTabelasDeCadastro(client);
     await semearCamposDoSistema(client);
+    await criarTabelaDeRegistros(client);
   }).catch((erro) => {
     tabelasProntas = null;
     throw erro;

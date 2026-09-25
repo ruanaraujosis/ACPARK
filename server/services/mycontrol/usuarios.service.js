@@ -16,11 +16,13 @@ export const SENHA_MINIMA = 6;
 // Colunas devolvidas ao cliente: nunca inclui o hash da senha
 const COLUNAS_PUBLICAS = "id, usuario, nome, permissoes, ativo, criado_em, criado_por, ultimo_login_em";
 
-// Erro com status HTTP e mensagem em português, tratado pelas rotas
-export function erroMc(statusCode, mensagem) {
+// Erro com status HTTP e mensagem em português, tratado pelas rotas. `extras` vai junto na
+// resposta (ex.: { codigo: "KM_ALTO" } para a tela pedir confirmação em vez de só mostrar o erro)
+export function erroMc(statusCode, mensagem, extras = null) {
   const erro = new Error(mensagem);
   erro.statusCode = statusCode;
   erro.mensagemUsuario = mensagem;
+  erro.extras = extras;
   return erro;
 }
 

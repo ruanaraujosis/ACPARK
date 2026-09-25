@@ -598,6 +598,287 @@ html .mc-botao-arquivo input[type="file"] {
   right: 0.75rem;
 }
 
+/* ===== Fase 3: registro de uso, em uso, histórico e detalhe ===== */
+
+/* Registrar: uma coluna estreita mesmo no desktop (é um formulário de celular) */
+.mc-registrar {
+  max-width: 44rem;
+}
+
+/* Cada etapa do registro num bloco próprio */
+.mc-passo {
+  display: grid;
+  gap: 0.75rem;
+  min-width: 0;
+  margin: 0;
+  padding: 0.85rem 0.95rem 1rem;
+  border: 1px solid rgba(0, 123, 135, 0.16);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.85);
+}
+
+.mc-passo legend {
+  padding: 0 0.35rem;
+  color: var(--ac-teal-dark);
+  font-size: 1rem;
+  font-weight: 900;
+}
+
+/* Resultados da busca de item/colaborador: botões grandes, fáceis de tocar */
+.mc-resultados {
+  display: grid;
+  gap: 0.5rem;
+  max-height: 22rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.mc-resultado {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  width: 100%;
+  min-height: 56px;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid rgba(0, 123, 135, 0.16);
+  border-radius: 16px;
+  background: #fff;
+  color: var(--ac-ink);
+  text-align: left;
+  box-shadow: none;
+}
+
+.mc-resultado:focus-visible,
+.mc-resultado:active {
+  border-color: var(--ac-teal);
+  background: rgba(0, 123, 135, 0.06);
+}
+
+.mc-resultado-texto {
+  display: grid;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.mc-resultado-texto small {
+  color: #475569;
+  font-size: 0.85rem;
+}
+
+/* Item/colaborador escolhido, com o botão Trocar */
+.mc-escolhido {
+  display: grid;
+  gap: 0.75rem;
+  padding: 0.75rem;
+  border: 1px solid rgba(0, 123, 135, 0.3);
+  border-radius: 16px;
+  background: rgba(16, 182, 199, 0.07);
+}
+
+.mc-escolhido-dados {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  min-width: 0;
+}
+
+.mc-escolhido [data-trocar] {
+  justify-self: start;
+}
+
+/* Assinatura do cadastro aplicada automaticamente */
+.mc-assinatura-aplicada {
+  display: grid;
+  gap: 0.4rem;
+  margin: 0;
+}
+
+.mc-assinatura-aplicada img {
+  width: 100%;
+  max-width: 24rem;
+  border: 1px dashed rgba(0, 123, 135, 0.38);
+  border-radius: 12px;
+  background: #fff;
+}
+
+.mc-assinatura-aplicada figcaption {
+  color: #475569;
+  font-size: 0.85rem;
+}
+
+.mc-aviso-ok {
+  padding: 0.55rem 0.75rem;
+  border-radius: 12px;
+  background: #ecfdf5;
+  color: #047857;
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.mc-selo.is-cargo {
+  background: #e0f2fe;
+  color: #075985;
+}
+
+.mc-chip.is-em-uso {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+/* Botão de salvar sempre à vista no celular (respeita a área segura do aparelho) */
+.mc-barra-fixa {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  margin: 0 -0.25rem;
+  padding: 0.75rem 0.25rem calc(0.75rem + env(safe-area-inset-bottom));
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0), #fff 30%);
+}
+
+.mc-barra-fixa .btn {
+  min-height: 52px;
+  font-size: 1.05rem;
+}
+
+/* Em uso: cartões em grade (uma coluna no celular, várias no desktop) */
+.mc-cartoes-registro {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 19rem), 1fr));
+}
+
+.mc-cartao-registro {
+  display: grid;
+  gap: 0.55rem;
+  align-content: start;
+  min-width: 0;
+  padding: 0.9rem;
+  border: 1px solid rgba(0, 123, 135, 0.14);
+  border-radius: 18px;
+  background: #fff;
+}
+
+.mc-cartao-registro-topo {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 0.6rem;
+  align-items: center;
+}
+
+.mc-cartao-registro-titulo {
+  display: grid;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.mc-cartao-registro-titulo small {
+  color: #475569;
+}
+
+.mc-cartao-registro-pessoa {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+  font-weight: 800;
+}
+
+.mc-cartao-registro .mc-acoes .mc-acao {
+  flex: 1 1 7rem;
+}
+
+/* Miniatura maior no detalhe */
+.mc-miniatura.is-grande {
+  width: 112px;
+  height: 112px;
+}
+
+/* Detalhe do registro */
+.mc-detalhe-grade {
+  display: grid;
+  gap: 0.9rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr));
+}
+
+.mc-detalhe-secao {
+  display: grid;
+  gap: 0.75rem;
+  align-content: start;
+  min-width: 0;
+  padding: 0.9rem;
+  border: 1px solid rgba(0, 123, 135, 0.14);
+  border-radius: 18px;
+  background: #fff;
+}
+
+.mc-detalhe-secao.is-cancelado {
+  border-color: rgba(100, 116, 139, 0.35);
+  background: #f8fafc;
+}
+
+.mc-detalhe-secao h4 {
+  color: var(--ac-teal-dark);
+  font-weight: 900;
+}
+
+.mc-detalhe-secao dl {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.mc-detalhe-linha {
+  display: grid;
+  grid-template-columns: minmax(7rem, auto) minmax(0, 1fr);
+  gap: 0.2rem 0.75rem;
+  align-items: baseline;
+}
+
+.mc-detalhe-linha dt {
+  color: #64748b;
+  font-size: 0.8rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.mc-detalhe-linha dd {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.mc-detalhe-midias {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.9rem;
+  align-items: flex-start;
+}
+
+.mc-detalhe-midias figure {
+  display: grid;
+  gap: 0.35rem;
+  margin: 0;
+}
+
+.mc-detalhe-midias figcaption {
+  color: #475569;
+  font-size: 0.8rem;
+}
+
+/* Ações do detalhe: as destrutivas numa linha própria, afastadas das principais */
+.mc-detalhe-acoes {
+  display: grid;
+  gap: 1.25rem;
+}
+
+.mc-acoes-perigosas {
+  padding-top: 0.9rem;
+  border-top: 1px solid rgba(0, 123, 135, 0.12);
+}
+
+.mc-acoes-perigosas .mc-acao-perigo {
+  margin-left: 0;
+}
+
 /* Tablet ou janela estreita: as listas (usuários, cargos, campos, cadastros) viram cartões em duas colunas (a tabela
    empurraria as ações para fora da tela); nome em destaque, login e situação abaixo, ações no
    rodapé do cartão */

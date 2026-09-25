@@ -10,6 +10,7 @@
 // form-urlencoded ou multipart; qualquer outro tipo exige preflight de CORS, e o servidor não
 // responde CORS -- então uma página maliciosa não consegue enviar arquivo com o cookie de quem
 // está logado. A rota recusa (415) qualquer tipo fora dessa lista.
+import crypto from "node:crypto";
 import { getStorageService } from "../storage/storage.service.js";
 import { getStorageConfig } from "../storage/storage.config.js";
 import { erroMc } from "./usuarios.service.js";
@@ -70,6 +71,25 @@ export async function salvarMiniatura(client, { entidade, id, buffer }) {
   const salvo = await getStorageService().saveImage({ buffer, originalName: "miniatura", folder: `mycontrol/${entidade}/miniaturas` });
   await client.query("UPDATE mc_arquivos SET miniatura_key = $2, miniatura_mime = $3 WHERE id = $1", [id, salvo.storageKey, salvo.mimeType]);
   return { id };
+}
+
+// Copia a assinatura do cadastro do colaborador para um registro de uso. É uma cópia REAL: objeto
+// novo no storage (pasta única por cópia, então nem dois registros compartilham o arquivo) e
+// linha própria em mc_arquivos com papel assinatura_registro. Trocar a assinatura do cadastro
+// depois cria outro arquivo lá e não toca nesta cópia.
+export async function copiarAssinaturaParaRegistro(client, { ator, assinaturaId }) {
+  const original = await carregarArquivo(client, assinaturaId);
+  if (!original || original.papel !== "assinatura") throw erroMc(400, "O colaborador não tem assinatura no cadastro. Atualize o cadastro antes de registrar.");
+  const storage = getStorageService();
+  const conteudo = await storage.readFile(original.storage_key);
+  const salvo = await storage.saveImage({ buffer: conteudo, originalName: "assinatura", folder: `mycontrol/registro/assinaturas/${crypto.randomUUID()}` });
+  const { rows } = await client.query(
+    `INSERT INTO mc_arquivos (entidade, papel, storage_key, mime, tamanho, largura, altura, sha256, criado_por)
+     VALUES ('registro', 'assinatura_registro', $1, $2, $3, $4, $5, $6, $7)
+     RETURNING id`,
+    [salvo.storageKey, salvo.mimeType, salvo.sizeBytes, salvo.width, salvo.height, salvo.sha256, ator.id]
+  );
+  return rows[0].id;
 }
 
 // Carrega o registro de um arquivo (sem ler o binário)

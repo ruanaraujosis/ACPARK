@@ -1260,7 +1260,7 @@ CREATE TABLE public.mc_arquivos (
     miniatura_mime text,
     criado_por integer,
     criado_em timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT mc_arquivos_papel_check CHECK ((papel = ANY (ARRAY['foto'::text, 'assinatura'::text])))
+    CONSTRAINT mc_arquivos_papel_check CHECK ((papel = ANY (ARRAY['foto'::text, 'assinatura'::text, 'assinatura_registro'::text])))
 );
 
 
@@ -1494,6 +1494,65 @@ CREATE SEQUENCE public.mc_matricula_seq
     NO MINVALUE
     NO MAXVALUE
     CACHE 1;
+
+
+--
+-- Name: mc_registros; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.mc_registros (
+    id integer NOT NULL,
+    tipo text NOT NULL,
+    item_id integer NOT NULL,
+    colaborador_id integer NOT NULL,
+    registrado_por integer NOT NULL,
+    retirado_em timestamp with time zone DEFAULT now() NOT NULL,
+    foto_antes_id integer NOT NULL,
+    assinatura_id integer NOT NULL,
+    assinatura_automatica boolean DEFAULT true NOT NULL,
+    observacao text,
+    km_saida integer,
+    devolvido_em timestamp with time zone,
+    devolvido_por integer,
+    foto_depois_id integer,
+    observacao_devolucao text,
+    km_volta integer,
+    km_alto_confirmado boolean DEFAULT false NOT NULL,
+    status text DEFAULT 'EM_USO'::text NOT NULL,
+    cancelado_em timestamp with time zone,
+    cancelado_por integer,
+    motivo_cancelamento text,
+    excluido_em timestamp with time zone,
+    excluido_por integer,
+    motivo_exclusao text,
+    atualizado_em timestamp with time zone,
+    atualizado_por integer,
+    CONSTRAINT mc_registros_km_saida_check CHECK ((km_saida >= 0)),
+    CONSTRAINT mc_registros_km_saida_veiculo CHECK (((tipo <> 'veiculo'::text) OR (km_saida IS NOT NULL))),
+    CONSTRAINT mc_registros_km_volta_minimo CHECK (((km_volta IS NULL) OR (km_volta >= km_saida))),
+    CONSTRAINT mc_registros_status_check CHECK ((status = ANY (ARRAY['EM_USO'::text, 'DEVOLVIDO'::text, 'CANCELADO'::text]))),
+    CONSTRAINT mc_registros_tipo_check CHECK ((tipo = ANY (ARRAY['veiculo'::text, 'ferramenta'::text])))
+);
+
+
+--
+-- Name: mc_registros_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.mc_registros_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: mc_registros_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.mc_registros_id_seq OWNED BY public.mc_registros.id;
 
 
 --
@@ -2515,6 +2574,13 @@ ALTER TABLE ONLY public.mc_ferramentas ALTER COLUMN id SET DEFAULT nextval('publ
 
 
 --
+-- Name: mc_registros id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_registros ALTER COLUMN id SET DEFAULT nextval('public.mc_registros_id_seq'::regclass);
+
+
+--
 -- Name: mc_usuarios id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -3045,6 +3111,30 @@ ALTER TABLE ONLY public.mc_ferramentas
 
 ALTER TABLE ONLY public.mc_ferramentas
     ADD CONSTRAINT mc_ferramentas_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: mc_registros mc_registros_foto_antes_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_registros
+    ADD CONSTRAINT mc_registros_foto_antes_id_key UNIQUE (foto_antes_id);
+
+
+--
+-- Name: mc_registros mc_registros_foto_depois_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_registros
+    ADD CONSTRAINT mc_registros_foto_depois_id_key UNIQUE (foto_depois_id);
+
+
+--
+-- Name: mc_registros mc_registros_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_registros
+    ADD CONSTRAINT mc_registros_pkey PRIMARY KEY (id);
 
 
 --
@@ -3582,6 +3672,27 @@ CREATE INDEX idx_mc_colaboradores_cargo ON public.mc_colaboradores USING btree (
 
 
 --
+-- Name: idx_mc_registros_colaborador; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_mc_registros_colaborador ON public.mc_registros USING btree (colaborador_id);
+
+
+--
+-- Name: idx_mc_registros_registrado_por; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_mc_registros_registrado_por ON public.mc_registros USING btree (registrado_por);
+
+
+--
+-- Name: idx_mc_registros_retirado; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_mc_registros_retirado ON public.mc_registros USING btree (retirado_em DESC) WHERE (excluido_em IS NULL);
+
+
+--
 -- Name: idx_omie_jobs_entity; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3705,6 +3816,13 @@ CREATE INDEX idx_stock_snapshots_sku ON public.stock_snapshots USING btree (sku_
 --
 
 CREATE UNIQUE INDEX mc_cargos_nome_unico ON public.mc_cargos USING btree (lower(nome));
+
+
+--
+-- Name: mc_registros_item_em_uso; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX mc_registros_item_em_uso ON public.mc_registros USING btree (tipo, item_id) WHERE ((status = 'EM_USO'::text) AND (excluido_em IS NULL));
 
 
 --
@@ -3963,6 +4081,78 @@ ALTER TABLE ONLY public.mc_colaboradores
 
 ALTER TABLE ONLY public.mc_ferramentas
     ADD CONSTRAINT mc_ferramentas_foto_id_fkey FOREIGN KEY (foto_id) REFERENCES public.mc_arquivos(id);
+
+
+--
+-- Name: mc_registros mc_registros_assinatura_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_registros
+    ADD CONSTRAINT mc_registros_assinatura_id_fkey FOREIGN KEY (assinatura_id) REFERENCES public.mc_arquivos(id);
+
+
+--
+-- Name: mc_registros mc_registros_atualizado_por_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_registros
+    ADD CONSTRAINT mc_registros_atualizado_por_fkey FOREIGN KEY (atualizado_por) REFERENCES public.mc_usuarios(id);
+
+
+--
+-- Name: mc_registros mc_registros_cancelado_por_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_registros
+    ADD CONSTRAINT mc_registros_cancelado_por_fkey FOREIGN KEY (cancelado_por) REFERENCES public.mc_usuarios(id);
+
+
+--
+-- Name: mc_registros mc_registros_colaborador_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_registros
+    ADD CONSTRAINT mc_registros_colaborador_id_fkey FOREIGN KEY (colaborador_id) REFERENCES public.mc_colaboradores(id);
+
+
+--
+-- Name: mc_registros mc_registros_devolvido_por_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_registros
+    ADD CONSTRAINT mc_registros_devolvido_por_fkey FOREIGN KEY (devolvido_por) REFERENCES public.mc_usuarios(id);
+
+
+--
+-- Name: mc_registros mc_registros_excluido_por_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_registros
+    ADD CONSTRAINT mc_registros_excluido_por_fkey FOREIGN KEY (excluido_por) REFERENCES public.mc_usuarios(id);
+
+
+--
+-- Name: mc_registros mc_registros_foto_antes_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_registros
+    ADD CONSTRAINT mc_registros_foto_antes_id_fkey FOREIGN KEY (foto_antes_id) REFERENCES public.mc_arquivos(id);
+
+
+--
+-- Name: mc_registros mc_registros_foto_depois_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_registros
+    ADD CONSTRAINT mc_registros_foto_depois_id_fkey FOREIGN KEY (foto_depois_id) REFERENCES public.mc_arquivos(id);
+
+
+--
+-- Name: mc_registros mc_registros_registrado_por_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mc_registros
+    ADD CONSTRAINT mc_registros_registrado_por_fkey FOREIGN KEY (registrado_por) REFERENCES public.mc_usuarios(id);
 
 
 --

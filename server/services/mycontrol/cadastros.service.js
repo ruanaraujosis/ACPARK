@@ -208,6 +208,15 @@ export async function alterarAtivoCadastro(ator, entidade, id, ativo) {
   return tx(async (client) => {
     const campos = await listarCampos(client, entidade);
     const linha = await carregarParaEditar(client, entidade, id);
+    // Item em uso não é desativado antes de devolvido. A linha já está travada (FOR UPDATE) e o
+    // registro de uso trava a mesma linha (FOR SHARE), então os dois nunca passam juntos.
+    if (!ativo && linha.ativo && entidade !== "colaborador") {
+      const { rows: emUso } = await client.query(
+        "SELECT 1 FROM mc_registros WHERE tipo = $1 AND item_id = $2 AND status = 'EM_USO' AND excluido_em IS NULL LIMIT 1",
+        [entidade, id]
+      );
+      if (emUso[0]) throw erroMc(409, "Este item está em uso. Registre a devolução antes de desativá-lo.");
+    }
     if (linha.ativo !== ativo) {
       await client.query(`UPDATE ${ENTIDADES[entidade].tabela} SET ativo = $2, atualizado_em = now(), atualizado_por = $3 WHERE id = $1`, [id, ativo, ator.id]);
       await registrarAuditoria(client, { ator, acao: `${entidade}.${ativo ? "reativar" : "desativar"}`, entidade, entidadeId: id, antes: { ativo: linha.ativo }, depois: { ativo } });
