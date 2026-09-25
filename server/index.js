@@ -345,6 +345,8 @@ async function api(req, res) {
   if (await handleInventariosRoutes(req, res, { method, requireUser, url, user })) return;
 
   // CRUD de produtos manuais; produtos de origem OMIE não podem ser criados/editados/excluídos aqui
+  // qtd_total é NUMERIC e estoque_central é INTEGER: o mesmo parâmetro nas duas colunas precisa de
+  // cast explícito (::numeric nas duas), senão o Postgres recusa com 42P08 "tipos inconsistentes"
   if (url.pathname === "/api/admin/products") {
     if (!requireUser(req, res, "admin")) return;
     if (method === "GET") {
@@ -363,7 +365,7 @@ async function api(req, res) {
       const inserted = await tx(async (client) => {
         const result = await client.query(
           `INSERT INTO produtos (sku, nome, qtd_total, estoque_central, ativo, categoria, origem)
-           VALUES ($1, $2, $3, $3, TRUE, NULL, 'manual')
+           VALUES ($1, $2, $3::numeric, ($3::numeric)::integer, TRUE, NULL, 'manual')
            ON CONFLICT (sku) DO UPDATE SET
              nome = EXCLUDED.nome,
              qtd_total = EXCLUDED.qtd_total,
@@ -398,7 +400,7 @@ async function api(req, res) {
         : [];
       const updated = await tx(async (client) => {
         const result = await client.query(
-          "UPDATE produtos SET nome = $2, qtd_total = $3, estoque_central = $3, ativo = $4, categoria = $5 WHERE sku = $1 AND COALESCE(origem, 'manual') = 'manual' RETURNING sku",
+          "UPDATE produtos SET nome = $2, qtd_total = $3::numeric, estoque_central = ($3::numeric)::integer, ativo = $4, categoria = $5 WHERE sku = $1 AND COALESCE(origem, 'manual') = 'manual' RETURNING sku",
           [sku, normalizeText(body.nome, 160).toUpperCase(), asInt(body.qtd_total), Boolean(body.ativo), categorias[0] || null]
         );
         if (!result.rows[0]) return [];
@@ -459,7 +461,7 @@ async function api(req, res) {
         if (!sku || !nome) continue;
         await client.query(
           `INSERT INTO produtos (sku, nome, qtd_total, estoque_central, ativo, categoria, origem)
-           VALUES ($1, $2, $3, $3, $4, $5, $6)
+           VALUES ($1, $2, $3::numeric, ($3::numeric)::integer, $4, $5, $6)
            ON CONFLICT (sku) DO UPDATE SET
              nome = EXCLUDED.nome,
              qtd_total = EXCLUDED.qtd_total,
