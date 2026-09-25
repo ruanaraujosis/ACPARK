@@ -16,7 +16,28 @@ const senhaA = "senha-gestor-a";
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAwS2OUAAAAABJRU5ErkJggg==", "base64");
 
 // Atalho para a API do MyControl
-const api = (caminho, opcoes = {}) => chamar(amb.base, `/api/mycontrol${caminho}`, { cookie: cookieA, ...opcoes });
+const api = (caminho, opcoes = {}) => chamar(amb.base, `/api/mycontrol${caminho}`, { cookie: cookieA, ...comObrigatorios(caminho, opcoes) });
+
+// Assinatura e foto de veículo que os testes reaproveitam: a assinatura do colaborador é sempre
+// obrigatória e a foto do veículo nasce obrigatória, mas a maioria dos testes não é sobre elas
+const padroes = {};
+// Completa assinatura (colaborador) e foto (veículo) ausentes num POST de criação
+function comObrigatorios(caminho, opcoes) {
+  const valores = opcoes.corpo?.valores;
+  if (opcoes.method !== "POST" || !valores) return opcoes;
+  if (caminho === "/colaboradores" && !("assinatura" in valores)) return { ...opcoes, corpo: { ...opcoes.corpo, valores: { assinatura: padroes.assinatura, ...valores } } };
+  if (caminho === "/veiculos" && !("foto" in valores)) return { ...opcoes, corpo: { ...opcoes.corpo, valores: { foto: padroes.fotoVeiculo, ...valores } } };
+  return opcoes;
+}
+
+// Envia um PNG e devolve o id do arquivo gravado
+async function subirPng(entidade, papel) {
+  const r = await fetch(`${amb.base}/api/mycontrol/arquivos/${entidade}?papel=${papel}`, { method: "POST", headers: { "Content-Type": "image/png", Cookie: cookieA }, body: PNG });
+  const corpo = await r.json();
+  assert.equal(r.status, 200, JSON.stringify(corpo));
+  return corpo.arquivo.id;
+}
+
 
 // Envia uma imagem crua para a rota de upload
 function enviar(caminho, corpo, { tipo = "image/png", cookie = cookieA } = {}) {
@@ -53,6 +74,8 @@ test.before(async () => {
   assert.equal(primeiro.status, 200);
   cookieA = cookieDe(primeiro.cookies, "mc_session");
   idA = primeiro.dados.usuario.id;
+  padroes.assinatura = await subirPng("colaborador", "assinatura");
+  padroes.fotoVeiculo = await subirPng("veiculo", "foto");
 });
 
 test.after(async () => {
@@ -197,7 +220,26 @@ test("identificador da ferramenta é único sempre (mesmo desativada) e gravado 
 
 // ===== Fotos e assinaturas =====
 
+test("assinatura do colaborador é sempre obrigatória; foto do veículo nasce obrigatória e pode ser desmarcada", async () => {
+  const op = await cargo("Assinante", "ASS");
+  const semAssinatura = await api("/colaboradores", { method: "POST", corpo: { valores: { nome: "Sem assinatura", cargo: op.id, assinatura: null } } });
+  assert.equal(semAssinatura.status, 400, JSON.stringify(semAssinatura.dados));
+  const campos = Object.fromEntries((await api("/campos?entidade=colaborador")).dados.campos.map((c) => [c.chave, c]));
+  assert.equal(campos.assinatura.obrigatorio, true);
+  assert.equal((await api(`/campos/${campos.assinatura.id}`, { method: "PATCH", corpo: { obrigatorio: false } })).status, 400);
+
+  const semFoto = await api("/veiculos", { method: "POST", corpo: { valores: { numero_chave: "F1", nome: "Sem foto", placa: "FOT1234", foto: null } } });
+  assert.equal(semFoto.status, 400, JSON.stringify(semFoto.dados));
+  const vei = Object.fromEntries((await api("/campos?entidade=veiculo")).dados.campos.map((c) => [c.chave, c]));
+  assert.equal(vei.foto.obrigatorio, true);
+  assert.equal((await api(`/campos/${vei.foto.id}`, { method: "PATCH", corpo: { obrigatorio: false } })).status, 200);
+  const agora = await api("/veiculos", { method: "POST", corpo: { valores: { numero_chave: "F1", nome: "Sem foto", placa: "FOT1234", foto: null } } });
+  assert.equal(agora.status, 200, JSON.stringify(agora.dados));
+  await api(`/campos/${vei.foto.id}`, { method: "PATCH", corpo: { obrigatorio: true } });
+});
+
 test("upload exige Content-Type de imagem, confere os bytes e respeita o limite", async () => {
+  const { rows: antes } = await amb.sql("SELECT count(*)::int AS n FROM mc_arquivos");
   assert.equal((await enviar("/arquivos/colaborador", PNG, { tipo: "text/plain" })).status, 415);
   assert.equal((await enviar("/arquivos/colaborador", PNG, { tipo: "application/json" })).status, 415);
   assert.equal((await enviar("/arquivos/colaborador", PNG, { tipo: "multipart/form-data; boundary=x" })).status, 415);
@@ -207,8 +249,9 @@ test("upload exige Content-Type de imagem, confere os bytes e respeita o limite"
   const r = await enviar("/arquivos/colaborador", grande).catch(() => ({ status: 413 }));
   assert.equal(r.status, 413);
   assert.equal((await chamar(amb.base, "/api/health")).status, 200, "o servidor segue no ar");
+  // Nenhum dos envios recusados deixou arquivo gravado
   const { rows } = await amb.sql("SELECT count(*)::int AS n FROM mc_arquivos");
-  assert.equal(rows[0].n, 0);
+  assert.equal(rows[0].n, antes[0].n);
 });
 
 test("foto vai para o storage (sem base64 no banco), com miniatura e acesso só de quem gerencia", async () => {

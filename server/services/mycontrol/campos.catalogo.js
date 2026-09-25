@@ -40,14 +40,16 @@ const CAMPOS_SISTEMA = {
     // Gerada pelo servidor ao criar; nunca vem do formulário nem da API
     { chave: "matricula", rotulo: "Matrícula", tipo: "matricula", coluna: "matricula", travado: true, obrigatorio: true, obrigatorioFixo: true, gerado: true },
     { chave: "cargo", rotulo: "Cargo", tipo: "cargo", coluna: "cargo_id", travado: true, obrigatorio: true, obrigatorioFixo: true },
-    { chave: "assinatura", rotulo: "Assinatura", tipo: "assinatura", coluna: "assinatura_id", travado: true, obrigatorio: false },
+    // Obrigatória e travada: a Fase 3 copia esta assinatura para cada registro de uso
+    { chave: "assinatura", rotulo: "Assinatura", tipo: "assinatura", coluna: "assinatura_id", travado: true, obrigatorio: true, obrigatorioFixo: true },
     { chave: "foto", rotulo: "Foto", tipo: "foto", coluna: "foto_id", travado: false, obrigatorio: false }
   ],
   veiculo: [
     { chave: "numero_chave", rotulo: "Número da chave", tipo: "texto", coluna: "numero_chave", travado: true, obrigatorio: true, obrigatorioFixo: true, max: 20, maiusculo: true },
     { chave: "nome", rotulo: "Nome", tipo: "texto", coluna: "nome", travado: true, obrigatorio: true, obrigatorioFixo: true, max: 120 },
     { chave: "placa", rotulo: "Placa", tipo: "placa", coluna: "placa", travado: true, obrigatorio: true, obrigatorioFixo: true },
-    { chave: "foto", rotulo: "Foto", tipo: "foto", coluna: "foto_id", travado: false, obrigatorio: false },
+    // Nasce obrigatória, mas pode ser desmarcada na tela de Campos
+    { chave: "foto", rotulo: "Foto", tipo: "foto", coluna: "foto_id", travado: false, obrigatorio: true },
     { chave: "descricao", rotulo: "Descrição", tipo: "texto_longo", coluna: "descricao", travado: false, obrigatorio: false }
   ],
   ferramenta: [

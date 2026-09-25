@@ -10,9 +10,32 @@ let amb;
 let cookieA;
 let cargoId;
 const senhaA = "senha-gestor-a";
+// PNG 1x1 válido: as rotas de upload recebem a imagem crua, com Content-Type de imagem
+const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAwS2OUAAAAABJRU5ErkJggg==", "base64");
 
 // Atalho para a API do MyControl com a sessão do gestor
-const api = (caminho, opcoes = {}) => chamar(amb.base, `/api/mycontrol${caminho}`, { cookie: cookieA, ...opcoes });
+const api = (caminho, opcoes = {}) => chamar(amb.base, `/api/mycontrol${caminho}`, { cookie: cookieA, ...comObrigatorios(caminho, opcoes) });
+
+// Assinatura e foto de veículo que os testes reaproveitam: a assinatura do colaborador é sempre
+// obrigatória e a foto do veículo nasce obrigatória, mas a maioria dos testes não é sobre elas
+const padroes = {};
+// Completa assinatura (colaborador) e foto (veículo) ausentes num POST de criação
+function comObrigatorios(caminho, opcoes) {
+  const valores = opcoes.corpo?.valores;
+  if (opcoes.method !== "POST" || !valores) return opcoes;
+  if (caminho === "/colaboradores" && !("assinatura" in valores)) return { ...opcoes, corpo: { ...opcoes.corpo, valores: { assinatura: padroes.assinatura, ...valores } } };
+  if (caminho === "/veiculos" && !("foto" in valores)) return { ...opcoes, corpo: { ...opcoes.corpo, valores: { foto: padroes.fotoVeiculo, ...valores } } };
+  return opcoes;
+}
+
+// Envia um PNG e devolve o id do arquivo gravado
+async function subirPng(entidade, papel) {
+  const r = await fetch(`${amb.base}/api/mycontrol/arquivos/${entidade}?papel=${papel}`, { method: "POST", headers: { "Content-Type": "image/png", Cookie: cookieA }, body: PNG });
+  const corpo = await r.json();
+  assert.equal(r.status, 200, JSON.stringify(corpo));
+  return corpo.arquivo.id;
+}
+
 
 // Campos de uma entidade, por chave
 async function campos(entidade) {
@@ -35,6 +58,8 @@ test.before(async () => {
     corpo: { nome: "Gestor A", usuario: "gestor.a", senha: senhaA, confirmarSenha: senhaA }
   });
   cookieA = cookieDe(primeiro.cookies, "mc_session");
+  padroes.assinatura = await subirPng("colaborador", "assinatura");
+  padroes.fotoVeiculo = await subirPng("veiculo", "foto");
   cargoId = (await api("/cargos", { method: "POST", corpo: { nome: "Operador", abreviacao: "OP" } })).dados.cargo.id;
 });
 
