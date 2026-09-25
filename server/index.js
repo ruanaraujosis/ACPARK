@@ -6,7 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import jwt from "jsonwebtoken";
 import { parse as parseCookie, serialize as serializeCookie } from "cookie";
-import { pool, query, tx, verifyPassword, hashPassword, asInt, code } from "./db.js";
+import { pool, query, tx, verifyPassword, hashPassword, asInt, asQuantidade, code } from "./db.js";
 import { handleEstoqueRoutes } from "./modules/estoque/estoque.routes.js";
 import { syncPdvAllowedProducts } from "./modules/estoque/estoque.service.js";
 import { handlePedidosRoutes } from "./modules/pedidos/pedidos.routes.js";
@@ -346,7 +346,8 @@ async function api(req, res) {
 
   // CRUD de produtos manuais; produtos de origem OMIE não podem ser criados/editados/excluídos aqui
   // qtd_total é NUMERIC e estoque_central é INTEGER: o mesmo parâmetro nas duas colunas precisa de
-  // cast explícito (::numeric nas duas), senão o Postgres recusa com 42P08 "tipos inconsistentes"
+  // cast explícito (::numeric nas duas), senão o Postgres recusa com 42P08 "tipos inconsistentes".
+  // A quantidade aceita fração (asQuantidade); estoque_central, coluna legada, guarda o arredondado
   if (url.pathname === "/api/admin/products") {
     if (!requireUser(req, res, "admin")) return;
     if (method === "GET") {
@@ -356,7 +357,7 @@ async function api(req, res) {
     if (method === "POST") {
       const sku = normalizeText(body.sku, 60);
       const nome = normalizeText(body.nome, 160).toUpperCase();
-      const qty = asInt(body.qtd_total);
+      const qty = asQuantidade(body.qtd_total);
       const categorias = Array.isArray(body.categorias)
         ? [...new Set(body.categorias.map((item) => normalizeText(item, 120).toUpperCase()).filter(Boolean))]
         : [];
@@ -401,7 +402,7 @@ async function api(req, res) {
       const updated = await tx(async (client) => {
         const result = await client.query(
           "UPDATE produtos SET nome = $2, qtd_total = $3::numeric, estoque_central = ($3::numeric)::integer, ativo = $4, categoria = $5 WHERE sku = $1 AND COALESCE(origem, 'manual') = 'manual' RETURNING sku",
-          [sku, normalizeText(body.nome, 160).toUpperCase(), asInt(body.qtd_total), Boolean(body.ativo), categorias[0] || null]
+          [sku, normalizeText(body.nome, 160).toUpperCase(), asQuantidade(body.qtd_total), Boolean(body.ativo), categorias[0] || null]
         );
         if (!result.rows[0]) return [];
         await client.query("DELETE FROM produto_categorias WHERE sku_produto = $1", [sku]);
@@ -469,7 +470,7 @@ async function api(req, res) {
              ativo = EXCLUDED.ativo,
              categoria = EXCLUDED.categoria,
              origem = EXCLUDED.origem`,
-          [sku, nome, asInt(item.qtd_total), item.ativo !== false, categoria, origem]
+          [sku, nome, asQuantidade(item.qtd_total), item.ativo !== false, categoria, origem]
         );
         if (categorias.length) {
           await client.query("DELETE FROM produto_categorias WHERE sku_produto = $1", [sku]);

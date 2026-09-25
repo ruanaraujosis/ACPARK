@@ -48,3 +48,20 @@ test("importar produtos em lote grava as duas colunas", async () => {
   const { rows } = await amb.sql("SELECT sku, qtd_total::float AS q, estoque_central AS e FROM produtos WHERE sku LIKE 'IMP-%' ORDER BY sku");
   assert.deepEqual(rows, [{ sku: "IMP-1", q: 3, e: 3 }, { sku: "IMP-2", q: 0, e: 0 }]);
 });
+
+test("quantidade fracionada é aceita no cadastro, na edição e na importação (vírgula ou ponto)", async () => {
+  const criado = await api("/api/admin/products", { method: "POST", corpo: { sku: "KG-1", nome: "Carne kg", qtd_total: "2,5" } });
+  assert.equal(criado.status, 200, JSON.stringify(criado.dados));
+  let { rows } = await amb.sql("SELECT qtd_total::float AS q, estoque_central AS e FROM produtos WHERE sku = 'KG-1'");
+  assert.deepEqual(rows[0], { q: 2.5, e: 3 }, "qtd_total guarda a fração; estoque_central (legado) guarda o arredondado");
+
+  const editado = await api("/api/admin/products", { method: "PATCH", corpo: { sku: "KG-1", nome: "Carne kg", qtd_total: 1.2345, ativo: true } });
+  assert.equal(editado.status, 200, JSON.stringify(editado.dados));
+  ({ rows } = await amb.sql("SELECT qtd_total::float AS q FROM produtos WHERE sku = 'KG-1'"));
+  assert.equal(rows[0].q, 1.235, "arredonda para 3 casas");
+
+  const importado = await api("/api/admin/products/import", { method: "POST", corpo: { items: [{ sku: "KG-2", nome: "Queijo kg", qtd_total: "0.75" }, { sku: "KG-3", nome: "Negativo", qtd_total: -4 }, { sku: "KG-4", nome: "Texto", qtd_total: "abc" }] } });
+  assert.equal(importado.status, 200, JSON.stringify(importado.dados));
+  ({ rows } = await amb.sql("SELECT sku, qtd_total::float AS q FROM produtos WHERE sku IN ('KG-2','KG-3','KG-4') ORDER BY sku"));
+  assert.deepEqual(rows, [{ sku: "KG-2", q: 0.75 }, { sku: "KG-3", q: 0 }, { sku: "KG-4", q: 0 }], "negativo e inválido viram zero");
+});

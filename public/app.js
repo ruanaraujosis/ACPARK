@@ -5,7 +5,7 @@ import { app, state } from "./js/state/app-state.js";
 import { startAutoRefresh, stopAutoRefresh } from "./js/ui/auto-refresh.js";
 import { toast } from "./js/ui/notifications.js";
 import { moneyDate, monthLabel, monthsAgo, pendingReleaseQty, today, weekAgo } from "./js/utils/formatters.js";
-import { parseProductsFile, spreadsheetText } from "./js/utils/spreadsheets.js";
+import { parseProductsFile, spreadsheetText } from "./js/utils/spreadsheets.js?v=20260925-quantidade-fracionada";
 import { uuid } from "./js/utils/uuid.js";
 import {
   activateOrderAlertAudio,
@@ -16,8 +16,8 @@ import {
 } from "./js/services/order-alerts.js";
 import { stopAllOrderAlerts, testOrderAlert } from "./js/services/audio-alert-manager.js";
 // Versão na URL: módulo sem ?v= fica 1h em cache, e um export novo deixaria a tela em branco
-import { ligarQuadroDeAssinatura } from "./js/ui/assinatura.js?v=20260925-mycontrol-fase2";
-import { definirPreferenciasDoPdv, limparAlertasDoPdv, mostrarBotaoDeAtivacaoPdv, mostrarPedidoProntoParaRetirada } from "./js/services/pdv-order-alerts.js?v=20260925-mycontrol-fase2";
+import { ligarQuadroDeAssinatura } from "./js/ui/assinatura.js?v=20260925-quantidade-fracionada";
+import { definirPreferenciasDoPdv, limparAlertasDoPdv, mostrarBotaoDeAtivacaoPdv, mostrarPedidoProntoParaRetirada } from "./js/services/pdv-order-alerts.js?v=20260925-quantidade-fracionada";
 
 let damageDraftItems = [];
 let renderDamageDraftItems;
@@ -5673,7 +5673,7 @@ async function viewProductsV2(options = {}) {
               </div>
               <input name="sku" placeholder="SKU/Código" required />
               <input name="nome" placeholder="Nome" required />
-              <input name="qtd_total" type="number" min="0" value="0" />
+              <input name="qtd_total" type="number" min="0" step="any" inputmode="decimal" value="0" aria-label="Quantidade em estoque (aceita fração, ex.: 2,5)" />
               <select name="ativo">
                 <option value="true">Ativo</option>
                 <option value="false">Inativo</option>
