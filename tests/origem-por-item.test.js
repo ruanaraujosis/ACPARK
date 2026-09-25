@@ -179,3 +179,25 @@ test("Estoque PDVs tem busca e filtro de categoria que só escondem linhas", () 
   // O salvar lê todas as linhas, inclusive as escondidas pelo filtro
   assert.match(tela, /document\.querySelectorAll\("#stock-table tbody tr"\)/);
 });
+
+test("busca de produto por relevância, sem acento e sem cortar nos N primeiros em ordem alfabética", async () => {
+  // Carrega a função de verdade do app.js e roda com um catálogo de exemplo
+  const inicio = app.indexOf("function textoDeBusca(valor)");
+  const fim = app.indexOf("// Categorias de um produto");
+  const codigo = app.slice(inicio, fim);
+  const { ranquearProdutosPorBusca } = new Function(`${codigo}; return { ranquearProdutosPorBusca };`)();
+  const catalogo = [
+    "BATON AO LEITE", "BISC LACTA COOKIE 80G AO LEITE", "BISC.MABEL ROSQUINHA LEITE", "BISC.MIKA SEQUILHO LEITE",
+    "CHOCOLATE AO LEITE 90G", "DOCE DE LEITE 400G", "LEITE CONDENSADO", "LEITE EM PO 400G", "M.P - LEITE", "PAO DE LEITE"
+  ].map((nome, i) => ({ sku: `S${i}`, nome }));
+  const nomes = (busca, limite) => ranquearProdutosPorBusca(catalogo, busca, limite).map((p) => p.nome);
+  assert.equal(nomes("leite", 8)[0], "M.P - LEITE", "nome com a palavra exata e mais curto vem primeiro");
+  assert.equal(nomes("LÉITE", 8)[0], "M.P - LEITE", "acento e caixa não importam");
+  assert.deepEqual(nomes("po leite", 5), ["LEITE EM PO 400G"], "várias palavras, em qualquer ordem");
+  assert.equal(nomes("S3", 3)[0], "BISC.MIKA SEQUILHO LEITE", "SKU exato continua primeiro");
+  // As telas usam a busca comum (sem o corte antigo de 8/12 resultados)
+  assert.doesNotMatch(app, /matchesProduct\(product, term\)\)\.slice\(0, 8\)/);
+  assert.match(app, /const matches = ranquearProdutosPorBusca\(candidates, term, 30\);/);
+  assert.match(app, /return ranquearProdutosPorBusca\(availableProducts, value, 30\);/);
+  assert.match(app, /const achados = ranquearProdutosPorBusca\(itens, termo, itens\.length\);/);
+});
