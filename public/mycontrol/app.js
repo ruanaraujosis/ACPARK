@@ -9,7 +9,7 @@ import { request } from "../js/api/api-client.js";
 import { toast } from "../js/ui/notifications.js";
 import { esc, table } from "../js/ui.js";
 // Mesmo núcleo de assinatura do MyEstoque (avaria e inventário); versão igual à dos assets daqui
-import { ligarQuadroDeAssinatura } from "../js/ui/assinatura.js?v=20260925-mycontrol-fase3";
+import { ligarQuadroDeAssinatura } from "../js/ui/assinatura.js?v=20260928-mycontrol-desktop2";
 
 const app = document.querySelector("#app");
 
@@ -1561,18 +1561,20 @@ function renderRegistrar() {
         <h3 class="text-xl font-black">Registrar uso</h3>
         <p class="text-sm text-slate-500">A data e a hora da saída são registradas pelo sistema no momento em que você salvar.</p>
       </div>
-      <form id="mc-registrar-form" class="mc-form" novalidate>
-        <fieldset class="mc-passo">
+      <form id="mc-registrar-form" class="mc-form mc-registrar-grade" novalidate>
+        <fieldset class="mc-passo mc-passo-item">
           <legend>O que vai sair</legend>
           <div class="mc-segmentado" role="group" aria-label="Tipo">
             ${Object.entries(TIPOS_REGISTRO).map(([id, t]) => `<button class="btn ${id === tipo ? "" : "secondary"}" type="button" data-tipo="${id}" aria-pressed="${id === tipo}">${esc(t.rotulo)}</button>`).join("")}
           </div>
           <div id="mc-escolha-item"></div>
         </fieldset>
-        <fieldset class="mc-passo">
+        <fieldset class="mc-passo mc-passo-colaborador">
           <legend>Quem vai levar</legend>
           ${htmlEscolha("colaborador", "Buscar colaborador", "Nome ou matrícula")}
         </fieldset>
+        <!-- Km, foto e observação: um abaixo do outro no celular, lado a lado no desktop -->
+        <div class="mc-registrar-detalhes">
         <fieldset class="mc-passo" data-so-veiculo>
           <legend>Quilometragem de saída</legend>
           <label class="mc-campo"><span class="mc-rotulo">Km no painel <span class="mc-obrigatorio" aria-label="obrigatório">*</span></span>
@@ -1589,6 +1591,7 @@ function renderRegistrar() {
             <textarea name="observacao" rows="3" maxlength="1000" autocapitalize="sentences"></textarea>
           </label>
         </fieldset>
+        </div>
         <div class="mc-barra-fixa">
           <button class="btn mc-botao-cheio" type="submit">Registrar saída</button>
         </div>

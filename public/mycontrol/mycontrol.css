@@ -600,9 +600,17 @@ html .mc-botao-arquivo input[type="file"] {
 
 /* ===== Fase 3: registro de uso, em uso, histórico e detalhe ===== */
 
-/* Registrar: uma coluna estreita mesmo no desktop (é um formulário de celular) */
+/* Registrar: no celular e no tablet, uma coluna de leitura confortável. No desktop o bloco de
+   "Desktop" no fim deste arquivo abre em duas colunas e usa a tela inteira. */
 .mc-registrar {
   max-width: 44rem;
+}
+
+/* Km, foto e observação: mesmo espaçamento das outras etapas (uma abaixo da outra) */
+.mc-registrar-detalhes {
+  display: grid;
+  gap: 1rem;
+  min-width: 0;
 }
 
 /* Cada etapa do registro num bloco próprio */
@@ -1047,5 +1055,90 @@ html .mc-botao-arquivo input[type="file"] {
   /* Cartões em uma coluna */
   .mc-lista tbody {
     grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ===== Desktop (acima de 1024px) =====
+   O MyControl é mobile-first: tudo acima vale para o celular, e este bloco só EXPANDE para telas
+   largas. É o mesmo corte de 1024px dos outros breakpoints, escrito como min-width porque aqui a
+   regra acrescenta (não restringe) -- não é um breakpoint novo. */
+@media (min-width: 1025px) {
+  /* Conteúdo centralizado com limite de leitura: usa a tela sem esticar linha até a borda */
+  .mc-main {
+    width: min(100%, 1600px);
+    margin-inline: auto;
+  }
+
+  /* Início: atalhos viram blocos grandes em grade */
+  .mc-atalhos {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr));
+  }
+
+  .mc-atalho {
+    min-height: 64px;
+    font-size: 1.02rem;
+  }
+
+  /* Registrar uso: item e colaborador lado a lado; km, foto e observação numa linha abaixo */
+  .mc-registrar {
+    max-width: none;
+  }
+
+  .mc-registrar-grade {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: start;
+  }
+
+  .mc-registrar-detalhes {
+    grid-column: 1 / -1;
+    grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+    align-items: stretch;
+  }
+
+  /* Com espaço sobrando, a lista de resultados mostra mais itens antes de rolar */
+  .mc-registrar .mc-resultados {
+    max-height: 28rem;
+  }
+
+  /* Botão de salvar no rodapé do cartão, alinhado à direita. Continua grudado embaixo enquanto
+     se rola o formulário (sempre visível), mas compacto, sem a barra de largura total do celular */
+  .mc-barra-fixa {
+    grid-column: 1 / -1;
+    display: flex;
+    justify-content: flex-end;
+    margin: 0;
+    padding: 1.25rem 0 calc(0.9rem + env(safe-area-inset-bottom));
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0), #fff 45%);
+  }
+
+  .mc-barra-fixa .btn {
+    width: auto;
+    min-width: 16rem;
+  }
+
+  /* Em uso: cartões em várias colunas, aproveitando a largura */
+  .mc-cartoes-registro {
+    grid-template-columns: repeat(auto-fill, minmax(20rem, 1fr));
+  }
+
+  /* Tabelas no desktop: nome quebra só entre palavras (anywhere encolhia a coluna e partia
+     "manutenção" no meio) */
+  .mc-lista td .mc-nome {
+    overflow-wrap: break-word;
+  }
+
+  .mc-lista .mc-col-nome {
+    min-width: 12rem;
+  }
+
+  /* Detalhe do registro: seções lado a lado em até três colunas */
+  .mc-detalhe-grade {
+    grid-template-columns: repeat(auto-fit, minmax(22rem, 1fr));
+  }
+
+  /* Formulários em modal com mais campos lado a lado */
+  .mc-form-grade {
+    grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
   }
 }
