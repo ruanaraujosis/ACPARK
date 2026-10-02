@@ -286,7 +286,7 @@ O sistema tem um aplicativo desktop próprio, feito em Electron, em `desktop-app
 
 ### Instalar num computador (Almoxarifado ou PDV)
 
-1. Copie `desktop-app/dist/MyEstoque Setup 1.0.0.exe` para o computador.
+1. Copie `desktop-app/dist/MyEstoque Setup 1.1.0.exe` para o computador. Por cima de uma versão anterior, ele atualiza sem perder o endereço do servidor configurado.
 2. Execute e siga o instalador (permite escolher a pasta; cria atalho na área de trabalho e no menu Iniciar).
 3. Abra o **MyEstoque** pelo atalho. Na primeira execução ele já aponta para `http://192.168.1.207:5173`.
 4. Se o endereço do servidor for outro, use o menu **Sistema → Configurar endereço do servidor**. A configuração fica salva por computador.
@@ -295,7 +295,8 @@ O mesmo instalador serve para todas as máquinas — inclusive a do Almoxarifado
 
 ### Recursos do app
 
-- Menu **Sistema**: Recarregar (F5), Imprimir (Ctrl+P, para os pedidos), Configurar endereço do servidor, Sair.
+- Dois atalhos: **MyEstoque** abre o sistema de estoque e **MyControl** abre direto o controle de veículos e ferramentas (`/mycontrol`). É o mesmo executável; o atalho do MyControl passa o argumento `--mycontrol` (criado por `desktop-app/instalador.nsh`, que também o remove na desinstalação).
+- Menu **Sistema**: Recarregar (F5, recarrega a página em que você está, seja MyEstoque ou MyControl), Imprimir (Ctrl+P, para os pedidos), Configurar endereço do servidor, Sair.
 - Menu **Exibir**: zoom, tela cheia, ferramentas do desenvolvedor (F12) para diagnóstico.
 - Se o servidor estiver fora do ar ou o IP tiver mudado, aparece uma tela explicando o problema, com botões para tentar de novo ou corrigir o endereço — em vez de um erro técnico de navegador.
 - A comunicação em tempo real (alertas de pedido via SSE) funciona igual ao navegador, já que o app roda sobre Chromium.

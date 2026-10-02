@@ -39,9 +39,11 @@ test("estoque_pdv continua sendo a permissão — o que muda é o crédito", () 
 });
 
 test("o perfil é consultado uma vez por pedido, não por item", () => {
-  const bloco = pedidos.slice(pedidos.indexOf('"/api/admin/order-withdrawal"'));
+  // Desde 23/09/2026 a movimentação da retirada mora em baixarEstoqueDaRetirada (usada também
+  // pela transferência rápida); o laço que importa é o da baixa, não o de validação da origem
+  const bloco = pedidos.slice(pedidos.indexOf("async function baixarEstoqueDaRetirada"));
   const posConsulta = bloco.indexOf("const administrativos = await pdvsAdministrativos(client");
-  const posLaco = bloco.indexOf("for (const row of targetRows)");
+  const posLaco = bloco.indexOf("for (const row of targetRows)", bloco.indexOf("// Baixa definitiva"));
   assert.ok(posConsulta > -1 && posConsulta < posLaco, "a consulta precisa vir antes do laço");
 });
 

@@ -121,7 +121,8 @@ assert.match(app, /save-release-draft/);
 assert.match(app, /add-almox-product/);
 assert.match(app, /data-selected-count/);
 // Na leitura, Liberado precisa ser a última coluna: é dela que o comprovante lê as quantidades
-assert.match(app, /\["Produto", "Estoque central", "Solicitado", "Liberado"\]/);
+// (a coluna Origem entrou em 24/09/2026, antes do estoque; Liberado continua a última)
+assert.match(app, /\["Produto", "Origem", "Estoque central", "Solicitado", "Liberado"\]/);
 
 // Layout do painel: cabeçalho, corpo rolável e rodapé fixo em tela cheia
 assert.match(styles, /body\.has-order-panel \{\s*overflow: hidden;/);

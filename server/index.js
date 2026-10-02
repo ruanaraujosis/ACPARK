@@ -1,11 +1,12 @@
 ﻿import "./env.js";
+import { origemInformada, validarOrigem } from "./services/pedidos/origem-estoque.service.js";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import jwt from "jsonwebtoken";
 import { parse as parseCookie, serialize as serializeCookie } from "cookie";
-import { pool, query, tx, verifyPassword, hashPassword, asInt, code } from "./db.js";
+import { pool, query, tx, verifyPassword, hashPassword, asInt, asQuantidade, code } from "./db.js";
 import { handleEstoqueRoutes } from "./modules/estoque/estoque.routes.js";
 import { syncPdvAllowedProducts } from "./modules/estoque/estoque.service.js";
 import { handlePedidosRoutes } from "./modules/pedidos/pedidos.routes.js";
@@ -16,9 +17,14 @@ import { handleOrderAlertRoutes } from "./modules/order-alerts/order-alerts.rout
 import { handleBackupRoutes } from "./modules/backup/backup.routes.js";
 import { handleSetupRoutes } from "./modules/setup/setup.routes.js";
 import { handleInventariosRoutes } from "./modules/inventarios/inventarios.routes.js";
+import { ehRotaMyControl, handleMyControlRoutes } from "./modules/mycontrol/mycontrol.routes.js";
+import { configurarSessaoMc, MC_AUDIENCE } from "./services/mycontrol/sessao.js";
 import { ensurePdvAdministrativoColumn } from "./services/pdvs/pdv-administrativo.service.js";
 import { executarTick, iniciarAgendador } from "./services/integrations/core/scheduler.js";
 import { comprimirSePossivel, marcarSuporteGzip, normalizeCategories, normalizeCategoryList, normalizeText, readBody, send } from "./utils/http.js";
+import { MENSAGEM_ERRO_INTERNO, mensagemPublica, respostaDeErro } from "./utils/erros.js";
+// Limite de tentativas de senha por IP, compartilhado por login, MyControl e reconfirmações de senha
+import { ipDaRequisicao, isLoginRateLimited, registerLoginFailure } from "./utils/limite-login.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
@@ -49,12 +55,21 @@ const mime = {
 };
 
 
-// Decodifica e valida o cookie de sessão (JWT); retorna null se ausente ou inválido
+// Token emitido para o MyControl? (aud "mycontrol", como texto ou dentro de uma lista)
+function ehTokenDoMyControl(payload) {
+  const aud = payload?.aud;
+  return aud === MC_AUDIENCE || (Array.isArray(aud) && aud.includes(MC_AUDIENCE));
+}
+
+// Decodifica e valida o cookie de sessão (JWT); retorna null se ausente ou inválido.
+// Recusa token do MyControl: as rotas abaixo do portão só exigem "estar logado", então um
+// token do MyControl colocado no cookie `session` não pode abrir o MyEstoque.
 function sessionFrom(req) {
   const cookies = parseCookie(req.headers.cookie || "");
   if (!cookies.session) return null;
   try {
-    return jwt.verify(cookies.session, jwtSecret);
+    const payload = jwt.verify(cookies.session, jwtSecret);
+    return ehTokenDoMyControl(payload) ? null : payload;
   } catch {
     return null;
   }
@@ -134,9 +149,13 @@ async function runAutoOrders() {
       // Evita duplicar pedido automático já pendente/em andamento para o mesmo produto no PDV
       await client.query(
         `INSERT INTO pedidos
-          (codigo_pedido, solicitante, pdv_id, sku_produto, quantidade_solicitada, quantidade_liberada, status, observacao)
-         VALUES ($1, 'AUTO PEDIDO', $2, $3, $4, 0, 'Pendente', 'Gerado automaticamente por estoque minimo')`,
-        [code("AUTO"), item.pdv_id, item.sku_produto, item.estoque_maximo - item.quantidade]
+          (codigo_pedido, solicitante, pdv_id, sku_produto, quantidade_solicitada, quantidade_liberada, status, observacao,
+           local_origem_pdv_id)
+         VALUES ($1, 'AUTO PEDIDO', $2, $3, $4, 0, 'Pendente', 'Gerado automaticamente por estoque minimo',
+                 (SELECT local_estoque_padrao_pdv_id FROM pdvs WHERE id = $2))`,
+        // Math.ceil: estoque_pdv.quantidade é NUMERIC (saldo fracionário) e quantidade_solicitada
+        // é inteira -- 10 - 2,5 = 7,5 seria recusado pelo banco; pede o suficiente para chegar ao máximo
+        [code("AUTO"), item.pdv_id, item.sku_produto, Math.ceil(Number(item.estoque_maximo) - Number(item.quantidade))]
       );
     }
   });
@@ -171,36 +190,21 @@ async function listarProdutosComCategorias({ somenteAtivos = false, colunasReduz
   });
 }
 
-// Limite de tentativas de login por IP: protege contra forca bruta de senha
-const LOGIN_MAX_ATTEMPTS = 8;
-const LOGIN_WINDOW_MS = 5 * 60 * 1000;
-const loginAttempts = new Map();
-
-// Verifica se o IP estourou o limite de tentativas de login na janela atual
-function isLoginRateLimited(ip) {
-  const entry = loginAttempts.get(ip);
-  if (!entry) return false;
-  if (Date.now() - entry.firstAttemptAt > LOGIN_WINDOW_MS) {
-    loginAttempts.delete(ip);
-    return false;
-  }
-  return entry.count >= LOGIN_MAX_ATTEMPTS;
-}
-
-// Registra uma tentativa de login falha para o IP
-function registerLoginFailure(ip) {
-  const entry = loginAttempts.get(ip);
-  if (!entry || Date.now() - entry.firstAttemptAt > LOGIN_WINDOW_MS) {
-    loginAttempts.set(ip, { count: 1, firstAttemptAt: Date.now() });
-    return;
-  }
-  entry.count += 1;
-}
+// O MyControl usa o mesmo segredo de base (derivado lá), as mesmas opções de cookie e o mesmo
+// limite de tentativas de login por IP do MyEstoque
+configurarSessaoMc({ jwtSecret, sessionCookieOptions, isLoginRateLimited, registerLoginFailure });
 
 // Roteador principal das rotas /api/*; delega para os handlers de cada módulo
 async function api(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const method = req.method || "GET";
+
+  // MyControl: tratado ANTES de tudo e principalmente antes do portão de sessão do MyEstoque
+  // (não exige o cookie `session` nem roda processAutoOrders). Sessão e permissões próprias.
+  if (ehRotaMyControl(url.pathname)) {
+    await handleMyControlRoutes(req, res, { method, url });
+    return;
+  }
 
   if (url.pathname === "/api/auth/me") {
     return send(res, 200, { user: sessionFrom(req) });
@@ -214,7 +218,7 @@ async function api(req, res) {
 
   // Login por perfil: admin usa senha única do almoxarifado; PDV usa senha própria do ponto
   if (url.pathname === "/api/auth/login" && method === "POST") {
-    const ip = req.socket.remoteAddress || "desconhecido";
+    const ip = ipDaRequisicao(req);
     if (isLoginRateLimited(ip)) {
       return send(res, 429, { error: "Muitas tentativas de login. Aguarde alguns minutos e tente novamente." });
     }
@@ -318,6 +322,9 @@ async function api(req, res) {
   if (await handleInventariosRoutes(req, res, { method, requireUser, url, user })) return;
 
   // CRUD de produtos manuais; produtos de origem OMIE não podem ser criados/editados/excluídos aqui
+  // qtd_total é NUMERIC e estoque_central é INTEGER: o mesmo parâmetro nas duas colunas precisa de
+  // cast explícito (::numeric nas duas), senão o Postgres recusa com 42P08 "tipos inconsistentes".
+  // A quantidade aceita fração (asQuantidade); estoque_central, coluna legada, guarda o arredondado
   if (url.pathname === "/api/admin/products") {
     if (!requireUser(req, res, "admin")) return;
     if (method === "GET") {
@@ -327,7 +334,7 @@ async function api(req, res) {
     if (method === "POST") {
       const sku = normalizeText(body.sku, 60);
       const nome = normalizeText(body.nome, 160).toUpperCase();
-      const qty = asInt(body.qtd_total);
+      const qty = asQuantidade(body.qtd_total);
       const categorias = Array.isArray(body.categorias)
         ? [...new Set(body.categorias.map((item) => normalizeText(item, 120).toUpperCase()).filter(Boolean))]
         : [];
@@ -336,7 +343,7 @@ async function api(req, res) {
       const inserted = await tx(async (client) => {
         const result = await client.query(
           `INSERT INTO produtos (sku, nome, qtd_total, estoque_central, ativo, categoria, origem)
-           VALUES ($1, $2, $3, $3, TRUE, NULL, 'manual')
+           VALUES ($1, $2, $3::numeric, ($3::numeric)::integer, TRUE, NULL, 'manual')
            ON CONFLICT (sku) DO UPDATE SET
              nome = EXCLUDED.nome,
              qtd_total = EXCLUDED.qtd_total,
@@ -371,8 +378,8 @@ async function api(req, res) {
         : [];
       const updated = await tx(async (client) => {
         const result = await client.query(
-          "UPDATE produtos SET nome = $2, qtd_total = $3, estoque_central = $3, ativo = $4, categoria = $5 WHERE sku = $1 AND COALESCE(origem, 'manual') = 'manual' RETURNING sku",
-          [sku, normalizeText(body.nome, 160).toUpperCase(), asInt(body.qtd_total), Boolean(body.ativo), categorias[0] || null]
+          "UPDATE produtos SET nome = $2, qtd_total = $3::numeric, estoque_central = ($3::numeric)::integer, ativo = $4, categoria = $5 WHERE sku = $1 AND COALESCE(origem, 'manual') = 'manual' RETURNING sku",
+          [sku, normalizeText(body.nome, 160).toUpperCase(), asQuantidade(body.qtd_total), Boolean(body.ativo), categorias[0] || null]
         );
         if (!result.rows[0]) return [];
         await client.query("DELETE FROM produto_categorias WHERE sku_produto = $1", [sku]);
@@ -432,7 +439,7 @@ async function api(req, res) {
         if (!sku || !nome) continue;
         await client.query(
           `INSERT INTO produtos (sku, nome, qtd_total, estoque_central, ativo, categoria, origem)
-           VALUES ($1, $2, $3, $3, $4, $5, $6)
+           VALUES ($1, $2, $3::numeric, ($3::numeric)::integer, $4, $5, $6)
            ON CONFLICT (sku) DO UPDATE SET
              nome = EXCLUDED.nome,
              qtd_total = EXCLUDED.qtd_total,
@@ -440,7 +447,7 @@ async function api(req, res) {
              ativo = EXCLUDED.ativo,
              categoria = EXCLUDED.categoria,
              origem = EXCLUDED.origem`,
-          [sku, nome, asInt(item.qtd_total), item.ativo !== false, categoria, origem]
+          [sku, nome, asQuantidade(item.qtd_total), item.ativo !== false, categoria, origem]
         );
         if (categorias.length) {
           await client.query("DELETE FROM produto_categorias WHERE sku_produto = $1", [sku]);
@@ -477,6 +484,7 @@ async function api(req, res) {
       await ensurePdvAdministrativoColumn();
       return send(res, 200, { pdvs: await query(`
         SELECT p.id, p.nome, p.codigo_orion, p.is_cozinha, p.administrativo, p.categoria,
+               p.local_estoque_padrao_pdv_id,
                COALESCE(ARRAY(
                  SELECT pc.categoria
                  FROM pdv_categorias pc
@@ -556,6 +564,19 @@ async function api(req, res) {
             error: `Este PDV ainda tem ${Number(saldo[0].total)} unidade(s) em estoque. A regra de baixa do saldo ao virar administrativo está em definição — zere o estoque por inventário antes de trocar o perfil.`
           });
         }
+      }
+
+      // Local de estoque padrão: de onde saem os pedidos NOVOS deste PDV (NULL = Almoxarifado).
+      // Só é tocado quando vem no corpo -- uma tela antiga sem o campo não apaga o padrão.
+      if (body.local_estoque_padrao_pdv_id !== undefined) {
+        const padrao = origemInformada(body.local_estoque_padrao_pdv_id);
+        try {
+          await tx((client) => validarOrigem(client, { origemPdvId: padrao, destinoPdvId: pdvId }));
+        } catch (error) {
+          if (!error.statusCode) console.error(error);
+          return send(res, error.statusCode || 400, { error: mensagemPublica(error) });
+        }
+        await query("UPDATE pdvs SET local_estoque_padrao_pdv_id = $2 WHERE id = $1", [pdvId, padrao]);
       }
 
       await query("UPDATE pdvs SET nome = $2, codigo_orion = $3, is_cozinha = $4, administrativo = $5, categoria = $6 WHERE id = $1", [
@@ -823,8 +844,17 @@ async function api(req, res) {
       if (nextPassword.length < 4) return send(res, 400, { error: "A nova senha deve ter pelo menos 4 caracteres." });
       if (!confirmPassword) return send(res, 400, { error: "Confirme a nova senha do almoxarifado." });
       if (nextPassword !== confirmPassword) return send(res, 400, { error: "A confirmação da senha não confere." });
+      // Conferir a senha atual também conta no limite de tentativas: senão daria para testar
+      // senhas sem limite por aqui com uma sessão de admin esquecida aberta
+      const ip = ipDaRequisicao(req);
+      if (isLoginRateLimited(ip)) {
+        return send(res, 429, { error: "Muitas tentativas de senha. Aguarde alguns minutos e tente novamente." });
+      }
       const rows = await query("SELECT valor FROM configuracoes WHERE chave = 'senha_almoxarifado'");
-      if (!rows[0] || !verifyPassword(currentPassword, rows[0].valor)) return send(res, 401, { error: "Senha atual incorreta." });
+      if (!rows[0] || !verifyPassword(currentPassword, rows[0].valor)) {
+        registerLoginFailure(ip);
+        return send(res, 401, { error: "Senha atual incorreta." });
+      }
       if (verifyPassword(nextPassword, rows[0].valor)) return send(res, 400, { error: "A nova senha deve ser diferente da senha atual." });
       await query(
         `INSERT INTO configuracoes (chave, valor) VALUES ('senha_almoxarifado', $1)
@@ -880,19 +910,38 @@ function comprimirEstatico(res, caminho, extensao, conteudo) {
   return { corpo, headers };
 }
 
-// Serve arquivos estáticos de /public; cai para index.html (SPA) quando o arquivo não existe
+// O caminho pertence à página do MyControl (/mycontrol ou /mycontrol/...)?
+function ehPaginaMyControl(pathname) {
+  return pathname === "/mycontrol" || pathname.startsWith("/mycontrol/");
+}
+
+// Serve arquivos estáticos de /public; cai para o index.html (SPA) quando o arquivo não existe.
+// /mycontrol e /mycontrol/* sem arquivo caem no index.html do MyControl; o resto, no do MyEstoque.
 function serveStatic(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
-  const requested = url.pathname === "/" ? "/index.html" : decodeURIComponent(url.pathname);
+  let requested;
+  try {
+    requested = url.pathname === "/" ? "/index.html" : decodeURIComponent(url.pathname);
+  } catch {
+    // %-encoding quebrado (ex.: "/%E0%A4%A") não é caminho válido
+    res.writeHead(400);
+    return res.end("Bad request");
+  }
+  if (requested === "/mycontrol" || requested === "/mycontrol/") requested = "/mycontrol/index.html";
   const file = path.normalize(path.join(publicDir, requested));
-  // Impede path traversal para fora da pasta public
-  if (!file.startsWith(publicDir)) {
+  // Impede path traversal para fora da pasta public. path.relative em vez de startsWith: uma
+  // pasta vizinha com o mesmo prefixo (public-algo) passaria num startsWith de texto cru.
+  const relativo = path.relative(publicDir, file);
+  if (relativo.startsWith("..") || path.isAbsolute(relativo)) {
     res.writeHead(403);
     return res.end("Forbidden");
   }
+  const indexDaSpa = ehPaginaMyControl(url.pathname)
+    ? path.join(publicDir, "mycontrol", "index.html")
+    : path.join(publicDir, "index.html");
   fs.readFile(file, (error, content) => {
     if (error) {
-      fs.readFile(path.join(publicDir, "index.html"), (fallbackError, fallback) => {
+      fs.readFile(indexDaSpa, (fallbackError, fallback) => {
         if (fallbackError) {
           res.writeHead(404);
           return res.end("Not found");
@@ -944,12 +993,11 @@ export async function handler(req, res) {
 
   if (req.url?.startsWith("/api/")) {
     api(req, res).catch((error) => {
+      // Detalhe técnico (SQL, caminho de arquivo, conexão) fica só no log do serviço
       console.error(error);
-      send(res, error.statusCode || 500, {
-        error: error.code || error.message || "Erro interno.",
-        message: error.message || "Erro interno.",
-        existingRequest: error.existingRequest || null
-      });
+      if (res.headersSent) return res.end();
+      const { status, corpo } = respostaDeErro(error);
+      send(res, status, corpo);
     });
   } else {
     serveStatic(req, res);
@@ -960,7 +1008,8 @@ export async function handler(req, res) {
 http.createServer((req, res) => {
   handler(req, res).catch((error) => {
     console.error(error);
-    send(res, 500, { error: error.message || "Erro interno." });
+    if (res.headersSent) return res.end();
+    send(res, 500, { error: MENSAGEM_ERRO_INTERNO, message: MENSAGEM_ERRO_INTERNO });
   });
 }).listen(port, () => {
   console.log(`MyEstoque web rodando em http://localhost:${port}`);

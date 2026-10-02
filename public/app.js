@@ -5,7 +5,7 @@ import { app, state } from "./js/state/app-state.js";
 import { startAutoRefresh, stopAutoRefresh } from "./js/ui/auto-refresh.js";
 import { toast } from "./js/ui/notifications.js";
 import { moneyDate, monthLabel, monthsAgo, pendingReleaseQty, today, weekAgo } from "./js/utils/formatters.js";
-import { parseProductsFile, spreadsheetText } from "./js/utils/spreadsheets.js";
+import { parseProductsFile, spreadsheetText } from "./js/utils/spreadsheets.js?v=20260925-quantidade-fracionada";
 import { uuid } from "./js/utils/uuid.js";
 import {
   activateOrderAlertAudio,
@@ -14,6 +14,10 @@ import {
   startOrderAlerts,
   stopOrderAlerts
 } from "./js/services/order-alerts.js";
+import { stopAllOrderAlerts, testOrderAlert } from "./js/services/audio-alert-manager.js";
+// Versão na URL: módulo sem ?v= fica 1h em cache, e um export novo deixaria a tela em branco
+import { ligarQuadroDeAssinatura } from "./js/ui/assinatura.js?v=20260925-quantidade-fracionada";
+import { definirPreferenciasDoPdv, limparAlertasDoPdv, mostrarBotaoDeAtivacaoPdv, mostrarPedidoProntoParaRetirada } from "./js/services/pdv-order-alerts.js?v=20260925-quantidade-fracionada";
 
 let damageDraftItems = [];
 let renderDamageDraftItems;
@@ -99,6 +103,9 @@ function shell(content, actions = "") {
       ? [["painel", "Painel do setor"], ["order", "Novo pedido"], ["mine", "Meus pedidos"], ["inventario", "Inventário"], ["damage-return", "Nova devolução de avaria"]]
       : [["order", "Novo pedido"], ["mine", "Meus pedidos"], ["my-stock", "Meu estoque"], ["inventario", "Inventário"], ["damage-return", "Nova devolução de avaria"]];
 
+  // Só o Almoxarifado vê, no cabeçalho, o botão que abre o MyControl (mesma janela, sem target).
+  // PDV não vê o botão, mas /mycontrol segue acessível: o acesso de verdade é o login do MyControl.
+
   app.innerHTML = `
     <div class="app-shell min-h-screen">
       <nav class="site-topbar sticky top-0 z-30">
@@ -111,6 +118,7 @@ function shell(content, actions = "") {
             </div>
           </div>
           <div class="menu-wrap">
+            ${role === "admin" ? `<a class="troca-sistema" href="/mycontrol" title="Abrir o MyControl" aria-label="Abrir o MyControl"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 8h13l-3.5-3.5"/><path d="M20 16H7l3.5 3.5"/></svg><span>MyControl</span></a>` : ""}
             <button class="menu-toggle" id="menu-toggle" type="button" aria-label="Abrir menu" aria-expanded="false">
               <span></span>
               <span></span>
@@ -314,6 +322,11 @@ function orderReleasedItems(group = []) {
   return group.filter((item) => Number(item.quantidade_liberada || 0) > 0);
 }
 
+// Quantos produtos diferentes há no pedido (partes de um item dividido contam uma vez)
+function contarProdutosDistintos(group = []) {
+  return new Set(group.map((item) => item.sku_produto || item.sku || item.id)).size;
+}
+
 // Calcula o valor de estoque central de um item
 function centralStockValue(item = {}) {
   const value = item.estoque_central ?? item.saldo ?? item.qtd_total ?? 0;
@@ -433,9 +446,12 @@ async function route(view) {
         }
       });
     } else {
-      stopOrderAlerts();
+      // Sem stopOrderAlerts() aqui: ele parava o som e apagava o cartão do PDV a cada troca de
+      // tela. O alerta do Almoxarifado já é desligado no logout, único jeito de virar PDV na aba.
       // Canal so do PDV: o de alertas de pedido e do Almoxarifado e transmite tudo a todos
       conectarEventosDoPdv();
+      // O PDV também recebe alerta sonoro; o navegador só libera o som depois de um clique
+      mostrarBotaoDeAtivacaoPdv();
     }
   } catch (error) {
     console.error(`Erro ao carregar a tela ${view}:`, error);
@@ -448,6 +464,171 @@ async function route(view) {
 }
 
 // View de criação/edição de pedidos (PDV)
+// ===== Peças compartilhadas entre "Novo pedido" (PDV) e "Transferência rápida" (Almoxarifado) =====
+// As duas telas montam carrinho, busca de produto e lista de disponíveis do mesmo jeito; o HTML
+// mora aqui para elas não divergirem de novo. Os ids levam um prefixo por tela.
+
+// Texto sem acento e em minúsculas, para a busca não depender de "é" ou "E"
+function textoDeBusca(valor) {
+  return String(valor || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+}
+
+// Busca de produto por relevância. Antes cortava nos N primeiros em ordem alfabética: "leite"
+// trazia BATON AO LEITE, BISC... e nunca chegava em "M.P - LEITE" (visto em 25/09/2026).
+// Todas as palavras digitadas precisam aparecer (em qualquer ordem, no SKU, nome ou categoria);
+// a ordem é: SKU exato, SKU começando, nome com a palavra exata, nome começando, palavra
+// começando, o resto -- e no empate o nome mais curto primeiro (o mais "direto").
+function ranquearProdutosPorBusca(produtos, busca, limite = 30) {
+  const termo = textoDeBusca(busca);
+  if (!termo) return [];
+  const termos = termo.split(/\s+/).filter(Boolean);
+  return produtos
+    .map((produto) => {
+      const sku = textoDeBusca(produto.sku);
+      const nome = textoDeBusca(produto.nome);
+      const texto = `${sku} ${nome} ${textoDeBusca(produto.categoria)}`;
+      if (!termos.every((parte) => texto.includes(parte))) return null;
+      const palavras = nome.split(/[^a-z0-9]+/).filter(Boolean);
+      const pontos = sku === termo ? 0
+        : sku.startsWith(termo) ? 1
+          : termos.every((parte) => palavras.includes(parte)) ? 2
+            : nome.startsWith(termo) ? 3
+              : termos.every((parte) => palavras.some((palavra) => palavra.startsWith(parte))) ? 4
+                : 5;
+      return { produto, pontos, tamanho: nome.length };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.pontos - b.pontos || a.tamanho - b.tamanho || String(a.produto.nome).localeCompare(String(b.produto.nome), "pt-BR"))
+    .slice(0, limite)
+    .map((entrada) => entrada.produto);
+}
+
+// Categorias de um produto ("A, B" -> ["A", "B"])
+function categoriasDoProduto(produto) {
+  return String(produto.categoria || "").split(",").map((c) => c.trim()).filter(Boolean);
+}
+const rotuloDoProduto = (produto) => `${produto.sku} - ${produto.nome}`;
+const buscaDoProduto = (produto) => `${produto.sku} ${produto.nome} ${produto.categoria || ""}`.toLowerCase();
+
+// Painel "Adicionar produto": busca por nome/SKU com sugestões, quantidade e botão Adicionar
+function htmlPainelAdicionarProduto({ prefixo, titulo, produtos, detalheDoProduto, vazio, passo = "" }) {
+  return `
+    <section class="category-settings order-add-panel">
+      <div>
+        <p class="eyebrow">Adicionar produto</p>
+        <h4>${esc(titulo)}</h4>
+      </div>
+      <div class="category-product-tools order-product-tools">
+        <div class="category-product-picker">
+          <label class="category-add-label" for="${prefixo}-product-search">Produto</label>
+          <input id="${prefixo}-product-search" class="category-add-product-search" type="search" placeholder="Digite o nome ou SKU do produto" autocomplete="off" />
+          <input id="${prefixo}-product-sku" type="hidden" />
+          <div class="category-product-suggestions hidden" id="${prefixo}-product-suggestions">
+            ${produtos.map((produto) => `
+              <button class="category-product-suggestion ${prefixo}-product-suggestion" type="button" data-sku="${esc(produto.sku)}" data-label="${esc(rotuloDoProduto(produto))}" data-search="${esc(buscaDoProduto(produto))}">
+                <strong>${esc(produto.nome)}</strong>
+                <span>${detalheDoProduto(produto)}</span>
+              </button>`).join("") || `<p class="text-sm text-slate-500">${esc(vazio)}</p>`}
+          </div>
+        </div>
+        <input id="${prefixo}-product-quantity" type="number" min="1" ${passo ? `step="${passo}"` : ""} value="1" aria-label="Quantidade" />
+        <button class="btn secondary" id="add-${prefixo}-product" type="button">Adicionar</button>
+      </div>
+    </section>`;
+}
+
+// Cartão do carrinho: lista, ações secundárias e o botão principal de largura total
+function htmlCartaoCarrinho({ idLista, extraCabecalho = "", acoes, botaoPrincipal }) {
+  return `
+    <div class="category-product-list order-cart-list">
+      <div class="category-product-list-head">
+        <strong>Carrinho</strong>
+        ${extraCabecalho}
+      </div>
+      <div id="${idLista}"></div>
+      <div class="order-draft-actions">${acoes}</div>
+      ${botaoPrincipal}
+    </div>`;
+}
+
+// Cartão "Produtos disponíveis": busca, filtro de categoria e a tabela
+function htmlCartaoProdutosDisponiveis({ prefixo, categorias }) {
+  return `
+    <section class="card category-product-list order-available-card">
+      <div class="category-product-list-head">
+        <strong>Produtos disponíveis</strong>
+        <div class="order-available-filters">
+          <input class="category-product-search" id="${prefixo}-product-search" type="search" placeholder="Pesquisar produto" />
+          <select id="${prefixo}-category-filter" aria-label="Filtrar por categoria">
+            <option value="">Todas as categorias</option>
+            ${categorias.map((categoria) => `<option value="${esc(categoria.toLowerCase())}">${esc(categoria)}</option>`).join("")}
+          </select>
+        </div>
+      </div>
+      <div class="category-product-table" id="${prefixo}-products"></div>
+    </section>`;
+}
+
+// Liga a busca com sugestões do painel "Adicionar produto"; chama aoAdicionar(sku, quantidade)
+function ligarSeletorDeProduto(prefixo, aoAdicionar) {
+  const campo = document.querySelector(`#${prefixo}-product-search`);
+  const sku = document.querySelector(`#${prefixo}-product-sku`);
+  const sugestoes = document.querySelector(`#${prefixo}-product-suggestions`);
+  const quantidade = document.querySelector(`#${prefixo}-product-quantity`);
+  if (!campo || !sku || !sugestoes) return;
+  // Cada sugestão vira um "produto" para a mesma busca por relevância das outras telas; a ordem
+  // de exibição vem da propriedade CSS order (a lista é grid), sem redesenhar os itens
+  const itens = [...document.querySelectorAll(`.${prefixo}-product-suggestion`)].map((item) => ({
+    item,
+    sku: item.dataset.sku,
+    nome: item.querySelector("strong")?.textContent || "",
+    categoria: item.dataset.search
+  }));
+  campo.addEventListener("input", () => {
+    const termo = String(campo.value || "").trim().toLowerCase();
+    if (campo.dataset.selectedLabel !== campo.value) sku.value = "";
+    const achados = ranquearProdutosPorBusca(itens, termo, itens.length);
+    const posicao = new Map(achados.map((achado, indice) => [achado.item, indice]));
+    itens.forEach(({ item }) => {
+      const mostrar = posicao.has(item);
+      item.classList.toggle("hidden", !mostrar);
+      item.style.order = mostrar ? String(posicao.get(item)) : "";
+    });
+    const visiveis = achados.length;
+    sugestoes.classList.toggle("hidden", termo.length === 0 || visiveis === 0);
+    if (!termo) sku.value = "";
+  });
+  document.querySelectorAll(`.${prefixo}-product-suggestion`).forEach((item) => item.addEventListener("click", () => {
+    campo.value = item.dataset.label || "";
+    campo.dataset.selectedLabel = campo.value;
+    sku.value = item.dataset.sku || "";
+    sugestoes.classList.add("hidden");
+  }));
+  document.querySelector(`#add-${prefixo}-product`)?.addEventListener("click", () => {
+    aoAdicionar(sku.value, quantidade?.value);
+    campo.value = "";
+    campo.dataset.selectedLabel = "";
+    sku.value = "";
+    if (quantidade) quantidade.value = 1;
+    sugestoes.classList.add("hidden");
+  });
+}
+
+// Liga a busca e o filtro de categoria da lista de produtos disponíveis
+function ligarFiltroProdutosDisponiveis(prefixo, classeLinha) {
+  const aplicar = () => {
+    const termo = String(document.querySelector(`#${prefixo}-product-search`)?.value || "").trim().toLowerCase();
+    const categoria = String(document.querySelector(`#${prefixo}-category-filter`)?.value || "").trim().toLowerCase();
+    document.querySelectorAll(`.${classeLinha}`).forEach((linha) => {
+      const casaBusca = !termo || linha.dataset.search.includes(termo);
+      const casaCategoria = !categoria || String(linha.dataset.categories || "").split("|").filter(Boolean).includes(categoria);
+      linha.classList.toggle("hidden", !casaBusca || !casaCategoria);
+    });
+  };
+  document.querySelector(`#${prefixo}-product-search`)?.addEventListener("input", aplicar);
+  document.querySelector(`#${prefixo}-category-filter`)?.addEventListener("change", aplicar);
+}
+
 async function viewOrder(options = {}) {
   const data = await request("/api/pdv/products", { silentLoading: Boolean(options.auto) });
   const draftPayload = options.skipDraftRestore
@@ -473,13 +654,7 @@ async function viewOrder(options = {}) {
       }))
       .filter((item) => item.sku && item.quantidade > 0);
   }
-  const productCategories = (product) => String(product.categoria || "")
-    .split(",")
-    .map((category) => category.trim())
-    .filter(Boolean);
-  const availableCategories = [...new Set(data.products.flatMap(productCategories))].sort((a, b) => a.localeCompare(b, "pt-BR"));
-  const productLabel = (product) => `${product.sku} - ${product.nome}`;
-  const productSearch = (product) => `${product.sku} ${product.nome} ${product.categoria || ""}`.toLowerCase();
+  const availableCategories = [...new Set(data.products.flatMap(categoriasDoProduto))].sort((a, b) => a.localeCompare(b, "pt-BR"));
   shell(`
     <section class="order-screen">
       <section class="card order-main-card">
@@ -495,58 +670,27 @@ async function viewOrder(options = {}) {
               <label class="grid gap-1 text-sm font-bold">Observação <textarea name="observacao" id="observacao" rows="3">${esc(savedDraft?.observacao || "")}</textarea></label>
             </div>
 
-            <section class="category-settings order-add-panel">
-              <div>
-                <p class="eyebrow">Adicionar produto</p>
-                <h4>Adicionar ao pedido</h4>
-              </div>
-              <div class="category-product-tools order-product-tools">
-                <div class="category-product-picker">
-                  <label class="category-add-label" for="order-product-search">Produto</label>
-                  <input id="order-product-search" class="category-add-product-search" type="search" placeholder="Digite o nome ou SKU do produto" autocomplete="off" />
-                  <input id="order-product-sku" type="hidden" />
-                  <div class="category-product-suggestions hidden" id="order-product-suggestions">
-                    ${data.products.map((product) => `
-                      <button class="category-product-suggestion order-product-suggestion" type="button" data-sku="${esc(product.sku)}" data-label="${esc(productLabel(product))}" data-search="${esc(productSearch(product))}">
-                        <strong>${esc(product.nome)}</strong>
-                        <span>${esc(product.sku)} | ${esc(product.categoria || "-")} | atual ${product.quantidade} | max ${product.estoque_maximo}</span>
-                      </button>`).join("") || `<p class="text-sm text-slate-500">Nenhum produto liberado para este PDV.</p>`}
-                  </div>
-                </div>
-                <input id="order-product-quantity" type="number" min="1" value="1" aria-label="Quantidade" />
-                <button class="btn secondary" id="add-order-product" type="button">Adicionar</button>
-              </div>
-            </section>
+            ${htmlPainelAdicionarProduto({
+              prefixo: "order",
+              titulo: "Adicionar ao pedido",
+              produtos: data.products,
+              detalheDoProduto: (product) => `${esc(product.sku)} | ${esc(product.categoria || "-")} | atual ${product.quantidade} | max ${product.estoque_maximo}`,
+              vazio: "Nenhum produto liberado para este PDV."
+            })}
 
-            <div class="category-product-list order-cart-list">
-              <div class="category-product-list-head">
-                <strong>Carrinho</strong>
-                ${savedDraft?.atualizado_em ? `<span class="text-sm text-slate-500">Rascunho salvo em ${moneyDate(savedDraft.atualizado_em)}</span>` : ""}
-              </div>
-              <div id="cart"></div>
-              <div class="order-draft-actions">
+            ${htmlCartaoCarrinho({
+              idLista: "cart",
+              extraCabecalho: savedDraft?.atualizado_em ? `<span class="text-sm text-slate-500">Rascunho salvo em ${moneyDate(savedDraft.atualizado_em)}</span>` : "",
+              acoes: `
                 <button class="btn secondary" id="save-order-draft" type="button">Salvar rascunho</button>
-                <button class="btn secondary" id="clear-order-draft" type="button">Limpar rascunho</button>
-              </div>
-              <button class="btn mt-3 w-full" id="send-order" type="button">Enviar pedido</button>
-            </div>
+                <button class="btn secondary" id="clear-order-draft" type="button">Limpar rascunho</button>`,
+              botaoPrincipal: `<button class="btn mt-3 w-full" id="send-order" type="button">Enviar pedido</button>`
+            })}
           </div>
         </div>
       </section>
 
-      <section class="card category-product-list order-available-card">
-        <div class="category-product-list-head">
-          <strong>Produtos disponíveis</strong>
-          <div class="order-available-filters">
-            <input class="category-product-search" id="available-product-search" type="search" placeholder="Pesquisar produto" />
-            <select id="available-category-filter" aria-label="Filtrar por categoria">
-              <option value="">Todas as categorias</option>
-              ${availableCategories.map((category) => `<option value="${esc(category.toLowerCase())}">${esc(category)}</option>`).join("")}
-            </select>
-          </div>
-        </div>
-        <div class="category-product-table" id="available-products"></div>
-      </section>
+      ${htmlCartaoProdutosDisponiveis({ prefixo: "available", categorias: availableCategories })}
     </section>`);
 
   const addProductToCart = (sku, quantidade = 1) => {
@@ -659,7 +803,7 @@ async function viewOrder(options = {}) {
   const renderAvailableProducts = () => {
     document.querySelector("#available-products").innerHTML = data.products.length
       ? table(["SKU", "Produto", "Categoria", "Embalagem", "Estoque central", "Atual", "Máx.", "Ação"], data.products.map((product) => `
-        <tr class="available-product-row" data-search="${esc(productSearch(product))}" data-categories="${esc(productCategories(product).map((category) => category.toLowerCase()).join("|"))}">
+        <tr class="available-product-row" data-search="${esc(buscaDoProduto(product))}" data-categories="${esc(categoriasDoProduto(product).map((category) => category.toLowerCase()).join("|"))}">
           <td>${esc(product.sku)}</td>
           <td>${esc(product.nome)}</td>
           <td>${esc(product.categoria || "-")}</td>
@@ -733,50 +877,9 @@ async function viewOrder(options = {}) {
   renderCart();
   document.querySelector("#clear-order-draft").onclick = handleClearOrderDraft;
 
-  const applyAvailableFilters = () => {
-    const term = String(document.querySelector("#available-product-search")?.value || "").trim().toLowerCase();
-    const category = String(document.querySelector("#available-category-filter")?.value || "").trim().toLowerCase();
-    document.querySelectorAll(".available-product-row").forEach((row) => {
-      const matchesSearch = !term || row.dataset.search.includes(term);
-      const rowCategories = String(row.dataset.categories || "").split("|").filter(Boolean);
-      const matchesCategory = !category || rowCategories.includes(category);
-      row.classList.toggle("hidden", !matchesSearch || !matchesCategory);
-    });
-  };
-  document.querySelector("#available-product-search").addEventListener("input", applyAvailableFilters);
-  document.querySelector("#available-category-filter").addEventListener("change", applyAvailableFilters);
-
-  const orderProductSearch = document.querySelector("#order-product-search");
-  const orderProductSku = document.querySelector("#order-product-sku");
-  const orderSuggestions = document.querySelector("#order-product-suggestions");
-  const filterOrderSuggestions = () => {
-    const term = String(orderProductSearch.value || "").trim().toLowerCase();
-    let visible = 0;
-    if (orderProductSearch.dataset.selectedLabel !== orderProductSearch.value) {
-      orderProductSku.value = "";
-    }
-    document.querySelectorAll(".order-product-suggestion").forEach((item) => {
-      const show = term.length > 0 && item.dataset.search.includes(term);
-      item.classList.toggle("hidden", !show);
-      if (show) visible += 1;
-    });
-    orderSuggestions.classList.toggle("hidden", term.length === 0 || visible === 0);
-    if (!term) orderProductSku.value = "";
-  };
-  orderProductSearch.addEventListener("input", filterOrderSuggestions);
-  document.querySelectorAll(".order-product-suggestion").forEach((item) => item.addEventListener("click", () => {
-    orderProductSearch.value = item.dataset.label || "";
-    orderProductSearch.dataset.selectedLabel = orderProductSearch.value;
-    orderProductSku.value = item.dataset.sku || "";
-    orderSuggestions.classList.add("hidden");
-  }));
-  document.querySelector("#add-order-product").addEventListener("click", () => {
-    addProductToCart(orderProductSku.value, document.querySelector("#order-product-quantity").value);
-    orderProductSearch.value = "";
-    orderProductSearch.dataset.selectedLabel = "";
-    orderProductSku.value = "";
-    document.querySelector("#order-product-quantity").value = 1;
-    orderSuggestions.classList.add("hidden");
+  ligarFiltroProdutosDisponiveis("available", "available-product-row");
+  ligarSeletorDeProduto("order", (sku, quantidade) => {
+    addProductToCart(sku, quantidade);
     renderCart();
   });
 
@@ -1406,9 +1509,34 @@ async function adicionarProdutoAoPedidoPdv(botao) {
 }
 
 // Monta o HTML do card de pedido no PDV
+// Junta as partes de um produto dividido numa linha só, somando o pedido e o liberado.
+// "Almox" (item incluído pelo Almoxarifado) só fica se nenhuma parte veio do PDV.
+function somarPartesDoMesmoProduto(itens = []) {
+  const porSku = new Map();
+  for (const item of itens) {
+    const atual = porSku.get(item.sku_produto);
+    if (!atual) {
+      porSku.set(item.sku_produto, { ...item });
+      continue;
+    }
+    atual.quantidade_solicitada = Number(atual.quantidade_solicitada || 0) + Number(item.quantidade_solicitada || 0);
+    atual.quantidade_liberada = Number(atual.quantidade_liberada || 0) + Number(item.quantidade_liberada || 0);
+    if (item.item_origem !== "ALMOX") atual.item_origem = item.item_origem;
+  }
+  return [...porSku.values()];
+}
+
 function pdvOrderCard(group) {
   const first = group[0];
   const visibleItems = orderDisplayItemsForStatus(group);
+  // Item dividido entre origens: durante a separação o PDV vê um produto só, com o total que
+  // pediu; na retirada e depois, cada parte aparece com o local de onde saiu
+  const itensSomados = somarPartesDoMesmoProduto(visibleItems);
+  const origensMisturadas = new Set(visibleItems.map((o) => o.local_origem || "")).size > 1;
+  const skusDivididos = new Set(visibleItems.filter((o, i, todos) => todos.findIndex((x) => x.sku_produto === o.sku_produto) !== i).map((o) => o.sku_produto));
+  const seloDaLinha = (o) => origensMisturadas
+    ? ` <span class="order-source-badge is-origem">${esc(o.local_origem || "Almoxarifado")}</span>`
+    : o.item_origem === "ALMOX" && !skusDivididos.has(o.sku_produto) ? ` <span class="order-source-badge">Almox</span>` : "";
   const isWithdrawalStatus = first.status === "Aguardando Retirada";
   const statusTime = first.status === "Pendente"
     ? `Pendente desde ${moneyDate(first.data_hora)}`
@@ -1469,12 +1597,12 @@ function pdvOrderCard(group) {
         : ["Aguardando Retirada", "Finalizado"].includes(first.status)
           ? table(["Produto", "Estoque central", "Quantidade solicitada", "Quantidade liberada"], visibleItems.map((o) => `
         <tr>
-          <td>${esc(o.produto)} ${o.item_origem === "ALMOX" ? `<span class="order-source-badge">Almox</span>` : ""}</td>
+          <td>${esc(o.produto)}${seloDaLinha(o)}</td>
           <td class="release-number-cell">${centralStockValue(o)}</td>
           <td>${o.quantidade_solicitada}</td>
           <td>${o.quantidade_liberada}</td>
         </tr>`))
-          : table(["Produto", "Estoque central", "Solicitado", "Liberado", "Falta enviar"], visibleItems.map((o) => `
+          : table(["Produto", "Estoque central", "Solicitado", "Liberado", "Falta enviar"], itensSomados.map((o) => `
         <tr>
           <td>${esc(o.produto)} ${o.item_origem === "ALMOX" ? `<span class="order-source-badge">Almox</span>` : ""}</td>
           <td class="release-number-cell">${centralStockValue(o)}</td>
@@ -2436,20 +2564,7 @@ viewDamageReturn = async function viewDamageReturnNew(filters = {}) {
   const productMatches = (value) => {
     const term = normalizeSearch(value);
     if (!term) return [];
-    return availableProducts
-      .map((product) => {
-        const haystack = normalizeSearch(`${product.sku} ${product.nome} ${product.categoria || ""} ${labelForProduct(product)}`);
-        const score = normalizeSearch(product.sku) === term ? 0
-          : normalizeSearch(product.sku).startsWith(term) ? 1
-          : normalizeSearch(product.nome).startsWith(term) ? 2
-          : haystack.includes(term) ? 3
-          : 99;
-        return { product, score };
-      })
-      .filter((entry) => entry.score < 99)
-      .sort((a, b) => a.score - b.score || String(a.product.nome).localeCompare(String(b.product.nome)))
-      .slice(0, 12)
-      .map((entry) => entry.product);
+    return ranquearProdutosPorBusca(availableProducts, value, 30);
   };
   const findExactProduct = (value) => {
     const term = normalizeSearch(value);
@@ -4102,74 +4217,8 @@ function openDamagePhotoViewer(photos, initialIndex, product) {
   document.body.appendChild(modal);
 }
 
-// Núcleo do quadro de assinatura, compartilhado entre a devolução de avaria e o inventário.
-//
-// Só o desenho mora aqui: traço, limpeza, detecção de tinta e exportação em PNG. O que cada
-// tela faz com a assinatura (qual campo preenche, o que habilita) fica com ela. Antes deste
-// recorte o desenho existia num lugar só, amarrado ao formulário de avaria — a tela de
-// inventário precisaria copiar tudo para reaproveitar o traço.
-function ligarQuadroDeAssinatura(canvas, { aoDesenhar } = {}) {
-  const ctx = canvas.getContext("2d");
-  let desenhando = false;
-  let temTinta = false;
-
-  const limpar = () => {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.fillStyle = "#fff";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.strokeStyle = "#005f68";
-    // O canvas nasce em 720x220, mas quase sempre é exibido menor via CSS (width:100%) --
-    // reduzido, um traço de 4px de espessura própria fica fino demais na tela.
-    ctx.lineWidth = 7;
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
-    temTinta = false;
-    aoDesenhar?.(false);
-  };
-  // Converte a posição do ponteiro para a escala interna do canvas: o CSS pode exibi-lo com
-  // largura diferente da declarada, e sem essa conta o traço sai deslocado do cursor.
-  const ponto = (evento) => {
-    const area = canvas.getBoundingClientRect();
-    const fonte = evento.touches?.[0] || evento;
-    return {
-      x: ((fonte.clientX - area.left) / area.width) * canvas.width,
-      y: ((fonte.clientY - area.top) / area.height) * canvas.height
-    };
-  };
-  const comecar = (evento) => {
-    evento.preventDefault();
-    desenhando = true;
-    const p = ponto(evento);
-    ctx.beginPath();
-    ctx.moveTo(p.x, p.y);
-  };
-  const mover = (evento) => {
-    if (!desenhando) return;
-    evento.preventDefault();
-    const p = ponto(evento);
-    ctx.lineTo(p.x, p.y);
-    ctx.stroke();
-    temTinta = true;
-    aoDesenhar?.(true);
-  };
-  const terminar = () => {
-    desenhando = false;
-  };
-
-  limpar();
-  canvas.addEventListener("mousedown", comecar);
-  canvas.addEventListener("mousemove", mover);
-  window.addEventListener("mouseup", terminar);
-  canvas.addEventListener("touchstart", comecar, { passive: false });
-  canvas.addEventListener("touchmove", mover, { passive: false });
-  canvas.addEventListener("touchend", terminar);
-
-  return {
-    limpar,
-    temTinta: () => temTinta,
-    comoPng: () => canvas.toDataURL("image/png")
-  };
-}
+// O núcleo do quadro de assinatura (ligarQuadroDeAssinatura) mora em js/ui/assinatura.js,
+// compartilhado com o MyControl.
 
 // Liga os eventos de assinatura de avaria
 function bindDamageSignatures(root = document) {
@@ -5624,7 +5673,7 @@ async function viewProductsV2(options = {}) {
               </div>
               <input name="sku" placeholder="SKU/Código" required />
               <input name="nome" placeholder="Nome" required />
-              <input name="qtd_total" type="number" min="0" value="0" />
+              <input name="qtd_total" type="number" min="0" step="any" inputmode="decimal" value="0" aria-label="Quantidade em estoque (aceita fração, ex.: 2,5)" />
               <select name="ativo">
                 <option value="true">Ativo</option>
                 <option value="false">Inativo</option>
@@ -6425,6 +6474,10 @@ async function viewStock() {
         <button class="config-tab" type="button" data-stock-view="categories">Categorias permitidas</button>
       </div>
       <div class="stock-category-note"></div>
+      <div class="inventario-filtros stock-filtros" id="stock-filtros">
+        <input id="stock-busca" type="search" placeholder="Buscar por nome ou SKU" aria-label="Buscar produto" />
+        <select id="stock-categoria" aria-label="Filtrar por categoria"><option value="">Todas as categorias</option></select>
+      </div>
       <div id="stock-table"></div>
     </section>`);
 
@@ -6439,6 +6492,8 @@ async function viewStock() {
       : currentCategories
         ? `Mostrando somente produtos com quantidade no estoque do PDV. Categorias permitidas: <strong>${esc(currentCategories)}</strong>`
         : "Este PDV ainda não possui categorias permitidas.";
+    // Busca e categoria só fazem sentido na lista de produtos
+    document.querySelector("#stock-filtros").classList.toggle("hidden", stockView === "categories");
     if (stockView === "categories") {
       document.querySelector("#stock-table").innerHTML = payload.pdv?.categorias?.length
         ? `<div class="category-picker-list">${payload.pdv.categorias.map((category) => `<span class="category-chip selected-chip">${esc(category)}</span>`).join("")}</div>`
@@ -6446,8 +6501,14 @@ async function viewStock() {
       return;
     }
     const stocked = stock.filter((s) => Number(s.quantidade) > 0);
+    // Opções de categoria: só as dos produtos que estão na lista; mantém a escolhida se ainda existir
+    const seletorCategoria = document.querySelector("#stock-categoria");
+    const escolhida = seletorCategoria.value;
+    const categorias = [...new Set(stocked.flatMap(categoriasDoProduto))].sort((a, b) => a.localeCompare(b, "pt-BR"));
+    seletorCategoria.innerHTML = `<option value="">Todas as categorias</option>${categorias.map((c) => `<option value="${esc(c.toLowerCase())}">${esc(c)}</option>`).join("")}`;
+    seletorCategoria.value = categorias.some((c) => c.toLowerCase() === escolhida) ? escolhida : "";
     document.querySelector("#stock-table").innerHTML = table(["Produto", "Categoria", "Estoque central", "Atual manual", "Saldo OMIE", "Reservado", "Disponível", "Sincronização", "Min", "Max"], stocked.map((s) => `
-      <tr data-sku="${esc(s.sku)}">
+      <tr data-sku="${esc(s.sku)}" class="stock-linha" data-search="${esc(buscaDoProduto(s))}" data-categories="${esc(categoriasDoProduto(s).map((c) => c.toLowerCase()).join("|"))}">
         <td>${esc(s.nome)}</td>
         <td>${esc(s.categoria || "-")}</td>
         <td class="release-number-cell">${centralStockValue(s)}</td>
@@ -6460,16 +6521,30 @@ async function viewStock() {
         <td><input class="maximo" type="number" value="${s.estoque_maximo}"></td>
       </tr>`));
   };
+  // Filtro só esconde a linha (classe hidden): o salvar continua lendo a tabela inteira
+  const aplicarFiltroDoEstoque = () => {
+    const termo = String(document.querySelector("#stock-busca")?.value || "").trim().toLowerCase();
+    const categoria = String(document.querySelector("#stock-categoria")?.value || "");
+    document.querySelectorAll("#stock-table .stock-linha").forEach((linha) => {
+      const casaBusca = !termo || linha.dataset.search.includes(termo);
+      const casaCategoria = !categoria || String(linha.dataset.categories || "").split("|").includes(categoria);
+      linha.classList.toggle("hidden", !casaBusca || !casaCategoria);
+    });
+  };
+  document.querySelector("#stock-busca").addEventListener("input", aplicarFiltroDoEstoque);
+  document.querySelector("#stock-categoria").addEventListener("change", aplicarFiltroDoEstoque);
   render(data);
   document.querySelectorAll("[data-stock-view]").forEach((button) => button.addEventListener("click", () => {
     stockView = button.dataset.stockView;
     document.querySelectorAll("[data-stock-view]").forEach((tab) => tab.classList.toggle("is-active", tab.dataset.stockView === stockView));
     document.querySelector("#save-stock").classList.toggle("hidden", stockView !== "stock");
     render(currentPayload);
+    aplicarFiltroDoEstoque();
   }));
   document.querySelector("#stock-pdv").addEventListener("change", async (event) => {
     const fresh = await request(`/api/admin/stock?pdvId=${event.target.value}`);
     render(fresh);
+    aplicarFiltroDoEstoque();
   });
   document.querySelector("#save-stock").addEventListener("click", async () => {
     const items = [...document.querySelectorAll("#stock-table tbody tr")].map((tr) => ({
@@ -6539,6 +6614,242 @@ async function printStockPdv(payload = {}) {
 }
 
 // View de liberação de pedidos (Kanban)
+// Transferência rápida: o Almoxarifado leva mercadoria de um local (Almoxarifado ou outro PDV)
+// para um PDV e conclui na hora, sem assinatura do PDV (decisão do usuário, 23/09/2026). Vira um
+// pedido comum finalizado, com a mesma baixa, aviso de saldo negativo e lançamento na OMIE.
+async function abrirTransferenciaRapida() {
+  const alvo = document.querySelector("#release-kanban-board, #release-finalized-view, #release-transfer-view");
+  if (!alvo) return;
+  const pdvs = await request("/api/admin/pdvs", { silentLoading: true }).then((r) => r.pdvs || []).catch(() => state.pdvs || []);
+  const origens = pdvs.filter((p) => p.administrativo !== true);
+  // Catálogo do sistema inteiro (produtos ativos), não o liberado para um PDV
+  const produtos = (state.products || []).filter((p) => p.ativo !== false);
+  const categorias = [...new Set(produtos.flatMap(categoriasDoProduto))].sort((a, b) => a.localeCompare(b, "pt-BR"));
+  const carrinho = [];
+
+  const secao = document.createElement("section");
+  secao.className = "order-screen release-transfer-view";
+  secao.id = "release-transfer-view";
+  secao.innerHTML = `
+    <section class="card order-main-card">
+      <div class="mb-3">
+        <p class="eyebrow">Transferência rápida</p>
+        <h3 class="section-title text-xl font-black">Enviar mercadoria para um PDV</h3>
+        <p class="text-sm text-slate-600">Conclui na hora, sem assinatura do PDV. A baixa sai do local de origem e o saldo entra no PDV de destino.</p>
+      </div>
+
+      <div class="order-top-grid">
+        <div class="order-form-area">
+          <div class="transfer-grid">
+            <label class="grid gap-1 text-sm font-bold">Local de origem
+              <select id="transfer-origem">
+                <option value="">Almoxarifado</option>
+                ${origens.map((p) => `<option value="${p.id}">${esc(p.nome)}</option>`).join("")}
+              </select>
+            </label>
+            <label class="grid gap-1 text-sm font-bold">PDV de destino
+              <select id="transfer-destino">
+                <option value="" data-placeholder>Escolha o PDV</option>
+                ${pdvs.map((p) => `<option value="${p.id}">${esc(p.nome)}</option>`).join("")}
+              </select>
+            </label>
+          </div>
+          <label class="grid gap-1 text-sm font-bold">Observação <textarea id="transfer-obs" rows="2" maxlength="500"></textarea></label>
+
+          ${htmlPainelAdicionarProduto({
+            prefixo: "transfer",
+            titulo: "Adicionar à transferência",
+            produtos,
+            detalheDoProduto: (p) => `${esc(p.sku)} | ${esc(p.categoria || "-")}`,
+            vazio: "Nenhum produto ativo cadastrado.",
+            passo: "1"
+          })}
+
+          ${htmlCartaoCarrinho({
+            idLista: "transfer-cart",
+            acoes: `<button class="btn secondary" id="transfer-salvar" type="button">Salvar</button>
+              <button class="btn secondary" id="transfer-limpar" type="button">Limpar</button>`,
+            botaoPrincipal: `<button class="btn mt-3 w-full" id="transfer-concluir" type="button">Concluir transferência</button>`
+          })}
+        </div>
+      </div>
+    </section>
+
+    ${htmlCartaoProdutosDisponiveis({ prefixo: "transfer-available", categorias })}`;
+  alvo.replaceWith(secao);
+
+  const origemSel = secao.querySelector("#transfer-origem");
+  const destinoSel = secao.querySelector("#transfer-destino");
+  // Origem e destino não podem ser o mesmo PDV: some a opção igual à do outro campo
+  const sincronizarOpcoes = () => {
+    origemSel.querySelectorAll("option").forEach((o) => { o.hidden = Boolean(o.value) && o.value === destinoSel.value; });
+    destinoSel.querySelectorAll("option").forEach((o) => { o.hidden = Boolean(o.value) && o.value === origemSel.value; });
+  };
+  origemSel.addEventListener("change", sincronizarOpcoes);
+  destinoSel.addEventListener("change", sincronizarOpcoes);
+  aprimorarSeletorDeLocal(origemSel, { titulo: "Local de origem" });
+  aprimorarSeletorDeLocal(destinoSel, { titulo: "PDV de destino" });
+
+  // Quantidade é inteira: quantidade_solicitada é integer no banco
+  const adicionar = (sku, quantidade) => {
+    const produto = produtos.find((p) => p.sku === sku);
+    const qtd = Number(quantidade);
+    if (!produto) return toast("Escolha um produto da lista.", "error");
+    if (!Number.isInteger(qtd) || qtd <= 0) return toast("Informe uma quantidade inteira maior que zero.", "error");
+    const existente = carrinho.find((item) => item.sku === sku);
+    if (existente) existente.quantidade += qtd;
+    else carrinho.push({ sku, nome: produto.nome, quantidade: qtd });
+    renderCarrinho();
+  };
+
+  // Rascunho da transferência no navegador: salvo a cada mudança (produtos, quantidades, origem,
+  // destino, observação), para trocar de aba ou recarregar sem perder o que foi montado. Não há
+  // rascunho no servidor: a transferência conclui na hora, então basta o do navegador.
+  const CHAVE_RASCUNHO_TRANSFERENCIA = "transferencia-rapida-rascunho";
+  const salvarRascunhoTransferencia = () => {
+    try {
+      localStorage.setItem(CHAVE_RASCUNHO_TRANSFERENCIA, JSON.stringify({
+        origem: origemSel.value,
+        destino: destinoSel.value,
+        observacao: secao.querySelector("#transfer-obs").value,
+        itens: carrinho,
+        salvoEm: new Date().toISOString()
+      }));
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const apagarRascunhoTransferencia = () => {
+    try { localStorage.removeItem(CHAVE_RASCUNHO_TRANSFERENCIA); } catch {}
+  };
+
+  const renderCarrinho = () => {
+    salvarRascunhoTransferencia();
+    secao.querySelector("#transfer-cart").innerHTML = carrinho.length
+      ? table(["Produto", "Qtd (un)", "Ação"], carrinho.map((item, indice) => `
+          <tr class="order-cart-row">
+            <td>${esc(item.nome)}<span class="transfer-cart-sku">${esc(item.sku)}</span></td>
+            <td><input class="transfer-cart-qty" type="number" min="1" step="1" value="${item.quantidade}" data-index="${indice}" aria-label="Quantidade de ${esc(item.nome)}" /></td>
+            <td><button class="icon-action danger transfer-remove" type="button" data-index="${indice}" title="Remover produto" aria-label="Remover produto">&times;</button></td>
+          </tr>`)).replace("table-wrap", "table-wrap transfer-cart-table")
+      : `<p class="text-sm text-slate-500">Nenhum produto adicionado ainda.</p>`;
+    secao.querySelectorAll(".transfer-cart-qty").forEach((campo) => campo.addEventListener("change", () => {
+      const qtd = Number(campo.value);
+      if (Number.isInteger(qtd) && qtd > 0) carrinho[Number(campo.dataset.index)].quantidade = qtd;
+      renderCarrinho();
+    }));
+    secao.querySelectorAll(".transfer-remove").forEach((botao) => botao.addEventListener("click", () => {
+      carrinho.splice(Number(botao.dataset.index), 1);
+      renderCarrinho();
+    }));
+  };
+
+  // Tabela de disponíveis: SKU / Produto / Categoria, com o + que põe 1 un no carrinho
+  secao.querySelector("#transfer-available-products").innerHTML = produtos.length
+    ? table(["SKU", "Produto", "Categoria", "Ação"], produtos.map((p) => `
+        <tr class="transfer-available-row" data-search="${esc(buscaDoProduto(p))}" data-categories="${esc(categoriasDoProduto(p).map((c) => c.toLowerCase()).join("|"))}">
+          <td>${esc(p.sku)}</td>
+          <td>${esc(p.nome)}</td>
+          <td>${esc(p.categoria || "-")}</td>
+          <td><button class="icon-action transfer-add-available" type="button" data-sku="${esc(p.sku)}" title="Adicionar produto" aria-label="Adicionar produto">+</button></td>
+        </tr>`))
+    : `<p class="text-sm text-slate-500">Nenhum produto ativo cadastrado.</p>`;
+  secao.querySelectorAll(".transfer-add-available").forEach((botao) => botao.addEventListener("click", () => adicionar(botao.dataset.sku, 1)));
+
+  ligarFiltroProdutosDisponiveis("transfer-available", "transfer-available-row");
+  ligarSeletorDeProduto("transfer", adicionar);
+
+  // Restaura o rascunho salvo (antes do primeiro desenho, que salvaria o carrinho vazio por cima).
+  // Produto que ficou inativo desde então sai; local que não existe mais volta ao padrão.
+  try {
+    const rascunho = JSON.parse(localStorage.getItem(CHAVE_RASCUNHO_TRANSFERENCIA) || "null");
+    if (rascunho) {
+      for (const item of Array.isArray(rascunho.itens) ? rascunho.itens : []) {
+        const produto = produtos.find((p) => p.sku === item.sku);
+        const qtd = Number(item.quantidade);
+        if (produto && Number.isInteger(qtd) && qtd > 0) carrinho.push({ sku: produto.sku, nome: produto.nome, quantidade: qtd });
+      }
+      if ([...origemSel.options].some((o) => o.value === rascunho.origem)) origemSel.value = rascunho.origem;
+      if ([...destinoSel.options].some((o) => o.value === rascunho.destino)) destinoSel.value = rascunho.destino;
+      secao.querySelector("#transfer-obs").value = String(rascunho.observacao || "");
+      sincronizarOpcoes();
+      atualizarSeletorDeLocal(origemSel);
+      atualizarSeletorDeLocal(destinoSel);
+      if (carrinho.length) toast(`Rascunho da transferência recuperado (${carrinho.length} produto(s)).`);
+    }
+  } catch {
+    // Rascunho corrompido ou navegador sem storage: começa vazio
+  }
+  renderCarrinho();
+  origemSel.addEventListener("change", salvarRascunhoTransferencia);
+  destinoSel.addEventListener("change", salvarRascunhoTransferencia);
+  secao.querySelector("#transfer-obs").addEventListener("input", salvarRascunhoTransferencia);
+  secao.querySelector("#transfer-salvar").addEventListener("click", () => {
+    if (salvarRascunhoTransferencia()) toast("Rascunho da transferência salvo neste navegador.");
+    else toast("Este navegador não permite salvar o rascunho.", "error");
+  });
+
+  secao.querySelector("#transfer-limpar").addEventListener("click", async () => {
+    if (!carrinho.length) return;
+    const confirmado = await confirmSystem({
+      title: "Limpar transferência?",
+      message: "Todos os produtos e quantidades desta transferência serão removidos.",
+      confirmLabel: "Limpar",
+      danger: true
+    });
+    if (!confirmado) return;
+    carrinho.splice(0, carrinho.length);
+    secao.querySelector("#transfer-obs").value = "";
+    renderCarrinho();
+    apagarRascunhoTransferencia();
+  });
+
+  secao.querySelector("#transfer-concluir").addEventListener("click", async (event) => {
+    const botao = event.currentTarget;
+    if (botao.disabled) return;
+    if (!destinoSel.value) return toast("Escolha o PDV de destino.", "error");
+    if (!carrinho.length) return toast("Adicione ao menos um produto.", "error");
+    const origemNome = origemSel.selectedOptions[0]?.textContent || "Almoxarifado";
+    const destinoNome = destinoSel.selectedOptions[0]?.textContent || "";
+    const confirmado = await confirmSystem({
+      title: "Concluir transferência?",
+      message: `${carrinho.length} produto(s) de ${origemNome} para ${destinoNome}.`,
+      consequence: "O estoque é movimentado na hora, sem assinatura do PDV.",
+      confirmLabel: "Concluir transferência"
+    });
+    if (!confirmado) return;
+    botao.disabled = true;
+    botao.textContent = "Transferindo...";
+    try {
+      const r = await request("/api/admin/transferencia-rapida", {
+        method: "POST",
+        body: JSON.stringify({
+          pdv_destino_id: Number(destinoSel.value),
+          local_origem_pdv_id: origemSel.value || null,
+          itens: carrinho.map((item) => ({ sku: item.sku, quantidade: item.quantidade })),
+          observacao: secao.querySelector("#transfer-obs").value
+        })
+      });
+      toast(`Transferência ${r.codigo_pedido} concluída.`);
+      await avisarSeOmieIgnorada(r.integracao);
+      const negativos = r.saldos_negativos || [];
+      if (negativos.length) {
+        toast(`Saldo negativo em ${negativos[0].local || "origem"}: ${negativos[0].nome || negativos[0].sku} = ${negativos[0].saldo}${negativos.length > 1 ? ` (e mais ${negativos.length - 1})` : ""}.`, "error");
+      }
+      carrinho.splice(0, carrinho.length);
+      secao.querySelector("#transfer-obs").value = "";
+      renderCarrinho();
+      apagarRascunhoTransferencia();
+    } catch (error) {
+      toast(error.message || "Não foi possível concluir a transferência.", "error");
+    } finally {
+      botao.disabled = false;
+      botao.textContent = "Concluir transferência";
+    }
+  });
+}
+
 async function viewRelease(filters = {}) {
   let from = filters.from || weekAgo();
   let to = filters.to || today();
@@ -6635,6 +6946,7 @@ async function viewRelease(filters = {}) {
         <div class="config-tabs release-tabs release-mode-tabs" role="tablist" aria-label="Visualização da liberação">
           <button class="config-tab ${releaseMode === "active" ? "is-active" : ""}" data-release-view-mode="active" type="button">Pedidos ativos</button>
           <button class="config-tab ${releaseMode === "finalized" ? "is-active" : ""}" data-release-view-mode="finalized" type="button">Finalizados</button>
+          <button class="config-tab" id="release-transfer-tab" type="button">Transferência rápida</button>
         </div>
         <button class="btn secondary release-refresh" id="refresh-release" type="button">Atualizar solicitações</button>
       </div>
@@ -6693,6 +7005,12 @@ async function viewRelease(filters = {}) {
   });
   document.querySelector("#back-release-active")?.addEventListener("click", async () => {
     await viewRelease({ from, to, pdvId: selectedPdvId, q: searchCode, mode: "active" });
+  });
+  // Aba de transferência rápida: só troca o conteúdo na tela (não recarrega pedidos); voltar para
+  // "Pedidos ativos"/"Finalizados" usa o caminho normal, que recarrega o quadro
+  document.querySelector("#release-transfer-tab")?.addEventListener("click", (event) => {
+    document.querySelectorAll(".release-mode-tabs .config-tab").forEach((tab) => tab.classList.toggle("is-active", tab === event.currentTarget));
+    abrirTransferenciaRapida();
   });
   document.querySelector(".load-more-finalized")?.addEventListener("click", async (event) => {
     const button = event.currentTarget;
@@ -7170,7 +7488,6 @@ function openAddAlmoxProductModal(card, filters = {}) {
   const selectedList = modal.querySelector("#almox-product-selected-list");
   const submitButton = modal.querySelector('#add-almox-product-form button[type="submit"]');
   const productLabel = (product) => `${product.nome || ""} - ${product.sku || ""}`.trim();
-  const matchesProduct = (product, term) => `${product.sku || ""} ${product.nome || ""}`.toLowerCase().includes(term);
   const availableProducts = () => products.filter((product) => !pendingItems.some((item) => item.sku === product.sku));
   let visibleProducts = [];
   const selectProduct = (product) => {
@@ -7239,7 +7556,7 @@ function openAddAlmoxProductModal(card, filters = {}) {
       resultsBox.classList.remove("is-open");
       return;
     }
-    const matches = candidates.filter((product) => matchesProduct(product, term)).slice(0, 8);
+    const matches = ranquearProdutosPorBusca(candidates, term, 30);
     visibleProducts = matches;
     resultsBox.classList.add("is-open");
     resultsBox.innerHTML = matches.length
@@ -7354,7 +7671,8 @@ function releaseKanbanColumn(status, groups = []) {
 function releaseKanbanCard(group = []) {
   const first = group[0] || {};
   const key = orderGroupKey(first);
-  const totalItems = group.length;
+  // Produto dividido entre origens é UM produto em várias linhas: conta pelo SKU
+  const totalItems = contarProdutosDistintos(group);
   const totalRequested = group.reduce((sum, item) => sum + Number(item.quantidade_solicitada || 0), 0);
   const version = releaseKanbanGroupVersion(group);
   const statusTime = moneyDate(first.criado_em || first.data_hora || new Date().toISOString());
@@ -7482,7 +7800,8 @@ function placeReleaseKanbanCardOnce(card, zone) {
 function releaseFinalizedCard(group = []) {
   const first = group[0] || {};
   const key = orderGroupKey(first);
-  const totalItems = group.length;
+  // Produto dividido entre origens é UM produto em várias linhas: conta pelo SKU
+  const totalItems = contarProdutosDistintos(group);
   const totalRequested = group.reduce((sum, item) => sum + Number(item.quantidade_solicitada || 0), 0);
   const totalReleased = group.reduce((sum, item) => sum + Number(item.quantidade_liberada || 0), 0);
   const finishedAt = moneyDate(first.retirada_em || first.liberado_em || first.criado_em || first.data_hora || new Date().toISOString());
@@ -7646,10 +7965,340 @@ function formatarSolicitadoEmbalagem(unidadesLiberadas, fator) {
   return `${valor.toFixed(2).replace(".", ",")} EMB`;
 }
 
+// ===== Configuração do alerta dos PDVs (Configurações > Alertas, só o Almoxarifado) =====
+// Uma configuração só, para todos os PDVs: som, repetição, intervalo e volume do alerta
+// "Pedido pronto para retirada". Cada PDV lê ao conectar (/api/pdv/alert-preferences).
+const MODOS_DE_REPETICAO_DO_PDV = [
+  ["once", "Tocar uma vez"],
+  ["two_times", "Tocar 2 vezes"],
+  ["three_times", "Tocar 3 vezes"],
+  ["thirty_seconds", "Repetir por 30 segundos"],
+  ["until_viewed", "Repetir até visualizar ou silenciar"]
+];
+
+async function montarConfiguracaoAlertaDosPdvs() {
+  const alvo = document.querySelector("#pdv-alert-settings");
+  if (!alvo) return;
+  let dados;
+  try {
+    dados = await request("/api/admin/pdv-alert-preferences", { silentLoading: true });
+  } catch (error) {
+    alvo.innerHTML = `<div class="card"><p class="text-sm text-slate-500">Não foi possível carregar a configuração do alerta dos PDVs.</p></div>`;
+    return;
+  }
+  const p = dados.preferences || {};
+  alvo.innerHTML = `
+    <form id="pdv-alert-settings-form" class="card grid gap-4">
+      <div>
+        <p class="eyebrow">Alerta dos PDVs</p>
+        <h3 class="text-xl font-black">Pedido pronto para retirada</h3>
+        <p class="text-sm text-slate-500">Vale para todos os PDVs. Toca quando um pedido do PDV entra em Aguardando Retirada e para quando o PDV clica em Visualizar ou Silenciar.</p>
+      </div>
+      <label class="alert-toggle-row">
+        <input name="enabled" type="checkbox" ${p.enabled !== false ? "checked" : ""} />
+        <span>Ativar alerta sonoro nos PDVs</span>
+      </label>
+      <div class="alert-settings-grid">
+        <label class="grid gap-1 text-sm font-bold">Toque
+          <select name="soundId">${(dados.sounds || []).map((som) => `<option value="${esc(som.id)}" ${som.id === p.soundId ? "selected" : ""}>${esc(som.displayName)}</option>`).join("")}</select>
+        </label>
+        <label class="grid gap-1 text-sm font-bold">Repetição
+          <select name="repeatMode">${MODOS_DE_REPETICAO_DO_PDV.map(([valor, rotulo]) => `<option value="${valor}" ${valor === p.repeatMode ? "selected" : ""}>${rotulo}</option>`).join("")}</select>
+        </label>
+        <label class="grid gap-1 text-sm font-bold">Intervalo
+          <select name="repeatIntervalSeconds">${[3, 5, 10, 15, 30].map((s) => `<option value="${s}" ${Number(p.repeatIntervalSeconds) === s ? "selected" : ""}>${s} segundos</option>`).join("")}</select>
+        </label>
+      </div>
+      <label class="grid gap-2 text-sm font-bold">Volume
+        <div class="alert-volume-row">
+          <input name="volume" type="range" min="0" max="100" value="${Number(p.volume ?? 70)}" />
+          <strong id="pdv-alert-volume-label">${Number(p.volume ?? 70)}%</strong>
+        </div>
+      </label>
+      <p class="text-sm text-slate-500">"Repetir até visualizar" toca por no máximo 5 minutos (ou 30 toques), para o som nunca ficar ligado para sempre num PDV sem ninguém.</p>
+      <div class="order-card-actions">
+        <button class="btn secondary" id="test-pdv-alert-sound" type="button">Testar alerta</button>
+        <button class="btn secondary" id="stop-pdv-alert-sound" type="button">Parar teste</button>
+        <button class="btn" type="submit">Salvar alerta dos PDVs</button>
+      </div>
+    </form>`;
+  const form = alvo.querySelector("#pdv-alert-settings-form");
+  const lerFormulario = () => ({
+    enabled: form.enabled.checked,
+    soundId: form.soundId.value,
+    repeatMode: form.repeatMode.value,
+    repeatIntervalSeconds: Number(form.repeatIntervalSeconds.value),
+    volume: Number(form.volume.value),
+    visualNotifications: true
+  });
+  form.volume.addEventListener("input", () => { alvo.querySelector("#pdv-alert-volume-label").textContent = `${form.volume.value}%`; });
+  form.querySelector("#test-pdv-alert-sound").addEventListener("click", () => testOrderAlert(lerFormulario()));
+  form.querySelector("#stop-pdv-alert-sound").addEventListener("click", () => stopAllOrderAlerts());
+  form.addEventListener("submit", async (evento) => {
+    evento.preventDefault();
+    try {
+      await request("/api/admin/pdv-alert-preferences", { method: "PUT", body: JSON.stringify(lerFormulario()) });
+      toast("Alerta dos PDVs salvo. Vale a partir da próxima vez que cada PDV abrir o sistema.");
+    } catch (error) {
+      toast(error.message || "Não foi possível salvar o alerta dos PDVs.", "error");
+    }
+  });
+}
+
+// ===== Seletor de local de estoque (Almoxarifado / PDVs) =====
+//
+// O menu nativo do <select> não aceita estilo. Este componente desenha o botão e a lista por
+// cima do <select> original, que continua sendo a fonte da verdade: escolher um local só muda
+// select.value e dispara "change" -- quem grava a origem não sabe que o componente existe.
+// Cada <option> pode trazer data-saldo (saldo do produto naquele local).
+
+// Iniciais para o selo redondo de cada local ("DECK INFERIOR" -> "DI")
+function iniciaisDoLocal(nome = "") {
+  const palavras = String(nome).trim().split(/\s+/).filter(Boolean);
+  if (!palavras.length) return "?";
+  return (palavras.length === 1 ? palavras[0].slice(0, 2) : palavras[0][0] + palavras[1][0]).toUpperCase();
+}
+
+// Chip do saldo: verde com estoque, cinza zerado, vermelho negativo; sem dado, "—"
+function chipDeSaldo(saldo) {
+  if (saldo === undefined || saldo === null || saldo === "") return `<span class="local-saldo is-desconhecido" title="Saldo não carregado">—</span>`;
+  const n = Number(saldo);
+  const classe = n > 0 ? "is-positivo" : n < 0 ? "is-negativo" : "is-zero";
+  return `<span class="local-saldo ${classe}" title="Saldo neste local">${esc(String(n).replace(".", ","))}</span>`;
+}
+
+// Redesenha o botão a partir da opção escolhida no <select>
+function atualizarSeletorDeLocal(select) {
+  const botao = select?.__seletorDeLocal;
+  if (!botao) return;
+  const opcao = select.selectedOptions[0] || select.options[0];
+  const nome = opcao?.textContent?.trim() || "Almoxarifado";
+  const ehCentral = !opcao?.value;
+  botao.disabled = select.disabled;
+  // "Escolha o PDV": marcador de posição, sem selo nem saldo
+  if (opcao && "placeholder" in opcao.dataset) {
+    botao.innerHTML = `<span class="local-picker-nome is-placeholder">${esc(nome)}</span><span class="local-picker-seta" aria-hidden="true">&#9662;</span>`;
+    return;
+  }
+  const avatar = `<span class="local-avatar ${ehCentral ? "is-central" : ""}" aria-hidden="true">${ehCentral ? "AL" : esc(iniciaisDoLocal(nome))}</span>`;
+  // Na linha do produto (compacto) só o selo, para economizar espaço; nome e saldo ficam no
+  // título (passar o mouse) e no rótulo acessível, e aparecem normalmente ao abrir a lista
+  if (botao.classList.contains("is-compacto")) {
+    const saldo = opcao && "saldo" in opcao.dataset && opcao.dataset.saldo !== "" ? ` · saldo ${opcao.dataset.saldo}` : "";
+    botao.title = `${nome}${saldo}`;
+    botao.setAttribute("aria-label", `${botao.dataset.titulo || "Origem"}: ${nome}${saldo}`);
+    botao.innerHTML = avatar;
+    return;
+  }
+  botao.innerHTML = `
+    ${avatar}
+    <span class="local-picker-nome">${esc(nome)}</span>
+    ${opcao && "saldo" in opcao.dataset ? chipDeSaldo(opcao.dataset.saldo) : ""}
+    <span class="local-picker-seta" aria-hidden="true">&#9662;</span>`;
+}
+
+let menuDeLocalAberto = null;
+
+// Foca a opção sem rolar a página: rolar dispararia o fechamento do menu (que fecha ao rolar,
+// para não ficar descolado do botão) -- só a lista rola, para a opção ficar à vista
+function focarOpcao(item) {
+  if (!item) return;
+  item.focus({ preventScroll: true });
+  item.scrollIntoView({ block: "nearest" });
+}
+
+// Fecha o menu aberto (se houver) e devolve o foco ao botão
+function fecharMenuDeLocal(devolverFoco = true) {
+  if (!menuDeLocalAberto) return;
+  const { menu, fundo, botao, aoRolar } = menuDeLocalAberto;
+  menu.remove();
+  fundo?.remove();
+  window.removeEventListener("scroll", aoRolar, true);
+  window.removeEventListener("resize", aoRolar);
+  botao.setAttribute("aria-expanded", "false");
+  if (devolverFoco) botao.focus({ preventScroll: true });
+  menuDeLocalAberto = null;
+}
+
+// Abre a lista. No desktop flutua junto ao botão (fixed, para não ser cortada pela rolagem da
+// tabela); no celular vira um painel de baixo com fundo escurecido.
+function abrirMenuDeLocal(select, botao, titulo) {
+  fecharMenuDeLocal(false);
+  const celular = window.matchMedia("(max-width: 720px)").matches;
+  const opcoes = [...select.options].filter((opcao) => !opcao.hidden && !("placeholder" in opcao.dataset));
+  const central = opcoes.filter((opcao) => !opcao.value);
+  const pdvs = opcoes.filter((opcao) => opcao.value);
+  const linha = (opcao) => {
+    const escolhido = opcao.value === select.value;
+    const nome = opcao.textContent.trim();
+    return `
+      <li role="option" class="local-opcao ${escolhido ? "is-escolhido" : ""}" data-valor="${esc(opcao.value)}" aria-selected="${escolhido}" tabindex="-1">
+        <span class="local-avatar ${opcao.value ? "" : "is-central"}" aria-hidden="true">${opcao.value ? esc(iniciaisDoLocal(nome)) : "AL"}</span>
+        <span class="local-opcao-nome">${esc(nome)}</span>
+        ${"saldo" in opcao.dataset ? chipDeSaldo(opcao.dataset.saldo) : ""}
+        <span class="local-check" aria-hidden="true">${escolhido ? "&#10003;" : ""}</span>
+      </li>`;
+  };
+  const menu = document.createElement("div");
+  menu.className = `local-menu ${celular ? "is-sheet" : ""}`;
+  menu.innerHTML = `
+    ${celular ? `<div class="local-menu-head"><strong>${esc(titulo || "Local de origem")}</strong><button class="icon-action local-menu-fechar" type="button" aria-label="Fechar">&times;</button></div>` : ""}
+    <ul class="local-menu-lista" role="listbox" aria-label="${esc(titulo || "Local de origem")}">
+      ${central.length ? `<li class="local-grupo" role="presentation">Estoque central</li>${central.map(linha).join("")}` : ""}
+      ${pdvs.length ? `<li class="local-grupo" role="presentation">PDVs</li>${pdvs.map(linha).join("")}` : ""}
+    </ul>`;
+  const fundo = celular ? Object.assign(document.createElement("div"), { className: "local-menu-fundo" }) : null;
+  if (fundo) document.body.appendChild(fundo);
+  document.body.appendChild(menu);
+
+  const posicionar = () => {
+    if (celular) return;
+    const r = botao.getBoundingClientRect();
+    // Largura mínima para os nomes caberem inteiros ao lado do saldo e do check
+    const largura = Math.max(r.width, 300);
+    const esquerda = Math.min(r.left, window.innerWidth - largura - 12);
+    const abaixo = window.innerHeight - r.bottom;
+    menu.style.width = `${largura}px`;
+    menu.style.left = `${Math.max(12, esquerda)}px`;
+    if (abaixo < 280 && r.top > abaixo) {
+      menu.style.top = "";
+      menu.style.bottom = `${window.innerHeight - r.top + 6}px`;
+    } else {
+      menu.style.bottom = "";
+      menu.style.top = `${r.bottom + 6}px`;
+    }
+  };
+  posicionar();
+  // Rolar a página com o menu aberto o deixaria descolado do botão: fecha junto. Só no desktop
+  // (o painel de baixo do celular não depende da posição do botão) e ignorando a rolagem que
+  // ainda chega logo depois de abrir (a do toque que abriu o menu, por exemplo).
+  const abertoEm = Date.now();
+  const aoRolar = (evento) => {
+    if (celular || Date.now() - abertoEm < 150 || menu.contains(evento?.target)) return;
+    fecharMenuDeLocal(false);
+  };
+  window.addEventListener("scroll", aoRolar, true);
+  window.addEventListener("resize", aoRolar);
+  botao.setAttribute("aria-expanded", "true");
+  menuDeLocalAberto = { menu, fundo, botao, aoRolar };
+
+  const itens = [...menu.querySelectorAll(".local-opcao")];
+  const escolher = (valor) => {
+    fecharMenuDeLocal();
+    if (valor === select.value) return;
+    select.value = valor;
+    atualizarSeletorDeLocal(select);
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  };
+  itens.forEach((item) => item.addEventListener("click", () => escolher(item.dataset.valor)));
+  menu.addEventListener("keydown", (evento) => {
+    const atual = itens.indexOf(document.activeElement);
+    if (evento.key === "ArrowDown") { evento.preventDefault(); focarOpcao(itens[Math.min(atual + 1, itens.length - 1)]); }
+    else if (evento.key === "ArrowUp") { evento.preventDefault(); focarOpcao(itens[Math.max(atual - 1, 0)]); }
+    else if (evento.key === "Enter" || evento.key === " ") { evento.preventDefault(); if (atual >= 0) escolher(itens[atual].dataset.valor); }
+    else if (evento.key === "Escape" || evento.key === "Tab") { evento.preventDefault(); fecharMenuDeLocal(); }
+  });
+  menu.querySelector(".local-menu-fechar")?.addEventListener("click", () => fecharMenuDeLocal());
+  fundo?.addEventListener("click", () => fecharMenuDeLocal());
+  focarOpcao(itens.find((item) => item.classList.contains("is-escolhido")) || itens[0]);
+}
+
+// Clique fora do menu fecha
+document.addEventListener("mousedown", (evento) => {
+  if (!menuDeLocalAberto) return;
+  const { menu, botao } = menuDeLocalAberto;
+  if (!menu.contains(evento.target) && !botao.contains(evento.target)) fecharMenuDeLocal(false);
+});
+
+// Troca o menu nativo de um <select> de locais pelo componente (uma vez por select)
+function aprimorarSeletorDeLocal(select, { titulo = "", compacto = false } = {}) {
+  if (!select || select.__seletorDeLocal) return;
+  const botao = document.createElement("button");
+  botao.type = "button";
+  botao.className = `local-picker ${compacto ? "is-compacto" : ""}`;
+  botao.dataset.titulo = titulo;
+  botao.setAttribute("aria-haspopup", "listbox");
+  botao.setAttribute("aria-expanded", "false");
+  botao.setAttribute("aria-label", select.getAttribute("aria-label") || titulo || "Local de origem");
+  select.classList.add("local-picker-nativo");
+  select.tabIndex = -1;
+  select.setAttribute("aria-hidden", "true");
+  select.after(botao);
+  select.__seletorDeLocal = botao;
+  botao.addEventListener("click", () => {
+    if (menuDeLocalAberto?.botao === botao) fecharMenuDeLocal();
+    else abrirMenuDeLocal(select, botao, titulo);
+  });
+  botao.addEventListener("keydown", (evento) => {
+    if (evento.key === "ArrowDown" || evento.key === "ArrowUp") {
+      evento.preventDefault();
+      abrirMenuDeLocal(select, botao, titulo);
+    }
+  });
+  // As opções chegam depois (os locais carregam em segundo plano): redesenha quando mudarem
+  new MutationObserver(() => atualizarSeletorDeLocal(select)).observe(select, { childList: true, subtree: true, attributes: true });
+  select.addEventListener("change", () => atualizarSeletorDeLocal(select));
+  atualizarSeletorDeLocal(select);
+}
+
+// ===== Origem por item no painel do pedido =====
+
+// Origem padrão do pedido (a das linhas não ajustadas uma a uma), as partes de cada produto e o
+// status -- tudo o que a coluna "Origem" precisa para decidir o que mostrar em cada linha
+function contextoDeOrigem(group = []) {
+  const padrao = group.find((item) => !item.origem_por_item);
+  const partesPorSku = new Map();
+  // Na MESMA ordem em que a tabela desenha (ordenarPartesJuntas): senão a "primeira parte" e o
+  // "Desfazer" caíam em linhas diferentes das que a pessoa vê em cima
+  for (const item of ordenarPartesJuntas(group)) {
+    const sku = item.sku_produto || item.sku || "";
+    if (!partesPorSku.has(sku)) partesPorSku.set(sku, []);
+    partesPorSku.get(sku).push(item.id);
+  }
+  return {
+    status: group[0]?.status || "",
+    padrao: padrao ? String(padrao.local_origem_pdv_id ?? "") : "",
+    partesPorSku,
+    origensDistintas: new Set(group.map((item) => String(item.local_origem_pdv_id ?? ""))).size
+  };
+}
+
+// Partes do mesmo produto ficam juntas na tabela, na ordem em que o produto apareceu
+function ordenarPartesJuntas(group = []) {
+  const ordem = new Map();
+  group.forEach((item, indice) => {
+    const sku = item.sku_produto || item.sku || "";
+    if (!ordem.has(sku)) ordem.set(sku, indice);
+  });
+  return [...group].sort((a, b) => (ordem.get(a.sku_produto || a.sku || "") - ordem.get(b.sku_produto || b.sku || "")) || (a.id - b.id));
+}
+
+// Célula "Origem": seletor por item (antes de finalizar; o local aparece no selo com as iniciais) e as
+// ações de dividir/desfazer (só Em andamento, a mesma janela das rotas)
+function celulaOrigemDoItem(item, contexto, editable) {
+  const sku = item.sku_produto || item.sku || "";
+  const nome = item.local_origem || "Almoxarifado";
+  const atual = String(item.local_origem_pdv_id ?? "");
+  const partes = contexto.partesPorSku.get(sku) || [];
+  const podeMudar = contexto.status !== "Finalizado";
+  const seletor = podeMudar
+    ? `<select class="item-origem" data-id="${esc(item.id)}" data-sku="${esc(sku)}" data-atual="${esc(atual)}" aria-label="Origem de ${esc(item.produto || sku)}">
+        <option value="" ${atual ? "" : "selected"}>Almoxarifado</option>
+        ${atual ? `<option value="${esc(atual)}" selected>${esc(nome)}</option>` : ""}
+      </select>`
+    : `<span>${esc(nome)}</span>`;
+  const acao = !editable ? ""
+    : partes.length > 1
+      ? (partes[0] === item.id ? `<button class="link-action juntar-item" type="button" data-sku="${esc(sku)}" title="Desfazer divisão">Juntar</button>` : "")
+      : `<button class="link-action dividir-item" type="button" data-id="${esc(item.id)}">Dividir</button>`;
+  return `<td class="order-panel-origem-cell">${seletor}${acao}</td>`;
+}
+
 function releasePanelItemsTable(group = [], editable = false) {
   const draft = getReleaseDraft(group[0]?.codigo_pedido);
   const draftById = new Map((draft.items || []).map((item) => [String(item.id), item]));
-  const rows = group.map((item) => {
+  const contextoOrigem = contextoDeOrigem(group);
+  const rows = ordenarPartesJuntas(group).map((item) => {
     const central = centralStockValue(item);
     const requested = Number(item.quantidade_solicitada || 0);
     const saved = Number(item.quantidade_liberada || 0);
@@ -7673,8 +8322,9 @@ function releasePanelItemsTable(group = [], editable = false) {
             : "";
     const stockClass = central < 0 ? "negative" : central === 0 ? "zero" : "positive";
     return `
-      <tr class="release-item-row ${rowState}"
+      <tr class="release-item-row ${rowState} ${(contextoOrigem.partesPorSku.get(item.sku_produto || item.sku || "") || [])[0] !== item.id ? "release-item-part" : ""}"
         data-id="${esc(item.id)}"
+        data-origem-nome="${esc(item.local_origem || "Almoxarifado")}"
         data-version="${esc(item.version || 1)}"
         data-requested="${esc(requested)}"
         data-released="${esc(released)}"
@@ -7689,9 +8339,10 @@ function releasePanelItemsTable(group = [], editable = false) {
         </td>` : ""}
         <td class="order-panel-product">
           <strong class="release-product-name">${esc(item.produto || "-")}</strong>
-          <small>${esc(item.sku_produto || item.sku || "sem SKU")}${item.item_origem === "ALMOX" ? ` <span class="order-source-badge">Almox</span>` : ""}</small>
+          <small>${esc(item.sku_produto || item.sku || "sem SKU")}${item.item_origem === "ALMOX" && (contextoOrigem.partesPorSku.get(item.sku_produto || item.sku || "") || []).length < 2 ? ` <span class="order-source-badge">Almox</span>` : ""}</small>
           <small class="order-panel-pdv">PDV ${releasePanelStock(item.estoque_pdv)} · mín ${releasePanelStock(item.estoque_minimo)} · máx ${releasePanelStock(item.estoque_maximo)}</small>
         </td>
+        ${celulaOrigemDoItem(item, contextoOrigem, editable)}
         <td class="release-number-cell"><span class="stock-badge ${stockClass}">${central}</span></td>
         <td class="release-number-cell" data-requested-value${fatorValido ? ` data-fator="${fator}"` : ""}>${fatorValido ? formatarSolicitadoEmbalagem(released, fator) : requested}</td>
         <td class="release-number-cell">${editable
@@ -7707,8 +8358,8 @@ function releasePanelItemsTable(group = [], editable = false) {
   });
   // Na leitura, Liberado é a última coluna: é dela que o comprovante de retirada lê as quantidades
   const headers = editable
-    ? ["", "Produto", "Estoque central", "Solicitado", "Liberar", "Falta", ""]
-    : ["Produto", "Estoque central", "Solicitado", "Liberado"];
+    ? ["", "Produto", "Origem", "Estoque central", "Solicitado", "Liberar", "Falta", ""]
+    : ["Produto", "Origem", "Estoque central", "Solicitado", "Liberado"];
   const linhas = rows.length ? rows : [`<tr><td colspan="${headers.length}">Nenhum produto neste pedido.</td></tr>`];
   return table(headers, linhas).replace("table-wrap", "table-wrap order-panel-table");
 }
@@ -7718,7 +8369,8 @@ function releasePanelHtml(group = []) {
   const first = group[0] || {};
   const status = first.status || "";
   const editable = status === "Em Andamento";
-  const totalItems = group.length;
+  // Produto dividido entre origens é UM produto em várias linhas: conta pelo SKU
+  const totalItems = contarProdutosDistintos(group);
   const totalRequested = group.reduce((sum, item) => sum + Number(item.quantidade_solicitada || 0), 0);
   const totalReleased = group.reduce((sum, item) => sum + Number(item.quantidade_liberada || 0), 0);
   const unavailable = group.filter((item) => centralStockValue(item) <= 0).length;
@@ -7762,6 +8414,18 @@ function releasePanelHtml(group = []) {
             <span class="${unavailable ? "is-warning" : ""}"><strong>${unavailable}</strong>sem estoque</span>
           </div>
           <p class="order-panel-hint">${esc(releasePanelStepHint(status))}</p>
+        </div>
+        <div class="order-panel-locais">
+          <label class="order-panel-local">Origem padrão do pedido
+            <span class="order-panel-origem-linha">
+              <select class="order-panel-origem" ${status === "Finalizado" ? "disabled" : ""}
+                data-origem-atual="${esc(contextoDeOrigem(group).padrao)}" aria-label="Origem padrão do pedido">
+                <option value="">Almoxarifado</option>
+              </select>
+              ${status === "Finalizado" ? "" : `<button class="btn secondary order-panel-aplicar-origem" type="button">Aplicar a todos os itens</button>`}
+            </span>
+          </label>
+          <p class="order-panel-local">Local de destino<strong>${esc(first.pdv || "PDV")}</strong></p>
         </div>
         ${first.observacao ? `<p class="order-panel-note"><strong>Observação do PDV</strong>${esc(first.observacao)}</p>` : ""}
         ${releasePanelItemsTable(group, editable)}
@@ -7918,6 +8582,118 @@ async function finalizeReleaseOrder(orderCode = "", context = {}, trigger = null
 }
 
 // Liga todos os eventos do painel do pedido
+// Diálogo "Dividir item": quanto sai de cada origem. Mostra o saldo de cada local e valida a
+// soma ao vivo. Sugestão inicial: o que o Almoxarifado tem e, se faltar, o resto do local com
+// mais saldo. Ao salvar, o servidor cria uma linha por parte (rota /api/admin/pedido/dividir-item).
+function abrirDivisaoDeItem(item, dados, destino, aoConcluir) {
+  const sku = item.sku_produto;
+  const pedida = Number(item.quantidade_solicitada || 0);
+  const locais = [{ id: "", nome: "Almoxarifado" }, ...(dados.pdvs || []).filter((p) => String(p.id) !== String(destino))];
+  // Saldo desconhecido (rota de saldo fora do ar) vira null: mostra "—" e conta como 0 na sugestão
+  const saldoOuNulo = (id) => {
+    const valor = dados.saldos?.[sku]?.[id ? String(id) : "ALMOX"];
+    return valor === undefined ? null : Number(valor);
+  };
+  const saldo = (id) => saldoOuNulo(id) ?? 0;
+  const saldoTexto = (id) => saldoOuNulo(id) ?? "—";
+  const noAlmox = Math.max(0, Math.min(saldo(""), pedida));
+  const melhorPdv = locais.slice(1).sort((a, b) => saldo(b.id) - saldo(a.id))[0];
+  const partes = noAlmox > 0 && noAlmox < pedida && melhorPdv
+    ? [{ quantidade: noAlmox, origem: "" }, { quantidade: pedida - noAlmox, origem: String(melhorPdv.id) }]
+    : [{ quantidade: pedida, origem: "" }, { quantidade: 0, origem: melhorPdv ? String(melhorPdv.id) : "" }];
+
+  const modal = document.createElement("div");
+  modal.className = "photo-viewer";
+  const fechar = () => modal.remove();
+  modal.innerHTML = `
+    <div class="photo-viewer-dialog relatorio-estoque-dialog" role="dialog" aria-modal="true" aria-label="Dividir item entre origens">
+      <div class="photo-viewer-head">
+        <div><p class="eyebrow">Dividir item</p><h3>${esc(item.produto || sku)}</h3></div>
+        <button class="icon-action fechar-divisao" type="button" aria-label="Fechar">&times;</button>
+      </div>
+      <div class="photo-viewer-body relatorio-estoque-body">
+        <p class="text-sm text-slate-600">O PDV pediu <strong>${pedida}</strong>.</p>
+        <div class="divisao-partes"></div>
+        <button class="btn secondary divisao-adicionar" type="button">+ Parte</button>
+        <p class="divisao-soma text-sm font-bold"></p>
+      </div>
+      <div class="form-actions">
+        <button class="btn secondary fechar-divisao" type="button">Cancelar</button>
+        <button class="btn divisao-salvar" type="button">Dividir</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  modal.querySelectorAll(".fechar-divisao").forEach((botao) => botao.addEventListener("click", fechar));
+
+  const render = () => {
+    modal.querySelector(".divisao-partes").innerHTML = partes.map((parte, indice) => `
+      <div class="divisao-parte">
+        <input type="number" min="1" step="1" value="${parte.quantidade}" data-indice="${indice}" class="divisao-qtd" aria-label="Quantidade da parte ${indice + 1}" />
+        <select data-indice="${indice}" class="divisao-origem" aria-label="Origem da parte ${indice + 1}">
+          ${locais.map((local) => `<option value="${esc(local.id)}" ${String(local.id) === parte.origem ? "selected" : ""}>${esc(local.nome)} (${saldoTexto(local.id)})</option>`).join("")}
+        </select>
+        ${partes.length > 2 ? `<button class="icon-action danger divisao-remover" type="button" data-indice="${indice}" aria-label="Remover parte">&times;</button>` : ""}
+      </div>`).join("");
+    modal.querySelectorAll(".divisao-qtd").forEach((campo) => campo.addEventListener("input", () => {
+      partes[Number(campo.dataset.indice)].quantidade = Number(campo.value);
+      validar();
+    }));
+    modal.querySelectorAll(".divisao-origem").forEach((sel) => sel.addEventListener("change", () => {
+      partes[Number(sel.dataset.indice)].origem = sel.value;
+      validar();
+    }));
+    modal.querySelectorAll(".divisao-remover").forEach((botao) => botao.addEventListener("click", () => {
+      partes.splice(Number(botao.dataset.indice), 1);
+      render();
+    }));
+    modal.querySelector(".divisao-adicionar").disabled = partes.length >= 5;
+    validar();
+  };
+  // A soma tem que bater com o pedido, cada parte inteira > 0 e origens diferentes
+  const validar = () => {
+    const soma = partes.reduce((total, parte) => total + (Number(parte.quantidade) || 0), 0);
+    const inteiras = partes.every((parte) => Number.isInteger(Number(parte.quantidade)) && Number(parte.quantidade) > 0);
+    const distintas = new Set(partes.map((parte) => parte.origem)).size === partes.length;
+    const aviso = !inteiras ? "Cada parte precisa de uma quantidade inteira maior que zero."
+      : !distintas ? "Cada parte precisa de uma origem diferente."
+        : soma !== pedida ? `A soma das partes é ${soma}; precisa ser ${pedida}.` : `Soma ${soma} de ${pedida}.`;
+    const ok = inteiras && distintas && soma === pedida;
+    const campo = modal.querySelector(".divisao-soma");
+    campo.textContent = aviso;
+    campo.classList.toggle("text-red-700", !ok);
+    modal.querySelector(".divisao-salvar").disabled = !ok;
+    return ok;
+  };
+  modal.querySelector(".divisao-adicionar").addEventListener("click", () => {
+    const usada = new Set(partes.map((parte) => parte.origem));
+    const livre = locais.find((local) => !usada.has(String(local.id)));
+    partes.push({ quantidade: 0, origem: livre ? String(livre.id) : "" });
+    render();
+  });
+  modal.querySelector(".divisao-salvar").addEventListener("click", async (event) => {
+    if (!validar()) return;
+    const botao = event.currentTarget;
+    botao.disabled = true;
+    try {
+      await request("/api/admin/pedido/dividir-item", {
+        method: "POST",
+        body: JSON.stringify({
+          codigo_pedido: item.codigo_pedido,
+          id: item.id,
+          partes: partes.map((parte) => ({ quantidade: Number(parte.quantidade), local_origem_pdv_id: parte.origem || null }))
+        })
+      });
+      toast(`${sku} dividido em ${partes.length} partes.`);
+      fechar();
+      await aoConcluir();
+    } catch (error) {
+      toast(error.message || "Não foi possível dividir o item.", "error");
+      botao.disabled = false;
+    }
+  });
+  render();
+}
+
 function bindReleasePanel(overlay, group = [], context = {}) {
   const panel = overlay?.querySelector(".order-panel");
   if (!panel) return;
@@ -7938,6 +8714,107 @@ function bindReleasePanel(overlay, group = [], context = {}) {
   panel.querySelector(".order-panel-timeline-open")?.addEventListener("click", () => {
     openReleaseTimelineModal(orderCode);
   });
+
+  // Origem: um carregamento só traz os locais possíveis e o saldo de cada produto em cada um,
+  // e preenche o padrão do cabeçalho e o seletor de cada item ("PARK (12)"). O destino nunca
+  // aparece como origem. Finalizado fica travado (sem seletor).
+  const origemSel = panel.querySelector(".order-panel-origem");
+  const seletoresDeItem = [...panel.querySelectorAll(".item-origem")];
+  let dadosDeOrigem = { pdvs: [], saldos: {} };
+  const destino = String(group[0]?.pdv_id ?? "");
+  const nomeDaOrigem = (valor) => (valor ? dadosDeOrigem.pdvs.find((p) => String(p.id) === String(valor))?.nome || "PDV" : "Almoxarifado");
+  // Sem saldo carregado (rota fora do ar), o local aparece sem número em vez de "0" enganoso
+  const saldoEm = (sku, valor) => {
+    const saldo = dadosDeOrigem.saldos[sku]?.[valor ? String(valor) : "ALMOX"];
+    return saldo === undefined ? null : Number(saldo);
+  };
+  const opcoesDeOrigem = (atual, sku) => {
+    const locais = [{ id: "", nome: "Almoxarifado" }, ...dadosDeOrigem.pdvs.filter((p) => String(p.id) !== destino)];
+    return locais.map((local) => {
+      const saldo = sku ? saldoEm(sku, local.id) : null;
+      // Nome limpo no texto; o saldo vai em data-saldo e o seletor de locais mostra como chip
+      const atributoSaldo = sku ? ` data-saldo="${saldo === null ? "" : esc(saldo)}"` : "";
+      return `<option value="${esc(local.id)}"${atributoSaldo} ${String(local.id) === String(atual) ? "selected" : ""}>${esc(local.nome)}</option>`;
+    }).join("");
+  };
+  // Os LOCAIS vêm de /api/admin/pdvs (rota estável) e o SALDO de cada um é um complemento: se a
+  // rota de saldo falhar, os locais continuam aparecendo, só sem número. Antes os dois vinham da
+  // rota de saldo e o erro era engolido -- sem ela, só sobrava "Almoxarifado" (24/09/2026).
+  if (origemSel) aprimorarSeletorDeLocal(origemSel, { titulo: "Origem padrão do pedido" });
+  seletoresDeItem.forEach((sel) => aprimorarSeletorDeLocal(sel, {
+    titulo: `Origem de ${sel.closest("tr")?.dataset.product || sel.dataset.sku}`,
+    compacto: true
+  }));
+  const preencherSeletores = () => {
+    if (origemSel && !origemSel.disabled) origemSel.innerHTML = opcoesDeOrigem(origemSel.dataset.origemAtual, "");
+    seletoresDeItem.forEach((sel) => { sel.innerHTML = opcoesDeOrigem(sel.dataset.atual, sel.dataset.sku); });
+  };
+  if (origemSel || seletoresDeItem.length) {
+    const skus = [...new Set(group.map((item) => item.sku_produto).filter(Boolean))];
+    Promise.allSettled([
+      request("/api/admin/pdvs", { silentLoading: true }),
+      request(`/api/admin/pedido/saldos-origem?skus=${encodeURIComponent(skus.join(","))}`, { silentLoading: true })
+    ]).then(([locais, saldos]) => {
+      if (locais.status === "fulfilled") {
+        dadosDeOrigem.pdvs = (locais.value.pdvs || []).filter((p) => p.administrativo !== true);
+      } else {
+        toast("Não foi possível carregar os locais de estoque.", "error");
+      }
+      if (saldos.status === "fulfilled") dadosDeOrigem.saldos = saldos.value.saldos || {};
+      else console.warn("Saldo por local indisponível:", saldos.reason?.message || saldos.reason);
+      preencherSeletores();
+    });
+  }
+  // "Aplicar a todos": muda só os itens que seguem o padrão; os ajustados um a um ficam
+  panel.querySelector(".order-panel-aplicar-origem")?.addEventListener("click", async () => {
+    try {
+      const r = await request("/api/admin/orders/origem", {
+        method: "POST",
+        body: JSON.stringify({ codigo_pedido: orderCode, local_origem_pdv_id: origemSel?.value || null })
+      });
+      toast(`Origem ${nomeDaOrigem(origemSel?.value)} aplicada a ${r.itens_alterados} item(ns).`);
+      await reloadReleasePanel(overlay, orderCode, context);
+    } catch (error) {
+      toast(error.message || "Não foi possível aplicar a origem.", "error");
+    }
+  });
+  // Origem de um item só
+  seletoresDeItem.forEach((sel) => sel.addEventListener("change", async () => {
+    try {
+      await request("/api/admin/orders/origem", {
+        method: "POST",
+        body: JSON.stringify({ codigo_pedido: orderCode, itens: [{ id: Number(sel.dataset.id), local_origem_pdv_id: sel.value || null }] })
+      });
+      toast(`${sel.dataset.sku}: sai de ${nomeDaOrigem(sel.value)}.`);
+      await reloadReleasePanel(overlay, orderCode, context);
+    } catch (error) {
+      sel.value = sel.dataset.atual;
+      atualizarSeletorDeLocal(sel);
+      toast(error.message || "Não foi possível mudar a origem do item.", "error");
+    }
+  }));
+  panel.querySelectorAll(".dividir-item").forEach((botao) => botao.addEventListener("click", () => {
+    const item = group.find((linha) => String(linha.id) === botao.dataset.id);
+    if (item) abrirDivisaoDeItem(item, dadosDeOrigem, destino, async () => reloadReleasePanel(overlay, orderCode, context));
+  }));
+  panel.querySelectorAll(".juntar-item").forEach((botao) => botao.addEventListener("click", async () => {
+    const confirmado = await confirmSystem({
+      title: "Desfazer divisão?",
+      message: `As partes de ${botao.dataset.sku} voltam a ser um item só, com a soma das quantidades e a origem padrão do pedido.`,
+      confirmLabel: "Desfazer divisão"
+    });
+    if (!confirmado) return;
+    try {
+      await request("/api/admin/pedido/juntar-item", {
+        method: "POST",
+        body: JSON.stringify({ codigo_pedido: orderCode, sku: botao.dataset.sku })
+      });
+      toast("Divisão desfeita.");
+      await reloadReleasePanel(overlay, orderCode, context);
+    } catch (error) {
+      toast(error.message || "Não foi possível desfazer a divisão.", "error");
+    }
+  }));
 
   const setSaving = (saving) => {
     panel.classList.toggle("is-saving", saving);
@@ -8031,10 +8908,62 @@ async function reloadReleasePanel(overlay, orderCode = "", context = {}) {
   }
 }
 
+// Retirada/transferência concluiu, mas algum item NÃO foi lançado na OMIE (ex.: PDV sem local
+// de estoque vinculado). Não pode passar calado: a sincronização do estoque central substitui o
+// saldo pelo da OMIE e desfaz a baixa (visto em 24/09/2026 com a COZINHA DECK). Diálogo, não
+// toast, para a pessoa ler e agir.
+async function avisarSeOmieIgnorada(integracao) {
+  if (!integracao || typeof integracao !== "object") return;
+  const ignorados = Number(integracao.ignorados || 0);
+  const registrados = Number(integracao.registrados || 0);
+  if (!ignorados && (registrados || !integracao.motivo)) return;
+  await confirmSystem({
+    title: "Estoque não lançado na OMIE",
+    message: `${integracao.motivo || "Parte dos itens não foi lançada na OMIE."}${ignorados ? ` (${ignorados} item(ns) ignorado(s))` : ""}`,
+    consequence: "No MyEstoque a movimentação foi feita, mas a próxima sincronização com a OMIE vai desfazer a baixa do estoque central. Vincule o PDV a um local de estoque em Integrações.",
+    confirmLabel: "Entendi",
+    cancelLabel: "Fechar",
+    danger: true
+  });
+}
+
+// Deixa a tabela de produtos do pedido com a altura de 5 produtos (cabeçalho + 5 linhas),
+// rolando por dentro. Medido, e não fixo no CSS: a linha cresce quando o nome do produto quebra.
+function ajustarAlturaDaTabelaDoPedido(overlay) {
+  const tabela = overlay?.querySelector(".order-panel .order-panel-table");
+  if (!tabela) return;
+  const linhas = [...tabela.querySelectorAll("tbody tr")].filter((linha) => !linha.classList.contains("hidden"));
+  // Com menos de 5 produtos a altura é a de todos eles: deixar automático fazia o painel
+  // espremer a tabela até sobrar só o cabeçalho (visto com um pedido de 3 produtos)
+  if (!linhas.length) return;
+  const cabecalho = tabela.querySelector("thead")?.getBoundingClientRect().height || 0;
+  const cinco = linhas.slice(0, 5).reduce((soma, linha) => soma + linha.getBoundingClientRect().height, 0);
+  // + a barra de rolagem horizontal, quando a tabela for mais larga que o painel (celular)
+  const barra = tabela.offsetHeight - tabela.clientHeight;
+  tabela.style.height = `${Math.ceil(cabecalho + cinco + barra + 2)}px`;
+  tabela.classList.add("tem-altura-fixa");
+}
+
+// Uma medição por quadro ao redimensionar (girar o celular, mudar a janela)
+let ajusteDeAlturaPendente = false;
+window.addEventListener("resize", () => {
+  if (ajusteDeAlturaPendente) return;
+  ajusteDeAlturaPendente = true;
+  requestAnimationFrame(() => {
+    ajusteDeAlturaPendente = false;
+    const overlay = document.querySelector(".order-panel")?.parentElement;
+    if (overlay) {
+      overlay.querySelector(".order-panel-table")?.style.removeProperty("height");
+      ajustarAlturaDaTabelaDoPedido(overlay);
+    }
+  });
+});
+
 // Renderiza o painel e devolve o foco para onde o trabalho continua
 function renderReleasePanel(overlay, group = [], context = {}) {
   overlay.innerHTML = releasePanelHtml(group);
   bindReleasePanel(overlay, group, context);
+  ajustarAlturaDaTabelaDoPedido(overlay);
   const firstInput = overlay.querySelector(".liberada");
   if (firstInput) {
     firstInput.focus();
@@ -8779,7 +9708,7 @@ function orderCard(group) {
           const fatorNaoEditavel = Number(o.fator_conversao);
           const fatorNaoEditavelValido = o.fator_status !== "INVALIDO" && Number.isSafeInteger(fatorNaoEditavel) && fatorNaoEditavel > 1;
           return `
-        <tr data-id="${o.id}" data-version="${o.version || 1}" data-requested="${o.quantidade_solicitada}" data-released="${o.quantidade_liberada || 0}" data-sku="${esc(o.sku_produto || "")}" ${fatorNaoEditavelValido ? `data-fator="${fatorNaoEditavel}" data-embalagem="${esc(o.embalagem || "")}"` : ""}>
+        <tr data-id="${o.id}" data-version="${o.version || 1}" data-requested="${o.quantidade_solicitada}" data-released="${o.quantidade_liberada || 0}" data-sku="${esc(o.sku_produto || "")}" data-origem-nome="${esc(o.local_origem || "Almoxarifado")}" ${fatorNaoEditavelValido ? `data-fator="${fatorNaoEditavel}" data-embalagem="${esc(o.embalagem || "")}"` : ""}>
           <td>${esc(o.produto)} ${o.item_origem === "ALMOX" ? `<span class="order-source-badge">Almox</span>` : ""}</td>
           <td class="release-number-cell">${centralStockValue(o)}</td>
           <td class="release-number-cell">${stockValue(o.estoque_pdv)}</td>
@@ -8815,7 +9744,7 @@ function orderCard(group) {
         const saldoLabel = saldo < 0 ? "Saldo negativo" : saldo === 0 ? "Saldo zerado" : "Saldo disponível";
         const canBulkDeleteItem = canRemoveProducts;
         return `
-        <tr data-id="${o.id}" data-version="${o.version || 1}" data-requested="${o.quantidade_solicitada}" data-product="${esc(o.produto)}" data-sku="${esc(o.sku_produto || "")}" data-released="${esc(releasedQty)}" ${fatorKanbanValido ? `data-fator="${fatorKanban}" data-embalagem="${esc(o.embalagem || "")}"` : ""} class="release-item-row ${rowState} ${isRemoved ? "is-marked-remove" : ""} ${hiddenCompleted ? "hidden" : ""}">
+        <tr data-id="${o.id}" data-version="${o.version || 1}" data-requested="${o.quantidade_solicitada}" data-origem-nome="${esc(o.local_origem || "Almoxarifado")}" data-product="${esc(o.produto)}" data-sku="${esc(o.sku_produto || "")}" data-released="${esc(releasedQty)}" ${fatorKanbanValido ? `data-fator="${fatorKanban}" data-embalagem="${esc(o.embalagem || "")}"` : ""} class="release-item-row ${rowState} ${isRemoved ? "is-marked-remove" : ""} ${hiddenCompleted ? "hidden" : ""}">
           <td class="release-remove-cell">
             <label class="release-select-control" title="${canBulkDeleteItem ? "Selecionar produto para exclusão" : "Produto bloqueado para exclusão"}">
               <input class="bulk-order-item" type="checkbox" value="${esc(o.id)}" ${canBulkDeleteItem ? "" : "disabled"} aria-label="Selecionar ${esc(o.produto)} para exclusão">
@@ -8937,7 +9866,7 @@ async function printOrder(card, options = {}) {
     const fator = Number(row.dataset.fator);
     const fatorValido = row.dataset.fator && Number.isSafeInteger(fator) && fator > 1;
     const emb = fatorValido ? formatarEmbalagensImpressaoPedido(quantidadeBruta, fator) : "—";
-    return { product, emb, qtd: quantidadeBruta };
+    return { product, emb, qtd: quantidadeBruta, origem: row.dataset.origemNome || "" };
   }).filter((item) => item.product && item.product !== "Nenhum registro encontrado.");
 
   // Sem isso o cupom herdava o @page A4 global e imprimia como folha cheia, não como recibo estreito
@@ -8992,9 +9921,16 @@ async function printOrder(card, options = {}) {
   return { method: "Navegador", printer: "Navegador" };
 }
 
+// Com mais de uma origem no pedido, o comprovante diz de onde saiu cada linha (o mesmo
+// produto pode aparecer duas vezes, uma por parte)
+function comOrigemQuandoMisturado(itens = []) {
+  if (new Set(itens.map((item) => item.origem || "")).size <= 1) return itens;
+  return itens.map((item) => ({ ...item, produto: `${item.produto} (${item.origem || "Almoxarifado"})` }));
+}
+
 // Extrai os itens de retirada a partir do card do pedido
 function orderWithdrawalItemsFromCard(card) {
-  return [...card.querySelectorAll("tbody tr:not(.hidden)")].map((row) => {
+  return comOrigemQuandoMisturado([...card.querySelectorAll("tbody tr:not(.hidden)")].map((row) => {
     const cells = row.querySelectorAll("td");
     const releasedCandidates = [
       row.querySelector(".liberada")?.value,
@@ -9006,17 +9942,19 @@ function orderWithdrawalItemsFromCard(card) {
       .find((value) => Number.isFinite(value) && value > 0) || 0;
     return {
       produto: row.querySelector(".release-product-name")?.textContent?.trim() || cells[0]?.textContent?.trim() || cells[1]?.textContent?.trim() || "",
-      liberada: releasedQty
+      liberada: releasedQty,
+      origem: row.dataset.origemNome || ""
     };
-  }).filter((item) => item.produto && item.produto !== "Nenhum registro encontrado." && Number(item.liberada || 0) > 0);
+  }).filter((item) => item.produto && item.produto !== "Nenhum registro encontrado." && Number(item.liberada || 0) > 0));
 }
 
 // Extrai os itens de retirada a partir do grupo do pedido
 function orderWithdrawalItemsFromGroup(group = []) {
-  return orderReleasedItems(group).map((item) => ({
+  return comOrigemQuandoMisturado(orderReleasedItems(group).map((item) => ({
     produto: item.produto,
-    liberada: item.quantidade_liberada || 0
-  })).filter((item) => item.produto);
+    liberada: item.quantidade_liberada || 0,
+    origem: item.local_origem || "Almoxarifado"
+  })).filter((item) => item.produto));
 }
 
 // Serializa os itens de retirada para um atributo HTML
@@ -9278,6 +10216,7 @@ function openOrderWithdrawalModal(card, { from, to, pdvId = "", onSuccess, onClo
         toast(`Estoque central negativo em ${negativos.length} produto${negativos.length === 1 ? "" : "s"} (ex: ${negativos[0].nome || negativos[0].sku} = ${negativos[0].saldo}).`, "error");
       }
       close();
+      await avisarSeOmieIgnorada(resultado?.integracao);
       if (typeof onSuccess === "function") {
         await onSuccess();
       } else {
@@ -10029,11 +10968,14 @@ async function viewConfigV2() {
   // derrubou o login de todo mundo em 29/08 e a rota tem comentario proibindo. A rota admin
   // garante a coluna antes de consultar, e esta tela ja e exclusiva do Almoxarifado.
   // Se a chamada falhar, a tela ainda abre -- so sem a informacao de perfil.
-  const perfilPorPdv = new Map(
-    await request("/api/admin/pdvs", { silentLoading: true })
-      .then((r) => (r.pdvs || []).map((p) => [String(p.id), p.administrativo === true]))
-      .catch(() => [])
-  );
+  const pdvsAdmin = await request("/api/admin/pdvs", { silentLoading: true })
+    .then((r) => r.pdvs || [])
+    .catch(() => []);
+  const perfilPorPdv = new Map(pdvsAdmin.map((p) => [String(p.id), p.administrativo === true]));
+  // Local de estoque padrão por PDV (NULL = Almoxarifado): de onde saem os pedidos NOVOS dele
+  const localPadraoPorPdv = new Map(pdvsAdmin.map((p) => [String(p.id), p.local_estoque_padrao_pdv_id ?? null]));
+  // Só PDV que não é administrativo pode ser origem (o administrativo não tem saldo de revenda)
+  const pdvsQuePodemSerOrigem = pdvsAdmin.filter((p) => p.administrativo !== true);
   const categorySelect = (id) => `
     <div class="category-picker">
       <p class="text-sm font-bold">Categorias permitidas para este PDV</p>
@@ -10102,6 +11044,13 @@ async function viewConfigV2() {
             <input name="nome" placeholder="Nome do PDV" required />
             <input name="senha" type="password" placeholder="Nova senha (opcional)" />
             ${campoPdvAdministrativo(false)}
+            <label class="grid gap-1 text-sm font-bold">Local de estoque padrão
+              <select name="local_estoque_padrao_pdv_id" id="pdv-local-padrao">
+                <option value="">Almoxarifado</option>
+                ${pdvsQuePodemSerOrigem.map((p) => `<option value="${p.id}">${esc(p.nome)}</option>`).join("")}
+              </select>
+              <small class="text-slate-500 font-normal">De onde sai a mercadoria dos pedidos novos deste PDV. O Almoxarifado pode trocar em cada pedido.</small>
+            </label>
             ${categorySelect("edit-pdv-category")}
             <div class="form-actions">
               <button class="btn secondary" id="cancel-pdv-edit" type="button">Cancelar edição</button>
@@ -10140,6 +11089,7 @@ async function viewConfigV2() {
 
         <section class="config-panel hidden" data-config-panel="alerts" role="tabpanel">
           ${renderOrderAlertSettings()}
+          <div id="pdv-alert-settings" class="mt-4"></div>
         </section>
 
         <section class="config-panel hidden" data-config-panel="security" role="tabpanel">
@@ -10183,6 +11133,7 @@ async function viewConfigV2() {
   document.querySelectorAll("[data-config-tab]").forEach((button) => button.addEventListener("click", () => setConfigTab(button.dataset.configTab)));
   document.querySelector("#open-integrations-center")?.addEventListener("click", () => route("integrations"));
   bindOrderAlertSettings();
+  montarConfiguracaoAlertaDosPdvs();
 
   const categoryPickers = {};
   const setupCategoryPicker = (id, initial = []) => {
@@ -10313,6 +11264,12 @@ async function viewConfigV2() {
     pdvEditForm.querySelector('[name="senha"]').value = "";
     // O formulario e reusado entre PDVs: sem esta linha o checkbox guardaria o perfil do anterior
     pdvEditForm.querySelector('[name="administrativo"]').checked = perfilPorPdv.get(String(pdv.id)) === true;
+    // Um PDV não pode ser origem dele mesmo: esconde a própria opção
+    const localPadrao = pdvEditForm.querySelector('[name="local_estoque_padrao_pdv_id"]');
+    localPadrao.querySelectorAll("option").forEach((opcao) => { opcao.hidden = opcao.value === String(pdv.id); });
+    localPadrao.value = String(localPadraoPorPdv.get(String(pdv.id)) ?? "");
+    aprimorarSeletorDeLocal(localPadrao, { titulo: "Local de estoque padrão" });
+    atualizarSeletorDeLocal(localPadrao);
     document.querySelector("#pdv-edit-title").textContent = `Editar PDV: ${pdv.nome}`;
     categoryPickers["edit-pdv-category"].set(pdv.categorias || []);
     setConfigTab("manage");
@@ -11682,11 +12639,22 @@ let eventosDoPdv = null;
 function conectarEventosDoPdv() {
   if (state.user?.role !== "pdv" || eventosDoPdv || !window.EventSource) return;
   eventosDoPdv = new EventSource("/api/pdv/inventario/eventos");
+  // Configuração do alerta definida pelo Almoxarifado; sem ela vale o padrão (até visualizar)
+  request("/api/pdv/alert-preferences", { silentLoading: true })
+    .then((r) => definirPreferenciasDoPdv(r.preferences))
+    .catch((erro) => console.warn("Configuração do alerta do PDV indisponível; usando o padrão.", erro?.message));
   eventosDoPdv.addEventListener("INVENTARIO_ASSINATURA_SOLICITADA", async () => {
     toast("O Almoxarifado confirmou sua contagem. Assine para concluir o inventário.");
     // Só troca de tela se o PDV não estiver no meio de outra coisa
     if (["inventario", "mine", "my-stock"].includes(state.currentView)) await route("inventario");
     else marcarAvisoDeAssinatura();
+  });
+  // Pedido do PRÓPRIO PDV entrou em Aguardando Retirada (o servidor só entrega ao dono)
+  eventosDoPdv.addEventListener("PEDIDO_AGUARDANDO_RETIRADA", (evento) => {
+    let dados = {};
+    try { dados = JSON.parse(evento.data); } catch {}
+    mostrarPedidoProntoParaRetirada(dados, { abrirMeusPedidos: () => route("mine") });
+    if (state.currentView === "mine") route("mine");
   });
   // Revisão do Almoxarifado: o pedido de assinatura some, para o PDV não assinar algo que
   // voltou para conferência (o servidor também recusaria a assinatura)
@@ -11703,6 +12671,7 @@ function conectarEventosDoPdv() {
 function desconectarEventosDoPdv() {
   eventosDoPdv?.close();
   eventosDoPdv = null;
+  limparAlertasDoPdv();
 }
 
 // Marca visualmente que há assinatura pendente, para quem está em outra tela

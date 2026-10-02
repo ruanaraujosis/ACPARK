@@ -21,8 +21,10 @@ não regrediu e foque no que mudou desde então.
 - **SQL injection nas rotas HTTP: nenhuma.** Todas as queries usam parâmetros `$1`. As únicas
   interpolações são constantes internas (`brasiliaNow`, `skuColumn` de lista fixa).
 - **Autenticação sólida**: pbkdf2-sha256 com 260k iterações, `timingSafeEqual`, sem enumeração de
-  usuário (mesma mensagem para PDV inexistente e senha errada), rate limit de 8 tentativas/5min por
-  IP cobrindo admin e PDV. Testado contra JWT forjado e `alg=none` — ambos rejeitados.
+  usuário (mesma mensagem para PDV inexistente e senha errada), rate limit de **3 tentativas/5min**
+  por IP (decisão do usuário em 02/10/2026; era 8) em `server/utils/limite-login.js`, cobrindo admin,
+  PDV, MyControl e toda reconfirmação de senha. Testado contra JWT forjado e `alg=none` — ambos
+  rejeitados.
 - **Isolamento entre PDVs correto**: rotas `/api/pdv/*` sempre usam `user.pdvId` da sessão, nunca
   `pdvId` do cliente. As rotas que aceitam `pdvId` por query são todas `/api/admin/*` com gate de
   admin (legítimo: o almoxarifado consulta qualquer PDV).
@@ -57,6 +59,28 @@ Cada uma tem teste. Se um desses testes começar a falhar, é regressão de segu
 5. **`INTEGRATION_ENCRYPTION_KEY` sem fallback** (`integration.security.js`). Antes caía em
    `JWT_SECRET` e depois numa string fixa que está no repositório público — qualquer instalação sem
    `NODE_ENV=production` gravava as credenciais da OMIE com chave conhecida. Agora é sempre exigida.
+6. **Erro técnico não chega ao cliente** (`server/utils/erros.js`, 02/10/2026). O handler central
+   devolvia `error.message` de tudo: o navegador recebia texto do PostgreSQL (nome de coluna,
+   constraint, tabela), caminho completo do disco (ENOENT) e falha de conexão do pool. Agora
+   `respostaDeErro()` esconde erro do banco, de sistema, nativo do JS e de conexão (500 genérico,
+   detalhe no log) e traduz os que o usuário resolve (23505/23503 → 409, 22P02 → 400, deadlock →
+   409). Mensagem de negócio (`throw new Error("...")` ou com `statusCode`) passa igual a antes.
+   Toda rota com `catch` próprio usa `respostaDeErro`/`mensagemPublica`, nunca `erro.message` cru.
+7. **Reconfirmação de senha também conta no limite** (`avarias.routes.js` `senhaAdminConfere`,
+   troca de senha em `/api/admin/config`). Antes só o login tinha limite: com uma sessão de admin
+   esquecida aberta dava para testar senhas sem limite por ali e sair com a senha.
+8. **Credencial OMIE recusada para a sincronização automática** (`omie.api.js`
+   `ehErroDeCredencial`, `job.runner.js`, `scheduler.js`, `integration.repository.js`). O padrão
+   não tinha acento e não reconhecia o texto real da OMIE, então chave recusada virava erro de
+   dados retentável e o agendador insistia até a OMIE bloquear a conta por consumo indevido.
+   Agora: texto comparado sem acento, 401/403 = autenticação, e com `status = ERRO_AUTENTICACAO`
+   o agendador não enfileira nem executa nada daquela integração. Só salvar credencial nova
+   (`PENDENTE`) ou teste de conexão bem-sucedido liberam; outra falha não sobrescreve o bloqueio.
+   O clique do operador (`manual: true`) ainda pode tentar. "chave de acesso" sozinha **não** conta
+   como credencial — é também a chave de 44 dígitos da NF-e.
+
+Testes: `tests/seguranca-erros-omie.test.js` (unidade) e `tests/seguranca-ataque.test.js` (servidor
+real em banco descartável: erro do banco não aparece na resposta; 4ª senha errada → 429).
 
 ## Checklist ao revisar mudanças
 
@@ -87,7 +111,9 @@ Sobem contra um banco descartável (nunca produção — crie um com `db/estrutu
 - PDV A forçando `pdvId` do PDV B → não retorna dados do B.
 - Payloads de SQLi em `q`, `pdvId`, `status` → HTTP 200 (tratados como texto), e **contagem de
   tabelas inalterada** depois. É a contagem que prova, não o status HTTP.
-- 9+ tentativas de senha errada → 429, e a senha correta também é bloqueada durante a janela.
+- 4+ tentativas de senha errada → 429 (login ou reconfirmação), e a senha correta também é
+  bloqueada durante a janela.
+- Tabela renomeada no banco descartável → resposta 500 genérica, sem nome de tabela/coluna/SQL.
 - `/../../../.env.local` e variantes codificadas no servidor estático → sem vazamento.
 - Upload acima do limite → 413, conexão cortada, e o servidor continua respondendo.
 
@@ -99,8 +125,11 @@ Sobem contra um banco descartável (nunca produção — crie um com `db/estrutu
   imediatamente. Remover do HEAD não adianta — já foi publicado.
 - **Ref do projeto Supabase no histórico**. O Supabase saiu do projeto; confirmar que o projeto
   remoto foi desativado de fato. Não é rotacionável, então reescrever histórico tem valor baixo.
-- **Senha mínima de 4 caracteres** (`setup.routes.js`, `index.js`). Com o rate limit de 8/5min, uma
-  senha de 4 dígitos ainda cai em poucos dias. Aumentar o mínimo é decisão de usabilidade.
+- **Senha mínima de 4 caracteres** (`setup.routes.js`, `index.js`). Com o rate limit de 3/5min, uma
+  senha de 4 dígitos (10 mil combinações) leva ~11 dias de tentativas ininterruptas a partir de um
+  único IP. Aumentar o mínimo é decisão de usabilidade.
+- **O bloqueio é por IP**: numa máquina compartilhada, 3 erros de uma pessoa bloqueiam o login de
+  todos naquele PC por 5 minutos. Consequência aceita junto com o limite de 3.
 - **Sem revogação de sessão**: trocar a senha do admin não invalida JWTs já emitidos (validade 8h).
 - **Sem cabeçalhos de segurança** (`X-Content-Type-Options`, CSP, `X-Frame-Options`).
 - **`cookie@0.6.0`** tem CVE-2024-47764, não explorável aqui (só recebe o JWT e opções fixas).

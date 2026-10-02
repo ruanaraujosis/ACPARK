@@ -47,8 +47,11 @@ export function comoIntegrationError(erro) {
   const mensagem = String(erro?.message || erro || "Falha desconhecida na integracao.");
   // Falha de rede/DNS/socket e sempre transitoria: vale nova tentativa
   const rede = /ECONNREFUSED|ENOTFOUND|ETIMEDOUT|ECONNRESET|EAI_AGAIN|fetch failed|network/i.test(mensagem);
-  return new IntegrationError(mensagem, {
+  const convertido = new IntegrationError(mensagem, {
     codigo: rede ? CODIGOS_ERRO.TEMPORARIO : CODIGOS_ERRO.FALHA,
     retentavel: rede
   });
+  // Guarda o erro original para a rota decidir se o texto dele pode ir para a tela
+  convertido.causa = erro;
+  return convertido;
 }

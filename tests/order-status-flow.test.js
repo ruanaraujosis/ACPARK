@@ -64,10 +64,13 @@ test("a sobra da liberação parcial não vira pendência, só informação", ()
 });
 
 test("saldo central negativo avisa mas não bloqueia a retirada", () => {
-  assert.match(routes, /RETURNING sku, nome, qtd_total/);
+  // A baixa mora em debitarOrigem desde 23/09/2026 (a origem pode ser o Almoxarifado ou um PDV)
+  const origem = readFileSync(new URL("../server/services/pedidos/origem-estoque.service.js", import.meta.url), "utf8");
+  assert.match(origem, /UPDATE produtos SET qtd_total = qtd_total - \$1 WHERE sku = \$2 RETURNING sku, nome, qtd_total AS saldo/);
+  assert.match(routes, /const saldo = await debitarOrigem\(client, \{ origemPdvId: origemDaLinha\(row\)/);
   // Number(), não asInt(): qtd_total é NUMERIC (21/09/2026) e volta do driver como string --
   // asInt("-0.5") trunca pra "-0" antes de comparar, e "-0 < 0" é falso (bug real, evitado).
-  assert.match(routes, /if \(saldo && Number\(saldo\.qtd_total\) < 0\)/);
+  assert.match(routes, /if \(saldo && Number\(saldo\.saldo\) < 0\)/);
   assert.match(app, /Estoque central negativo em/);
   // A baixa continua acontecendo mesmo com saldo negativo
   assert.doesNotMatch(routes, /Estoque central insuficiente/);

@@ -8,7 +8,7 @@ Sistema de gestão de estoque e pedidos para PDVs (pontos de venda) e Almoxarifa
 
 - O sistema deve rodar como um **aplicativo local instalável**, não como "acessar um site pelo navegador". O usuário não deve precisar digitar URL, abrir navegador manualmente, nem iniciar servidor nenhuma vez — tudo isso já deve estar pronto.
 - **Servidor**: sempre ativo como serviço do Windows (NSSM, serviço `MyEstoque`), inicia sozinho no boot da máquina, sem exigir login nem ação do usuário. Ver [DEPLOY_LOCAL.md](DEPLOY_LOCAL.md).
-- **"Aplicativo"**: app desktop próprio em Electron, na pasta `desktop-app/` — janela própria sem abas nem barra de endereço, ícone gerado da logo do sistema (`public/logo-print.png` → `desktop-app/icone.ico` via `gerar-icone.ps1`). Distribuído como instalador NSIS (`desktop-app/dist/MyEstoque Setup 1.0.0.exe`), que cria atalhos na área de trabalho e no menu Iniciar.
+- **"Aplicativo"**: app desktop próprio em Electron, na pasta `desktop-app/` — janela própria sem abas nem barra de endereço, ícone gerado da logo do sistema (`public/logo-print.png` → `desktop-app/icone.ico` via `gerar-icone.ps1`). Distribuído como instalador NSIS (`desktop-app/dist/MyEstoque Setup 1.1.0.exe`), que cria atalhos na área de trabalho e no menu Iniciar: **MyEstoque** e **MyControl** (o mesmo executável com `--mycontrol`, que abre direto em `/mycontrol`; atalhos extras em `desktop-app/instalador.nsh`).
 - O app é só a casca: **não inicia servidor nenhum**, só abre a interface. O endereço do servidor é configurável pelo menu (salvo por máquina, padrão `http://192.168.1.207:5173`), então um único instalador serve Almoxarifado e PDVs. Ver seção 6 do [DEPLOY_LOCAL.md](DEPLOY_LOCAL.md) para instalar e recompilar.
 - **Comunicação em tempo real entre PDVs e Almoxarifado é obrigatória e não pode regredir.** Hoje é via Server-Sent Events (`public/js/services/order-alerts.js` + `server/services/order-alerts/order-alerts.events.js`), com fallback de polling a cada 12s. Qualquer mudança de infraestrutura (rede, deploy, hospedagem) precisa preservar isso — já foi confirmado que funciona bem (ou melhor) num servidor local único e sempre ativo comparado ao ambiente serverless usado no passado.
 - Qualquer ferramenta disponível pode ser usada para evoluir isso (compilar `.exe`, gerar ícones, criar serviços do Windows, etc.) — o objetivo final é sempre: **instalável, local, sem passos manuais, tempo real preservado**.
@@ -28,6 +28,11 @@ Sistema de gestão de estoque e pedidos para PDVs (pontos de venda) e Almoxarifa
 - **Único caminho de hospedagem: rede local (LAN).** O projeto não usa mais Vercel nem Supabase — foram removidos definitivamente do código, config e docs (não há `vercel.json`, `api/index.js` nem adapter de Supabase no repositório). Veja [DEPLOY_LOCAL.md](../docs/DEPLOY_LOCAL.md). O servidor roda como serviço do Windows (NSSM, nome do serviço `MyEstoque`) — sempre ativo, inicia sozinho no boot, ninguém precisa iniciar nada manualmente. Banco é PostgreSQL local (usuário `myestoque_app`).
 - `NODE_ENV=production` é seguro no local: o cookie de sessão só fica `secure` se `FORCE_SECURE_COOKIES=true` — não depende de `NODE_ENV` (isso foi corrigido de propósito para não quebrar login em HTTP puro na LAN).
 - Integrações externas: sincronização é **oportunista** — só funciona quando há internet, nunca deve travar o resto do sistema quando não há. Variável correta é `INTEGRATIONS_SCHEDULER_ENABLED` (aceita o nome antigo `OMIE_SCHEDULER_ENABLED`; `OMIE_AUTO_SCHEDULER` nunca existiu).
+- **A produção roda direto desta pasta** (`C:\Users\User\Documents\MyEstoque`). `public/**` é servido do disco a cada requisição, então editar uma tela aqui a coloca no ar na hora, mesmo pela metade. `server/**` entra no próximo reinício do serviço. Por isso:
+  - **Tarefa longa ou de agente: sempre num `git worktree` separado** (ex.: `git worktree add ..\MyEstoque-<tarefa> -b <branch> <base>`). No worktree: `npm install --no-package-lock` (o projeto não versiona lockfile; nunca symlink/junction de `node_modules`) e uma cópia do `.env.local` (ignorado pelo Git, apagar ao remover o worktree). O hook de pre-commit roda na pasta principal, então rode `npm run test:sequential` no worktree antes de cada commit.
+  - **Levar para a pasta principal só com o reinício autorizado na sequência:** o `git merge --ff-only` coloca as telas no ar na hora, mas o servidor só no reinício. Entre um e outro a produção fica meio atualizada (tela nova chamando rota que ainda não existe — já aconteceu na Fase 3 do MyControl). Faça o merge e o reinício juntos, com a autorização do usuário.
+  - **Antes de qualquer `Restart-Service MyEstoque`:** confira `git status` da pasta principal. Alteração pendente em `server/**` subiria código inacabado.
+  - **Preview do app (`myestoque-dev` no `.claude/launch.json`) usa o `.env.local`, ou seja, o banco de produção.** Para testar, use o servidor descartável de `tests/helpers/ambiente-descartavel.js` e abra com `preview_start {url}`.
 
 ## Integrações externas (arquitetura refeita em 18/08/2026)
 
@@ -73,3 +78,42 @@ Três otimizações feitas com medição antes/depois — se for mexer nesses po
 - Há um Skill do projeto em `.claude/skills/myestoque-ops/` com comandos operacionais prontos (checar saúde, reiniciar serviço, rodar testes, refazer migração do banco).
 - Há um Skill do projeto em `.claude/skills/myestoque-git/` com informações de Git/GitHub (dono atual do repositório, conta certa do `gh` CLI a usar, nome legado `ACPARK`, convenções de commit/push).
 - Há um hook em `.claude/settings.json` que roda a suíte de testes automaticamente antes de qualquer `git commit` e bloqueia o commit se algo falhar.
+
+## Compatibilidade com mobile (obrigatória em toda tela nova ou alterada)
+
+Vale para o MyControl e para qualquer tela do MyEstoque criada ou alterada. Faz parte do "pronto": tela que só funciona no desktop não está pronta. O sistema roda no app desktop, no navegador do PC e no celular (PDV, Almoxarifado andando pelo estoque, registro de veículo no pátio). Toda tela funciona a partir de **360px** de largura, sem rolagem horizontal da página.
+
+**O MyControl é mobile-first (regra do usuário):** ele vai ser usado principalmente no celular. Toda tela do MyControl é desenhada primeiro para o celular (fluxo em uma coluna, ações principais ao alcance do polegar, botão principal fixo e visível) e depois expandida para o desktop. No desktop ela **aproveita a tela inteira** — nada de coluna estreita perdida à esquerda com o resto vazio: grids de cards em várias colunas, formulários em duas colunas quando fizer sentido, painéis lado a lado (ex.: lista + detalhe). A expansão para o desktop nunca pode piorar o celular.
+
+- **Breakpoints em código novo, só três**: `@media (max-width: 720px)` para celular (uma coluna, controles em largura total), `@media (max-width: 1024px)` para tablet ou janela estreita (duas colunas quando fizer sentido) e, acima disso, desktop. Breakpoint novo só com motivo em comentário. Não refatorar os antigos (`640`, `760`, `980`, `1080`, `1180`…), só não espalhar mais.
+- **Layout**:
+  - `grid`/`flex` com `flex-wrap` e `minmax(...)`. Nada de largura fixa em px para contêiner, card, select ou coluna de formulário; largura fixa só em ícone e imagem pequena.
+  - Nenhum `min-width` maior que a tela; espaço lateral mínimo de 16px.
+  - Formulário em uma coluna no celular, com o rótulo sempre acima do campo.
+  - Tabela rola dentro de `.table-wrap` (`overflow-x: auto`), nunca a página. Lista longa no celular vira cards, com o dado principal em destaque e as ações no rodapé.
+  - Modal e painel de tela cheia no celular: `100dvh` (não `100vh`), rolam por dentro, rodapé de ações fixo e visível.
+  - Barra de ações com `flex-wrap`, texto de ajuda em `flex: 1 1 100%`, nenhum botão cortado (problema já corrigido em `.order-card-actions`).
+  - Barra fixa respeita `env(safe-area-inset-bottom)`.
+- **Toque**:
+  - Alvo mínimo de 44×44px (`input`/`select` globais já têm `min-height: 44px`).
+  - A regra global de `input` dá `width: 100%` também a checkbox e radio (foi isso que gerou o quadrado gigante no "Só os não contados"). Todo checkbox fica num `label` `inline-flex` com tamanho explícito: `html .x input[type="checkbox"] { width: 1.15rem; height: 1.15rem; min-height: 0; }`.
+  - Pelo menos 8px entre ações vizinhas. Ação destrutiva fica afastada das principais e sempre pede confirmação.
+  - Nada depende de `:hover`: o que está em tooltip ou `title` também aparece no toque. Arrastar e soltar (Kanban) tem alternativa por toque.
+- **Campos**:
+  - Fonte ≥16px em input (senão o iPhone dá zoom).
+  - Teclado certo: `inputmode="decimal"` (fracionado), `inputmode="numeric"` (inteiro, km), `type="tel"`, `autocapitalize="characters"` (placa, identificador), `autocomplete` correto no login (`username`, `current-password`, `new-password`).
+  - Foto com `accept="image/*" capture="environment"`, prévia, troca antes de salvar e compressão no navegador acima de `UPLOAD_MAX_IMAGE_MB`.
+  - Assinatura em largura total, com eventos de ponteiro e `touch-action: none` no canvas, sem perder a conversão de escala de `ligarQuadroDeAssinatura`.
+- **Texto**:
+  - Nada cortado: `overflow-wrap: anywhere`, ou reticências com o nome completo acessível. SKU, placa e matrícula em `white-space: nowrap` (só esses).
+  - Data e hora curtas no celular (`25/09 14:32`) e completas no desktop.
+  - Selos quebram para a linha de baixo sem empurrar o layout.
+- **Desempenho**: lista grande paginada ou carregada por demanda; miniatura na lista e foto grande só ao tocar; nenhuma biblioteca nova só para responsividade.
+- **Validação obrigatória**: no navegador integrado, com `resize_window`, conferir cada tela nova ou alterada em 375×812 (`mobile`), 360 de largura, 768×1024 (`tablet`) e desktop. Em cada largura:
+  - `document.documentElement.scrollWidth <= window.innerWidth`;
+  - nenhum botão cortado ou sobreposto;
+  - teclado certo em cada campo;
+  - modal rolando por dentro com o rodapé visível;
+  - checkbox no tamanho normal.
+
+  Screenshot de mobile e desktop de cada tela no relatório da fase; voltar ao preset `desktop` no final. Teste existente que fixe CSS antigo é ajustado sem mudar o comportamento pedido.
