@@ -1,6 +1,7 @@
 ﻿import crypto from "node:crypto";
 import { asInt, code, query, tx, verifyPassword } from "../../db.js";
 import { normalizeText, readBody, send } from "../../utils/http.js";
+import { erroMuitasTentativas, ipDaRequisicao, isLoginRateLimited, registerLoginFailure } from "../../utils/limite-login.js";
 import { getStorageService } from "../../services/storage/storage.service.js";
 import { getStorageConfig } from "../../services/storage/storage.config.js";
 
@@ -484,10 +485,18 @@ async function deleteDamageReturns(client, ids = []) {
   return result.rowCount;
 }
 
-// Confirma a senha do almoxarifado para ações sensíveis (ex: alterar devolução já finalizada); audita tentativas inválidas
-async function requireAdminPassword(client, devolucaoId, password, usuario, acao) {
+// Confere a senha do almoxarifado respeitando o mesmo limite de tentativas por IP do login
+async function senhaAdminConfere(client, password, ip) {
+  if (isLoginRateLimited(ip)) throw erroMuitasTentativas();
   const config = await client.query("SELECT valor FROM configuracoes WHERE chave = 'senha_almoxarifado'");
-  if (!password || !config.rows[0] || !verifyPassword(password, config.rows[0].valor)) {
+  const confere = Boolean(password && config.rows[0] && verifyPassword(password, config.rows[0].valor));
+  if (!confere && password) registerLoginFailure(ip);
+  return confere;
+}
+
+// Confirma a senha do almoxarifado para ações sensíveis (ex: alterar devolução já finalizada); audita tentativas inválidas
+async function requireAdminPassword(client, devolucaoId, password, usuario, acao, ip) {
+  if (!(await senhaAdminConfere(client, password, ip))) {
     await audit(client, devolucaoId, {
       usuario,
       acao: "Tentativa inválida de autorização admin",
@@ -1212,7 +1221,7 @@ export async function handleAvariasRoutes(req, res, context) {
           throw error;
         }
         if (["Finalizado", "Recusado", "Verificação"].includes(currentStatus) || nextStatus === "Verificação") {
-          await requireAdminPassword(client, id, normalizeText(body.adminPassword, 160), user.name, `Alteração de status ${currentStatus} para ${nextStatus}`);
+          await requireAdminPassword(client, id, normalizeText(body.adminPassword, 160), user.name, `Alteração de status ${currentStatus} para ${nextStatus}`, ipDaRequisicao(req));
         }
         if (nextStatus === "Recusado") {
           const itemRows = await client.query("SELECT id, quantidade FROM devolucao_avaria_itens WHERE devolucao_id = $1 FOR UPDATE", [id]);
@@ -1619,7 +1628,7 @@ export async function handleAvariasRoutes(req, res, context) {
           throw new Error("Somente devoluções em aprovação ou verificação podem ser finalizadas.");
         }
         if (currentStatus === "Verificação") {
-          await requireAdminPassword(client, id, normalizeText(body.adminPassword, 160), user.name, "Finalização de devolução em verificação");
+          await requireAdminPassword(client, id, normalizeText(body.adminPassword, 160), user.name, "Finalização de devolução em verificação", ipDaRequisicao(req));
         }
         const aprovado = asInt(row.quantidade_aprovada);
         if (aprovado <= 0) throw new Error("Não há quantidade aprovada para finalizar como avaria.");
@@ -1811,8 +1820,7 @@ export async function handleAvariasRoutes(req, res, context) {
           throw error;
         }
         const adminPassword = normalizeText(body.adminPassword, 160);
-        const config = await client.query("SELECT valor FROM configuracoes WHERE chave = 'senha_almoxarifado'");
-        if (!adminPassword || !config.rows[0] || !verifyPassword(adminPassword, config.rows[0].valor)) {
+        if (!(await senhaAdminConfere(client, adminPassword, ipDaRequisicao(req)))) {
           const error = new Error("Senha do admin incorreta.");
           error.statusCode = 401;
           throw error;

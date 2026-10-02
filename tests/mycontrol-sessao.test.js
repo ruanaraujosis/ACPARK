@@ -264,7 +264,7 @@ test("login do MyControl usa o mesmo limite de tentativas do MyEstoque (roda por
   for (let i = 0; i < 12 && status !== 429; i++) {
     status = (await chamar(amb.base, "/api/mycontrol/auth/login", { method: "POST", corpo: { usuario: "gestor.a", senha: `errada-${i}` } })).status;
   }
-  assert.equal(status, 429, "depois de 8 falhas o login deveria ser bloqueado");
+  assert.equal(status, 429, "depois de 3 falhas o login deveria ser bloqueado");
   // Bloqueado, nem a senha certa entra
   const certa = await chamar(amb.base, "/api/mycontrol/auth/login", { method: "POST", corpo: { usuario: "gestor.a", senha: senhaA } });
   assert.equal(certa.status, 429);

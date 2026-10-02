@@ -1,5 +1,6 @@
 ﻿import { query, tx, pool, asInt, code } from "../../db.js";
 import { normalizeText, readBody, send } from "../../utils/http.js";
+import { respostaDeErro } from "../../utils/erros.js";
 import { pdvsAdministrativos } from "../../services/pdvs/pdv-administrativo.service.js";
 import {
   registrarCompensacaoDaReabertura,
@@ -674,7 +675,10 @@ export async function handlePedidosRoutes(req, res, context) {
       });
       send(res, 200, { ok: true, ...resultado });
     } catch (erro) {
-      send(res, erro.statusCode || 500, { error: erro.message || "Não foi possível editar o pedido." });
+      // Erro técnico vai para o log; o PDV recebe só a mensagem segura
+      const { status, corpo } = respostaDeErro(erro, { mensagemPadrao: "Não foi possível editar o pedido." });
+      if (status >= 500) console.error(erro);
+      send(res, status, { error: corpo.message });
     }
     return true;
   }

@@ -22,6 +22,9 @@ import { configurarSessaoMc, MC_AUDIENCE } from "./services/mycontrol/sessao.js"
 import { ensurePdvAdministrativoColumn } from "./services/pdvs/pdv-administrativo.service.js";
 import { executarTick, iniciarAgendador } from "./services/integrations/core/scheduler.js";
 import { comprimirSePossivel, marcarSuporteGzip, normalizeCategories, normalizeCategoryList, normalizeText, readBody, send } from "./utils/http.js";
+import { MENSAGEM_ERRO_INTERNO, mensagemPublica, respostaDeErro } from "./utils/erros.js";
+// Limite de tentativas de senha por IP, compartilhado por login, MyControl e reconfirmações de senha
+import { ipDaRequisicao, isLoginRateLimited, registerLoginFailure } from "./utils/limite-login.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
@@ -187,32 +190,6 @@ async function listarProdutosComCategorias({ somenteAtivos = false, colunasReduz
   });
 }
 
-// Limite de tentativas de login por IP: protege contra forca bruta de senha
-const LOGIN_MAX_ATTEMPTS = 8;
-const LOGIN_WINDOW_MS = 5 * 60 * 1000;
-const loginAttempts = new Map();
-
-// Verifica se o IP estourou o limite de tentativas de login na janela atual
-function isLoginRateLimited(ip) {
-  const entry = loginAttempts.get(ip);
-  if (!entry) return false;
-  if (Date.now() - entry.firstAttemptAt > LOGIN_WINDOW_MS) {
-    loginAttempts.delete(ip);
-    return false;
-  }
-  return entry.count >= LOGIN_MAX_ATTEMPTS;
-}
-
-// Registra uma tentativa de login falha para o IP
-function registerLoginFailure(ip) {
-  const entry = loginAttempts.get(ip);
-  if (!entry || Date.now() - entry.firstAttemptAt > LOGIN_WINDOW_MS) {
-    loginAttempts.set(ip, { count: 1, firstAttemptAt: Date.now() });
-    return;
-  }
-  entry.count += 1;
-}
-
 // O MyControl usa o mesmo segredo de base (derivado lá), as mesmas opções de cookie e o mesmo
 // limite de tentativas de login por IP do MyEstoque
 configurarSessaoMc({ jwtSecret, sessionCookieOptions, isLoginRateLimited, registerLoginFailure });
@@ -241,7 +218,7 @@ async function api(req, res) {
 
   // Login por perfil: admin usa senha única do almoxarifado; PDV usa senha própria do ponto
   if (url.pathname === "/api/auth/login" && method === "POST") {
-    const ip = req.socket.remoteAddress || "desconhecido";
+    const ip = ipDaRequisicao(req);
     if (isLoginRateLimited(ip)) {
       return send(res, 429, { error: "Muitas tentativas de login. Aguarde alguns minutos e tente novamente." });
     }
@@ -596,7 +573,8 @@ async function api(req, res) {
         try {
           await tx((client) => validarOrigem(client, { origemPdvId: padrao, destinoPdvId: pdvId }));
         } catch (error) {
-          return send(res, error.statusCode || 400, { error: error.message });
+          if (!error.statusCode) console.error(error);
+          return send(res, error.statusCode || 400, { error: mensagemPublica(error) });
         }
         await query("UPDATE pdvs SET local_estoque_padrao_pdv_id = $2 WHERE id = $1", [pdvId, padrao]);
       }
@@ -866,8 +844,17 @@ async function api(req, res) {
       if (nextPassword.length < 4) return send(res, 400, { error: "A nova senha deve ter pelo menos 4 caracteres." });
       if (!confirmPassword) return send(res, 400, { error: "Confirme a nova senha do almoxarifado." });
       if (nextPassword !== confirmPassword) return send(res, 400, { error: "A confirmação da senha não confere." });
+      // Conferir a senha atual também conta no limite de tentativas: senão daria para testar
+      // senhas sem limite por aqui com uma sessão de admin esquecida aberta
+      const ip = ipDaRequisicao(req);
+      if (isLoginRateLimited(ip)) {
+        return send(res, 429, { error: "Muitas tentativas de senha. Aguarde alguns minutos e tente novamente." });
+      }
       const rows = await query("SELECT valor FROM configuracoes WHERE chave = 'senha_almoxarifado'");
-      if (!rows[0] || !verifyPassword(currentPassword, rows[0].valor)) return send(res, 401, { error: "Senha atual incorreta." });
+      if (!rows[0] || !verifyPassword(currentPassword, rows[0].valor)) {
+        registerLoginFailure(ip);
+        return send(res, 401, { error: "Senha atual incorreta." });
+      }
       if (verifyPassword(nextPassword, rows[0].valor)) return send(res, 400, { error: "A nova senha deve ser diferente da senha atual." });
       await query(
         `INSERT INTO configuracoes (chave, valor) VALUES ('senha_almoxarifado', $1)
@@ -1006,12 +993,11 @@ export async function handler(req, res) {
 
   if (req.url?.startsWith("/api/")) {
     api(req, res).catch((error) => {
+      // Detalhe técnico (SQL, caminho de arquivo, conexão) fica só no log do serviço
       console.error(error);
-      send(res, error.statusCode || 500, {
-        error: error.code || error.message || "Erro interno.",
-        message: error.message || "Erro interno.",
-        existingRequest: error.existingRequest || null
-      });
+      if (res.headersSent) return res.end();
+      const { status, corpo } = respostaDeErro(error);
+      send(res, status, corpo);
     });
   } else {
     serveStatic(req, res);
@@ -1022,7 +1008,8 @@ export async function handler(req, res) {
 http.createServer((req, res) => {
   handler(req, res).catch((error) => {
     console.error(error);
-    send(res, 500, { error: error.message || "Erro interno." });
+    if (res.headersSent) return res.end();
+    send(res, 500, { error: MENSAGEM_ERRO_INTERNO, message: MENSAGEM_ERRO_INTERNO });
   });
 }).listen(port, () => {
   console.log(`MyEstoque web rodando em http://localhost:${port}`);

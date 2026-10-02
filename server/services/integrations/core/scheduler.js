@@ -5,6 +5,7 @@ import { executarProximoJob } from "./job.runner.js";
 import { obterProvider } from "./provider-registry.js";
 import { listarEstados } from "./sync-state.js";
 import { pausaAtiva } from "./pausa-integracao.js";
+import { STATUS_POR_CODIGO } from "./errors.js";
 
 // Agendador de todas as integracoes registradas.
 //
@@ -74,6 +75,13 @@ export async function enfileirarCapacidadesVencidas(client, { agora = Date.now()
     const pausadaAte = await pausaAtiva(client, integracao.id);
     if (pausadaAte) {
       enfileirados.push({ integracao: integracao.id, pausadaAte, motivo: "limite de taxa" });
+      continue;
+    }
+
+    // Credencial recusada: nao enfileira nada ate salvarem credencial nova ou o teste de
+    // conexao passar. Cada capacidade vencida viraria uma chamada invalida a mais.
+    if (integracao.status === STATUS_POR_CODIGO.AUTENTICACAO) {
+      enfileirados.push({ integracao: integracao.id, motivo: "credencial recusada" });
       continue;
     }
 

@@ -153,6 +153,15 @@ export async function salvarCredenciais(client, integrationId, valores = {}) {
     );
     gravadas.push(chave);
   }
+  // Credencial nova libera a sincronizacao automatica que estava parada por credencial recusada
+  if (gravadas.length) {
+    await client.query(
+      `UPDATE integrations
+       SET status = 'PENDENTE', last_error = NULL, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1 AND status = 'ERRO_AUTENTICACAO'`,
+      [integrationId]
+    );
+  }
   return gravadas;
 }
 
@@ -177,27 +186,40 @@ export async function registrarSucesso(client, integrationId) {
   );
 }
 
-// Reflete na integracao o erro que derrubou o job, com o status derivado do codigo do erro
+// Reflete na integracao o erro que derrubou o job, com o status derivado do codigo do erro.
+// ERRO_AUTENTICACAO nao e sobrescrito por outra falha: so credencial nova ou sucesso o liberam,
+// senao uma falha de rede qualquer religaria o agendador com a chave ainda recusada.
 export async function registrarFalha(client, integrationId, erro) {
   await client.query(
     `UPDATE integrations
-     SET status = $2, last_error = $3, updated_at = CURRENT_TIMESTAMP
+     SET status = CASE WHEN status = 'ERRO_AUTENTICACAO' THEN status ELSE $2 END,
+         last_error = $3, updated_at = CURRENT_TIMESTAMP
      WHERE id = $1`,
     [integrationId, erro.statusJob || "ERRO_TEMPORARIO", String(erro.message || "").slice(0, 1000)]
   );
 }
 
-export async function registrarTesteConexao(client, integrationId, { sucesso, duracaoMs = 0, mensagem = null }) {
+// Grava o resultado do botao "Testar conexao". Falha por credencial usa ERRO_AUTENTICACAO,
+// que mantem a sincronizacao automatica parada; falha de outro tipo nao libera esse bloqueio.
+export async function registrarTesteConexao(
+  client,
+  integrationId,
+  { sucesso, duracaoMs = 0, mensagem = null, statusFalha = "ERRO_CONFIGURACAO" }
+) {
   await client.query(
     `UPDATE integrations
-     SET status = $2,
+     SET status = CASE
+           WHEN $5 THEN 'CONECTADO'
+           WHEN status = 'ERRO_AUTENTICACAO' THEN status
+           ELSE $2
+         END,
          last_connection_test_at = CURRENT_TIMESTAMP,
          last_connection_duration_ms = $3,
          last_connection_message = $4,
          last_error = CASE WHEN $5 THEN NULL ELSE $4 END,
          updated_at = CURRENT_TIMESTAMP
      WHERE id = $1`,
-    [integrationId, sucesso ? "CONECTADO" : "ERRO_CONFIGURACAO", Math.round(duracaoMs), mensagem, sucesso]
+    [integrationId, statusFalha, Math.round(duracaoMs), mensagem, sucesso]
   );
 }
 
