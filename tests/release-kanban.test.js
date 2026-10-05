@@ -136,6 +136,57 @@ assert.match(styles, /\.order-panel-content > \.table-wrap \{[\s\S]*?flex: 1 1 a
 assert.match(styles, /\.order-panel-table thead th \{[\s\S]*?position: sticky;/);
 assert.match(styles, /\.order-panel-foot \.btn\.danger \{[\s\S]*?background: transparent;/);
 
+// Cabeçalho da coluna: o texto "N pedidos" e o selo saem da mesma conta (bug de 02/10/2026: "0 pedidos" com selo "1")
+assert.match(app, /<strong data-release-count-label="\$\{esc\(status\)\}">\$\{releaseOrderCountLabel\(groups\.length\)\}<\/strong>/);
+assert.doesNotMatch(app, /\$\{groups\.length\} pedido\$\{/, "o plural do cabeçalho deve vir só de releaseOrderCountLabel");
+// Extrai uma função do app.js pelo nome para executá-la de verdade
+function extrairFuncao(nome) {
+  const trecho = app.match(new RegExp(`function ${nome}\\([\\s\\S]*?\\r?\\n\\}`));
+  assert.ok(trecho, `${nome} deve existir`);
+  return trecho[0];
+}
+// Coluna falsa com selo e texto desatualizados, como fica após a chegada de um pedido em tempo real
+function colunaFalsa(status, pedidos) {
+  const badge = { textContent: "0" };
+  const label = { textContent: "0 pedidos" };
+  const cards = pedidos.map((order) => ({ dataset: { order } }));
+  return {
+    status, badge, label,
+    querySelector: (sel) => (sel === "[data-release-count]" ? badge : sel === "[data-release-count-label]" ? label : null),
+    querySelectorAll: (sel) => (sel === ".release-kanban-card" ? cards : []),
+  };
+}
+{
+  const colunas = [colunaFalsa("Pendente", ["P1"]), colunaFalsa("Em Andamento", ["P2", "P2", "P3"])];
+  const documentFalso = {
+    querySelector: (sel) => colunas.find((c) => sel === `[data-release-column="${c.status}"]`) || null,
+    querySelectorAll: (sel) => (sel === "[data-release-column]" ? colunas : []),
+  };
+  const fabrica = new Function("document", "CSS", `
+    ${extrairFuncao("releaseOrderCountLabel")}
+    ${extrairFuncao("setReleaseColumnCount")}
+    ${extrairFuncao("updateReleaseCounters")}
+    ${extrairFuncao("updateReleaseKanbanCounts")}
+    return { releaseOrderCountLabel, updateReleaseCounters, updateReleaseKanbanCounts };`);
+  const fns = fabrica(documentFalso, { escape: (s) => s });
+  assert.equal(fns.releaseOrderCountLabel(0), "0 pedidos");
+  assert.equal(fns.releaseOrderCountLabel(1), "1 pedido");
+  assert.equal(fns.releaseOrderCountLabel(2), "2 pedidos");
+
+  // Atualização incremental por status (chegada de pedido / auto-refresh)
+  fns.updateReleaseCounters({ Pendente: [[{}]], "Em Andamento": [] });
+  assert.equal(colunas[0].badge.textContent, 1);
+  assert.equal(colunas[0].label.textContent, "1 pedido");
+  assert.equal(colunas[1].badge.textContent, 0);
+  assert.equal(colunas[1].label.textContent, "0 pedidos");
+
+  // Recontagem pelos cartões na tela (arrastar entre colunas): pedidos distintos
+  fns.updateReleaseKanbanCounts();
+  assert.equal(colunas[0].label.textContent, "1 pedido");
+  assert.equal(colunas[1].badge.textContent, 2);
+  assert.equal(colunas[1].label.textContent, "2 pedidos");
+}
+
 assert.match(routes, /\/api\/admin\/orders\/status/);
 assert.match(routes, /expected_status/);
 assert.match(routes, /function statusFromRequest/);

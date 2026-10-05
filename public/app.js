@@ -7642,11 +7642,24 @@ function releaseHasOpenOrder() {
   return Boolean(document.querySelector(".order-accordion.is-open"));
 }
 
+// Texto do cabeçalho da coluna ("1 pedido", "3 pedidos"): fonte única para render e atualização
+function releaseOrderCountLabel(total) {
+  return `${total} pedido${total === 1 ? "" : "s"}`;
+}
+
+// Escreve o mesmo total no texto e no selo do cabeçalho de uma coluna do Kanban
+function setReleaseColumnCount(column, total) {
+  if (!column) return;
+  const badge = column.querySelector("[data-release-count]");
+  const label = column.querySelector("[data-release-count-label]");
+  if (badge) badge.textContent = total;
+  if (label) label.textContent = releaseOrderCountLabel(total);
+}
+
 // Atualiza os contadores por status no quadro de liberação
 function updateReleaseCounters(byStatus) {
   Object.entries(byStatus).forEach(([status, groups]) => {
-    const el = document.querySelector(`[data-release-count="${CSS.escape(status)}"]`);
-    if (el) el.textContent = groups.length;
+    setReleaseColumnCount(document.querySelector(`[data-release-column="${CSS.escape(status)}"]`), groups.length);
   });
 }
 
@@ -7657,7 +7670,7 @@ function releaseKanbanColumn(status, groups = []) {
       <header class="release-kanban-column-head">
         <div>
           <p class="eyebrow">${esc(orderStatusLabels[status] || status)}</p>
-          <strong>${groups.length} pedido${groups.length === 1 ? "" : "s"}</strong>
+          <strong data-release-count-label="${esc(status)}">${releaseOrderCountLabel(groups.length)}</strong>
         </div>
         <span data-release-count="${esc(status)}">${groups.length}</span>
       </header>
@@ -9511,7 +9524,7 @@ function updateReleaseKanbanCounts() {
     const total = new Set([...column.querySelectorAll(".release-kanban-card")]
       .map((card) => card.dataset.order)
       .filter(Boolean)).size;
-    column.querySelector("[data-release-count]") && (column.querySelector("[data-release-count]").textContent = total);
+    setReleaseColumnCount(column, total);
   });
 }
 
