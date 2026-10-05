@@ -20,7 +20,8 @@ test("schema and backend support almox-origin order items", () => {
   assert.match(routes, /\/api\/admin\/orders\/add-item/);
   assert.match(routes, /\/api\/admin\/orders\/add-items/);
   assert.match(routes, /Remova produtos duplicados antes de adicionar ao pedido/);
-  assert.match(routes, /item_origem\)/);
+  // item_origem continua na lista de colunas do INSERT (seguido do local de origem do pedido)
+  assert.match(routes, /item_origem,\s*local_origem_pdv_id\)/);
   assert.match(routes, /'ALMOX'/);
   assert.match(routes, /COALESCE\(p\.item_origem, 'PDV'\) AS item_origem/);
 });

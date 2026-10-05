@@ -8,6 +8,7 @@ import { ensureOrderAlertTables } from "../../modules/order-alerts/order-alerts.
 import { ensureInventarioTables } from "../../modules/inventarios/inventarios.schema.js";
 import { ensurePdvAdministrativoColumn } from "../pdvs/pdv-administrativo.service.js";
 import { ensureCategoriaVinculoTable } from "../integrations/core/categoria-vinculo.repository.js";
+import { ensureMyControlTables } from "../mycontrol/mycontrol.schema.js";
 
 // Roda todas as rotinas em sequencia; cada uma ja e memoizada, entao chamar de novo nao repete trabalho
 export async function ensureAllRuntimeTables() {
@@ -21,4 +22,6 @@ export async function ensureAllRuntimeTables() {
   await ensureInventarioTables();
   await ensurePdvAdministrativoColumn();
   await ensureCategoriaVinculoTable();
+  // Tabelas mc_ do MyControl (usuários e auditoria)
+  await ensureMyControlTables();
 }

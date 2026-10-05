@@ -79,7 +79,8 @@ function parseProductsRows(rows) {
   return rows.slice(1).map((row) => ({
     sku: normalizeImportedSku(row[skuIndex]),
     nome: String(row[nameIndex] || "").trim(),
-    qtd_total: Number.parseInt(String(row[stockIndex] || "0").replace(",", "."), 10) || 0,
+    // Aceita fração (produto em KG/L); o servidor arredonda para 3 casas
+    qtd_total: Number(String(row[stockIndex] || "0").trim().replace(",", ".")) || 0,
     ativo: activeIndex >= 0 ? truthySheetValue(row[activeIndex]) : true,
     categoria: categoryIndex >= 0 ? String(row[categoryIndex] || "").trim() : "",
     origem: originIndex >= 0 ? String(row[originIndex] || "").trim().toLowerCase() : "manual"

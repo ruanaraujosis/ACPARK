@@ -50,8 +50,24 @@ export function montarCorpo({ call, params = {}, appKey, appSecret }) {
 
 // A OMIE devolve erro de negocio com HTTP 500 e um faultstring no corpo. Estes textos
 // indicam credencial invalida, que nao adianta retentar.
-function ehErroDeCredencial(faultstring = "") {
-  return /app_key|app_secret|acesso negado|nao autorizado|invalid|credencial/i.test(String(faultstring));
+//
+// A versao anterior comparava com o texto acentuado da OMIE ("não autorizado", "chave de
+// acesso não é válida") usando padroes sem acento, entao a credencial recusada caia em DADOS
+// com HTTP 500 retentavel: o agendador seguia chamando com a chave errada ate a OMIE bloquear
+// a conta por consumo indevido. E o "invalid" solto marcava qualquer erro em ingles como
+// credencial. Agora o texto e comparado sem acento e so com termos de credencial.
+//
+// "chave de acesso" sozinha NAO entra: e tambem o nome da chave de 44 digitos da NF-e, e um
+// erro de recebimento de nota pausaria a integracao inteira como se fosse senha errada.
+const PADRAO_CREDENCIAL =
+  /app_?key|app_?secret|chave de acesso nao (esta preenchida|e valida|foi informada)|acesso negado|nao autorizad|sem permissao|nao (possui|tem) permissao|credencia(l|is) (invalid|recusad|incorret)|unauthori[sz]ed|forbidden/;
+
+export function ehErroDeCredencial(faultstring = "") {
+  const semAcento = String(faultstring)
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase();
+  return PADRAO_CREDENCIAL.test(semAcento);
 }
 
 // Bloqueio por consumo excessivo. A OMIE devolve isso como faultstring comum, e nao como HTTP
@@ -115,6 +131,15 @@ export async function chamarOmie({
       // Erro de negocio da OMIE nao e retentavel; so o de infraestrutura e
       retentavel: !credencial && resposta.retentavel,
       detalhes: { call, faultcode: dados.faultcode || null }
+    });
+  }
+
+  // 401/403 sem faultstring tambem e credencial recusada: repetir so piora
+  if (resposta.status === 401 || resposta.status === 403) {
+    throw new IntegrationError(`A OMIE recusou as credenciais (HTTP ${resposta.status}) na chamada ${call}.`, {
+      codigo: CODIGOS_ERRO.AUTENTICACAO,
+      status: resposta.status,
+      retentavel: false
     });
   }
 

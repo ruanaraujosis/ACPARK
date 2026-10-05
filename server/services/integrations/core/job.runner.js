@@ -1,4 +1,4 @@
-import { comoIntegrationError } from "./errors.js";
+import { CODIGOS_ERRO, comoIntegrationError, IntegrationError, STATUS_POR_CODIGO } from "./errors.js";
 import { emSimulacao, modoDeEscrita, validarEscritaPermitida } from "./escrita.js";
 import { publishIntegrationEvent } from "./integration.events.js";
 import {
@@ -48,7 +48,8 @@ function montarContexto({ client, integracao, segredos, job, fetchImpl, estado, 
 }
 
 // Executa um job ja reservado (status PROCESSANDO). Devolve o job atualizado.
-export async function executarJob(client, job, { fetchImpl } = {}) {
+// `manual` = disparado pelo operador na tela; o agendador sempre roda com manual=false.
+export async function executarJob(client, job, { fetchImpl, manual = false } = {}) {
   try {
     // A tentativa e registrada ANTES de qualquer validacao, e nao depois.
     //
@@ -64,6 +65,15 @@ export async function executarJob(client, job, { fetchImpl } = {}) {
     await estadoSync.registrarTentativa(client, job.integration_id, job.job_type);
 
     const { integracao, segredos } = await carregarComSegredos(client, job.integration_id);
+    // Credencial recusada: o agendador nao chama mais a API ate alguem salvar credencial nova
+    // ou testar a conexao com sucesso. Insistir com chave errada so gera chamadas invalidas
+    // em serie, e e isso que leva o sistema externo a bloquear a conta por consumo indevido.
+    if (!manual && integracao.status === STATUS_POR_CODIGO.AUTENTICACAO) {
+      throw new IntegrationError(
+        "Credencial recusada pelo sistema externo. Sincronizacao automatica parada ate salvar credencial nova ou testar a conexao.",
+        { codigo: CODIGOS_ERRO.AUTENTICACAO, status: 401, retentavel: false }
+      );
+    }
     const provider = exigirProvider(integracao.provedor);
     const capacidade = exigirCapacidade(integracao.provedor, job.job_type);
     validarCredenciaisObrigatorias(provider, segredos);
@@ -115,11 +125,11 @@ export async function executarProximoJob(client, opcoes = {}) {
   return executarJob(client, job, opcoes);
 }
 
-// Executa um job especifico pelo id (botao "Processar" da tela)
+// Executa um job especifico pelo id (botao "Processar" da tela): sempre acao do operador
 export async function executarJobPorId(client, id, opcoes = {}) {
   const job = await fila.reservarPorId(client, id);
   if (!job) return null;
-  return executarJob(client, job, opcoes);
+  return executarJob(client, job, { manual: true, ...opcoes });
 }
 
 // Testa a conexao com a API externa usando o testarConexao declarado pelo provider.

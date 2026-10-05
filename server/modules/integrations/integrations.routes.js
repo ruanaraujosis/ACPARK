@@ -1,5 +1,6 @@
 import { query, tx } from "../../db.js";
 import { normalizeText, readBody, send } from "../../utils/http.js";
+import { ehErroInterno, MENSAGEM_ERRO_INTERNO } from "../../utils/erros.js";
 import { comoIntegrationError } from "../../services/integrations/core/errors.js";
 import {
   handleIntegrationEvents,
@@ -49,12 +50,15 @@ export async function handleIntegrationWebhookRoutes() {
   return false;
 }
 
-// Converte erro de integracao em resposta HTTP com a mensagem util para o operador
+// Converte erro de integracao em resposta HTTP com a mensagem util para o operador.
+// Erro tecnico (banco, sistema) que veio embrulhado nao leva o texto original para a tela.
 function responderErro(res, erroBruto, mensagemPadrao) {
   const erro = comoIntegrationError(erroBruto);
+  const interno = ehErroInterno(erro.causa || erroBruto);
+  if (interno) console.error(erro.causa || erroBruto);
   return send(res, erro.status >= 400 && erro.status < 600 ? erro.status : 502, {
     error: mensagemPadrao,
-    detail: erro.message,
+    detail: interno ? MENSAGEM_ERRO_INTERNO : erro.message,
     codigo: erro.codigo
   });
 }
@@ -201,7 +205,9 @@ export async function handleIntegrationsRoutes(req, res, context) {
         registrarTesteConexao(client, id, {
           sucesso: false,
           duracaoMs: erro.duracaoMs || 0,
-          mensagem: erro.message.slice(0, 500)
+          mensagem: erro.message.slice(0, 500),
+          // Credencial recusada mantem a sincronizacao automatica parada
+          statusFalha: erro.statusJob === "ERRO_AUTENTICACAO" ? "ERRO_AUTENTICACAO" : "ERRO_CONFIGURACAO"
         })
       ).catch(() => {});
       publishIntegrationEvent("integration.status.updated", { id });
@@ -256,7 +262,8 @@ export async function handleIntegrationsRoutes(req, res, context) {
 
   if (url.pathname === "/api/admin/integrations/jobs/process-next" && method === "POST") {
     if (!requireAdmin(req, res, context)) return true;
-    const job = await tx((client) => executarProximoJob(client));
+    // Clique do operador: pode tentar mesmo com a sincronizacao automatica parada
+    const job = await tx((client) => executarProximoJob(client, { manual: true }));
     return (send(res, 200, { ok: true, job }), true);
   }
 
